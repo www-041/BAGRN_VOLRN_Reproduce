@@ -313,6 +313,30 @@ def run_multiband(config: ExperimentConfig, args: argparse.Namespace) -> Dict[st
     summary["failed_methods"] = results.get("failed_methods", [])
     summary["skipped_outputs"] = results.get("skipped_outputs", [])
 
+    # 汇总光谱指标
+    spectral = results.get("spectral", {})
+    summary["spectral"] = {}
+    for method, sp in spectral.items():
+        if isinstance(sp, dict) and "aggregate" in sp:
+            agg = sp["aggregate"]
+            summary["spectral"][method] = {
+                "sam_mean": agg.get("sam", {}).get("mean", float("nan")),
+                "sam_median": agg.get("sam", {}).get("median", float("nan")),
+                "sam_p90": agg.get("sam", {}).get("p90", float("nan")),
+                "sam_p95": agg.get("sam", {}).get("p95", float("nan")),
+                "spectral_rmse_mean": agg.get("spectral_rmse", {}).get("mean", float("nan")),
+                "relative_spectral_rmse_mean": agg.get("relative_spectral_rmse", {}).get("mean", float("nan")),
+            }
+
+    # 汇总数据质量
+    quality = results.get("quality", {})
+    summary["quality"] = {}
+    for method, q in quality.items():
+        summary["quality"][method] = {
+            "status": q.get("status", "unknown"),
+            "issues": q.get("issues", []),
+        }
+
     return summary
 
 

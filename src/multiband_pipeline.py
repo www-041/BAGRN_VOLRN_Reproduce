@@ -1311,6 +1311,129 @@ class MultibandPipeline:
         return metrics_results
 
     # -----------------------------------------------------------------------
+    # f2. 光谱保持指标
+    # -----------------------------------------------------------------------
+
+    def evaluate_spectral(
+        self,
+        normalized_dict: Dict[str, List[np.ndarray]],
+        original_arrays: List[np.ndarray],
+        nodata_values: list,
+        band_names: List[str],
+        overlaps: List[dict],
+        output_dir: Optional[str] = None,
+    ) -> Dict[str, dict]:
+        """
+        计算光谱保持指标：SAM, spectral RMSE, correlation。
+
+        对每种归一化方法（除 original 外），逐景比较归一化前后光谱。
+        """
+        from src.spectral_metrics import compute_all_spectral
+
+        logger.info("计算光谱保持指标...")
+        t0 = time.time()
+
+        spectral_results: Dict[str, dict] = {}
+
+        for method, arrays in normalized_dict.items():
+            if method == "original":
+                continue
+            if not isinstance(arrays, list) or not arrays or not isinstance(arrays[0], np.ndarray):
+                continue
+
+            logger.info("  光谱指标: %s", method)
+            try:
+                method_dir = os.path.join(output_dir, method) if output_dir else None
+                spectral = compute_all_spectral(
+                    original_arrays, arrays, nodata_values, overlaps,
+                    band_names=band_names, output_dir=method_dir,
+                )
+                spectral_results[method] = spectral
+            except Exception as exc:
+                logger.error("  光谱指标计算失败 [%s]: %s", method, exc)
+                spectral_results[method] = {"error": str(exc)}
+
+        elapsed = time.time() - t0
+        logger.info("光谱指标完成, 耗时 %.1fs", elapsed)
+        return spectral_results
+
+    # -----------------------------------------------------------------------
+    # f3. 数据质量检查
+    # -----------------------------------------------------------------------
+
+    def check_data_quality(
+        self,
+        normalized_dict: Dict[str, List[np.ndarray]],
+        scene_data: Dict[str, Any],
+    ) -> Dict[str, dict]:
+        """
+        检查每种方法输出的数据质量：NaN/Inf/valid pixels/shape/transform/CRS。
+
+        如果有效数据区出现 NaN 或 Inf，标记该方法为失败。
+        """
+        logger.info("执行数据质量检查...")
+        quality_results: Dict[str, dict] = {}
+
+        nodata_values = scene_data["nodata_values"]
+        transforms = scene_data["transforms"]
+        crs = scene_data["crs"]
+        resolution = scene_data["resolution"]
+        band_names = scene_data["band_names"]
+
+        for method, arrays in normalized_dict.items():
+            if not isinstance(arrays, list) or not arrays or not isinstance(arrays[0], np.ndarray):
+                continue
+
+            method_quality = {"status": "pass", "issues": []}
+            n_scenes = len(arrays)
+
+            for i, arr in enumerate(arrays):
+                nd = nodata_values[i] if i < len(nodata_values) else None
+                bands_shape = arr.shape
+                n_bands_out = bands_shape[0]
+
+                # Count NaN / Inf in valid data area
+                if nd is not None:
+                    valid_mask = np.isfinite(arr).all(axis=0) & ~np.any(arr == nd, axis=0)
+                else:
+                    valid_mask = np.isfinite(arr).all(axis=0)
+
+                nan_count = int(np.sum(~np.isfinite(arr)))
+                inf_count = int(np.sum(np.isinf(arr)))
+                valid_pixels = int(valid_mask.sum())
+                nodata_pixels = int(arr.shape[1] * arr.shape[2] - valid_pixels)
+
+                if nan_count > 0 or inf_count > 0:
+                    method_quality["status"] = "fail"
+                    method_quality["issues"].append(
+                        f"scene_{i}: NaN={nan_count}, Inf={inf_count} in valid area"
+                    )
+
+                method_quality[f"scene_{i}"] = {
+                    "shape": list(bands_shape),
+                    "n_bands": n_bands_out,
+                    "nan_count": nan_count,
+                    "inf_count": inf_count,
+                    "valid_pixels": valid_pixels,
+                    "nodata_pixels": nodata_pixels,
+                }
+
+            # Check transform and CRS consistency (use first scene)
+            if transforms:
+                method_quality["transform"] = str(transforms[0])
+            method_quality["crs"] = crs
+            method_quality["resolution"] = resolution
+            method_quality["band_names"] = band_names
+
+            quality_results[method] = method_quality
+            if method_quality["status"] == "fail":
+                logger.warning("  %s: 数据质量检查失败: %s", method, method_quality["issues"])
+            else:
+                logger.info("  %s: 数据质量检查通过", method)
+
+        return quality_results
+
+    # -----------------------------------------------------------------------
     # g. 完整管线
     # -----------------------------------------------------------------------
 
@@ -1520,11 +1643,29 @@ class MultibandPipeline:
             output_dir=metrics_dir,
         )
 
+        # 7. 计算光谱保持指标（SAM, spectral RMSE, correlation）
+        spectral = {}
+        spectral_dir = os.path.join(output_dir, "spectral")
+        original_arrays = normalized.get("original", None)
+        if original_arrays is not None:
+            spectral = self.evaluate_spectral(
+                normalized,
+                original_arrays,
+                scene_data["nodata_values"],
+                scene_data["band_names"],
+                overlaps,
+                output_dir=spectral_dir,
+            )
+
+        # 8. 数据质量检查
+        quality = self.check_data_quality(normalized, scene_data)
+
         total_elapsed = time.time() - total_t0
 
         # 确定 pipeline_status
+        # Stage 1 methods: original, bagrn, volrn_only, bagrn_volrn
         all_core_methods_ok = all(
-            m in method_arrays for m in ["original", "bagrn", "bagrn_volrn"]
+            m in method_arrays for m in ["original", "bagrn", "volrn_only", "bagrn_volrn"]
         )
         if registration_connected and all_core_methods_ok and not failed_methods:
             pipeline_status = "success"
@@ -1543,6 +1684,8 @@ class MultibandPipeline:
             "normalized": normalized,
             "mosaics": mosaics,
             "metrics": metrics,
+            "spectral": spectral,
+            "quality": quality,
             "elapsed_total": total_elapsed,
             "pipeline_status": pipeline_status,
             "registration_connected": registration_connected,
