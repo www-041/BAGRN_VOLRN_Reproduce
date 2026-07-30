@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test / cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data (large GeoTIFF files)
+data/input/
+data/input_DZ01V_only/
+data/output/
+data/report_figures/
+
+# Experiment output
+*.tif
+*.tiff
+!configs/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temporary
+*.tmp
+*.log

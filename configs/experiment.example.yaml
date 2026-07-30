@@ -1,0 +1,71 @@
+experiment_name: dz01_multiband
+output_root: data/output/experiments
+registration_band: B14
+control_scene: auto
+selected_bands:
+  - B01
+  - B02
+  - B03
+  - B04
+  - B05
+  - B06
+  - B07
+  - B08
+  - B09
+  - B10
+  - B11
+  - B12
+  - B13
+  - B14
+rgb_bands: [B04, B03, B02]
+false_color_bands: [B08, B04, B03]
+scenes:
+  - id: scene_20251214
+    datetime: "2025-12-14"
+    sensor: DZ01V
+    bands:
+      B01: data/input/20251214.../B01.TIF
+      # ... more bands
+  - id: scene_20251208
+    datetime: "2025-12-08"
+    sensor: DZ01V
+    bands:
+      B01: data/input/20251208.../B01.TIF
+  - id: scene_20251215
+    datetime: "2025-12-15"
+    sensor: DZ01V
+    bands:
+      B01: data/input/20251215.../B01.TIF
+  - id: scene_20251120
+    datetime: "2025-11-20"
+    sensor: DZ01V
+    bands:
+      B01: data/input/20251120.../B01.TIF
+mosaic_modes:
+  - source_selection
+  - narrow_feather
+  - weighted
+feather_widths: [2, 4, 8, 16, 32, 64]
+volrn_params:
+  block_size: 200
+  lambda: 0.1
+  rho: 1.0
+  max_iter: 200
+  tol: 1.0e-4
+ablation_methods:
+  - original
+  - bagrn
+  - volrn_only
+  - bagrn_volrn
+  - histogram_matching
+  - moment_matching
+  - wallis
+sensitivity:
+  block_size_candidates: [200, 300, 400, 500, 600, 800]
+  lambda_candidates: [0.05, 0.1, 0.2, 0.5, 1.0, 2.0]
+  rho_candidates: [0.5, 1.0, 2.0]
+scale_scene_counts: [4, 8, 12]
+common_bands_strategy: strict
+seed: 42
+dry_run: false
+smoke: false
