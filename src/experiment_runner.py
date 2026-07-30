@@ -240,6 +240,7 @@ def run_multiband(config: ExperimentConfig, args: argparse.Namespace) -> Dict[st
     elif results:
         try:
             ql_dir = os.path.join(output_dir, "quicklooks")
+            os.makedirs(ql_dir, exist_ok=True)
             normalized = results.get("normalized", {})
             scene_data = results.get("scene_data", {})
             transforms = scene_data.get("transforms", [])
