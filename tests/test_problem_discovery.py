@@ -104,8 +104,18 @@ def test_band_attribution_runs():
 
     data = _make_synthetic_data()
     with tempfile.TemporaryDirectory() as tmpdir:
-        result = run_band_attribution(data, tmpdir)
+        result = run_band_attribution(
+            data, tmpdir,
+            sensor_id="VNIR",
+            band_wavelengths={
+                "B01": {"center_nm": 421.0},
+                "B02": {"center_nm": 452.5},
+                "B03": {"center_nm": 490.0},
+            },
+            metadata_status="test",
+        )
         assert "experiments" in result
+        assert result.get("sensor_id") == "VNIR"
         for method in data["normalized"]:
             assert method in result["experiments"]
             exp = result["experiments"][method]
@@ -113,9 +123,18 @@ def test_band_attribution_runs():
             assert len(exp["per_band_ave"]) == len(data["band_names"])
             assert "top3_worst_bands" in exp
             assert "top3_best_bands" in exp
-        # Check CSV was created
+            assert exp.get("sensor_id") == "VNIR"
+        # Check CSV was created and has new fields
         csv_files = [f for f in os.listdir(tmpdir) if f.endswith(".csv")]
         assert len(csv_files) > 0
+        # Read first CSV and verify headers
+        csv_path = os.path.join(tmpdir, csv_files[0])
+        with open(csv_path, "r") as f:
+            header = f.readline().strip()
+        assert "sensor_id" in header
+        assert "qualified_band_name" in header
+        assert "wavelength_center_nm" in header
+        assert "metadata_status" in header
 
 
 # ---------------------------------------------------------------------------

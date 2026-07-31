@@ -1,6 +1,37 @@
 experiment_name: dz01_stage2_problem_discovery
 output_root: data/output/stage2_problem_discovery
 
+sensor:
+  id: VNIR
+  full_band_count: 16
+  selected_bands:
+    - B01
+    - B02
+    - B03
+    - B04
+    - B05
+    - B06
+    - B07
+    - B08
+    - B09
+    - B10
+    - B11
+    - B12
+    - B13
+    - B14
+  excluded_bands:
+    - B15
+    - B16
+  reference_metadata:
+    path: data/input/20251208025051/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1_MTL.txt
+    role: band_definition_reference
+    applies_to_scene_geometry: false
+  scene_metadata_paths:
+    scene_20251114: null
+    scene_20251120: null
+    scene_20251208: data/input/20251208025051/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1_MTL.txt
+    scene_20251215: null
+
 registration_band: B14
 control_scene: auto
 common_bands_strategy: strict

@@ -526,6 +526,7 @@ def _dict_to_config(raw: Dict[str, Any]) -> ExperimentConfig:
         "dry_run": bool,
         "smoke": bool,
         "problem_discovery": lambda v: dict(v) if isinstance(v, dict) else None,
+        "sensor": lambda v: dict(v) if isinstance(v, dict) else None,
     }
 
     for key, value in raw.items():

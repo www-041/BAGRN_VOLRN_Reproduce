@@ -11,6 +11,10 @@ Experiments:
 
 All experiments operate on 1024 px crops (or reuse Stage 1 outputs).
 No modification to BAGRN / VOLRN objective functions.
+
+Sensor: DZ01 VNIR (B01-B14, 410-860 nm). B15-B16 not used.
+SWIR is a separate sensor (DZ01S, B01-B10, 1178-2468 nm) and is not
+included in Stage 1 or Stage 2 experiments.
 """
 
 import os
@@ -270,6 +274,9 @@ def _load_stage1_geotiff(
 def run_band_attribution(
     data: Dict[str, Any],
     output_dir: str,
+    sensor_id: str = "VNIR",
+    band_wavelengths: Optional[Dict[str, Dict[str, float]]] = None,
+    metadata_status: str = "from_mtl",
 ) -> Dict[str, Any]:
     """
     Per-band metric decomposition for BAGRN vs BAGRN+VOLRN.
@@ -291,7 +298,11 @@ def run_band_attribution(
     n_bands = len(band_names)
     nodata_values = data["nodata_values"]
 
-    results: Dict[str, Any] = {"experiments": {}}
+    # Build wavelength lookup
+    if band_wavelengths is None:
+        band_wavelengths = {}
+
+    results: Dict[str, Any] = {"experiments": {}, "sensor_id": sensor_id}
 
     for method_name, method_arrays in data["normalized"].items():
         band_metrics: Dict[str, Any] = {}
@@ -343,6 +354,7 @@ def run_band_attribution(
         band_metrics["per_band_adsd"] = band_adsd_mean.tolist()
         band_metrics["per_band_ave"] = band_ave.tolist()
         band_metrics["band_names"] = band_names
+        band_metrics["sensor_id"] = sensor_id
         band_metrics["top3_worst_bands"] = [
             band_names[int(idx)] for idx in np.argsort(band_ave)[-3:][::-1]
         ]
@@ -351,12 +363,19 @@ def run_band_attribution(
         ]
         results["experiments"][method_name] = band_metrics
 
-        # Save per-band Ave CSV
+        # Save per-band Ave CSV with sensor-qualified names
         csv_path = os.path.join(output_dir, f"band_attribution_{method_name}.csv")
         with open(csv_path, "w", encoding="utf-8") as f:
-            f.write("band,adm,adsd,ave\n")
+            f.write("sensor_id,band_name,qualified_band_name,wavelength_center_nm,adm,adsd,ave,metadata_status\n")
             for b_idx, bn in enumerate(band_names):
-                f.write(f"{bn},{band_adm_mean[b_idx]:.6f},{band_adsd_mean[b_idx]:.6f},{band_ave[b_idx]:.6f}\n")
+                wl = band_wavelengths.get(bn, {})
+                center_wl = wl.get("center_nm", "")
+                qualified = f"{sensor_id}_{bn}"
+                f.write(
+                    f"{sensor_id},{bn},{qualified},{center_wl},"
+                    f"{band_adm_mean[b_idx]:.6f},{band_adsd_mean[b_idx]:.6f},{band_ave[b_idx]:.6f},"
+                    f"{metadata_status}\n"
+                )
         logger.info("  [%s] CSV 已保存: %s", method_name, csv_path)
 
     # Save JSON summary
@@ -1050,6 +1069,34 @@ def run_problem_discovery(
 
     os.makedirs(output_dir, exist_ok=True)
 
+    # ---- Sensor and metadata info ----
+    sensor_config = getattr(config, 'sensor', None) or {}
+    sensor_id = sensor_config.get("id", "VNIR") if isinstance(sensor_config, dict) else "VNIR"
+    selected_bands = sensor_config.get("selected_bands", []) if isinstance(sensor_config, dict) else []
+    excluded_bands = sensor_config.get("excluded_bands", []) if isinstance(sensor_config, dict) else []
+    ref_meta_path = (sensor_config.get("reference_metadata", {}) or {}).get("path") if isinstance(sensor_config, dict) else None
+    scene_meta_paths = sensor_config.get("scene_metadata_paths", {}) if isinstance(sensor_config, dict) else {}
+
+    # Parse reference metadata if available
+    band_wavelengths: Dict[str, Dict[str, float]] = {}
+    metadata_status = "no_mtl"
+    if ref_meta_path and os.path.isfile(ref_meta_path):
+        try:
+            from src.dz01_metadata import parse_dz01_mtl, extract_band_metadata
+            ref_meta = parse_dz01_mtl(ref_meta_path)
+            band_wavelengths_raw = extract_band_metadata(ref_meta, selected_bands or None)
+            for bn, info in band_wavelengths_raw.items():
+                band_wavelengths[bn] = {
+                    "center_nm": info.get("wavelength_center_nm"),
+                    "min_nm": info.get("wavelength_min_nm"),
+                    "max_nm": info.get("wavelength_max_nm"),
+                }
+            metadata_status = "from_reference_mtl"
+            logger.info("已加载参考元数据: %s (sensor=%s)", ref_meta_path, ref_meta.get("sensor_id"))
+        except Exception as exc:
+            logger.warning("参考元数据加载失败: %s", exc)
+            metadata_status = "mtl_load_failed"
+
     # Load Stage 1 data
     logger.info("加载 Stage 1 数据: %s", baseline_output)
     data = load_stage1_data(baseline_output, crop_size)
@@ -1060,6 +1107,12 @@ def run_problem_discovery(
     )
 
     # Save loaded data for debugging
+    wavelength_range = {}
+    if band_wavelengths:
+        centers = [v["center_nm"] for v in band_wavelengths.values() if v.get("center_nm") is not None]
+        if centers:
+            wavelength_range = {"min": min(centers), "max": max(centers)}
+
     data_summary = {
         "scene_ids": data["scene_ids"],
         "band_names": data["band_names"],
@@ -1068,11 +1121,23 @@ def run_problem_discovery(
         "n_overlaps": len(data["overlaps"]),
         "normalized_methods": list(data["normalized"].keys()),
         "registered_shapes": [list(a.shape) for a in data["registered_arrays"]],
+        "sensor_id": sensor_id,
+        "sensor_full_band_count": 16 if sensor_id == "VNIR" else 10,
+        "selected_band_count": len(selected_bands) if selected_bands else len(data["band_names"]),
+        "selected_bands": selected_bands or data["band_names"],
+        "excluded_bands": excluded_bands,
+        "wavelength_range_nm": wavelength_range,
+        "band_metadata_source": {
+            "scene_date": "2025-12-08" if ref_meta_path and "20251208" in str(ref_meta_path) else "unknown",
+            "sensor": sensor_id,
+            "role": "reference_only",
+        },
+        "scene_specific_metadata_complete": False,
     }
     with open(os.path.join(output_dir, "data_summary.json"), "w", encoding="utf-8") as f:
         json.dump(data_summary, f, indent=2, ensure_ascii=False)
 
-    all_results: Dict[str, Any] = {"experiments_run": experiments}
+    all_results: Dict[str, Any] = {"experiments_run": experiments, "sensor_id": sensor_id}
 
     # Run each experiment
     for exp_name in experiments:
@@ -1080,7 +1145,12 @@ def run_problem_discovery(
         exp_dir = os.path.join(output_dir, exp_name)
         try:
             if exp_name == "band_attribution":
-                result = run_band_attribution(data, exp_dir)
+                result = run_band_attribution(
+                    data, exp_dir,
+                    sensor_id=sensor_id,
+                    band_wavelengths=band_wavelengths,
+                    metadata_status=metadata_status,
+                )
             elif exp_name == "scene_attribution":
                 result = run_scene_attribution(data, exp_dir)
             elif exp_name == "gain_offset_ablation":
