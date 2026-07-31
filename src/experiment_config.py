@@ -117,6 +117,9 @@ class ExperimentConfig:
     dry_run: bool = False
     smoke: bool = False
 
+    # ---- Stage 2: problem discovery ----
+    problem_discovery: Optional[Dict[str, Any]] = None
+
 
 # ---------------------------------------------------------------------------
 # YAML 加载 / 保存
@@ -353,6 +356,52 @@ def validate_config(config: ExperimentConfig, skip_file_check: bool = False) -> 
         if not isinstance(sc, int) or sc <= 0:
             errors.append(f"scale_scene_counts 中的值必须为正整数，当前值: {sc}")
 
+    # ---- problem_discovery ----
+    if config.problem_discovery is not None:
+        pd = config.problem_discovery
+        if not isinstance(pd, dict):
+            errors.append("problem_discovery 必须是字典")
+        else:
+            # baseline_output
+            baseline_output = pd.get("baseline_output", "")
+            if not baseline_output or not isinstance(baseline_output, str):
+                errors.append("problem_discovery.baseline_output 不能为空")
+            elif not os.path.isdir(baseline_output):
+                errors.append(f"problem_discovery.baseline_output 目录不存在: {baseline_output}")
+
+            # crop_size
+            crop_size = pd.get("crop_size", 1024)
+            if not isinstance(crop_size, int) or crop_size <= 0:
+                errors.append(f"problem_discovery.crop_size 必须为正整数，当前值: {crop_size}")
+
+            # max_windows
+            max_windows = pd.get("max_windows", 6)
+            if not isinstance(max_windows, int) or max_windows <= 0:
+                errors.append(f"problem_discovery.max_windows 必须为正整数，当前值: {max_windows}")
+
+            # spatial_strata
+            ss = pd.get("spatial_strata", {})
+            if ss and isinstance(ss, dict):
+                bw = ss.get("boundary_width_pixels", 100)
+                if not isinstance(bw, int) or bw <= 0:
+                    errors.append(f"problem_discovery.spatial_strata.boundary_width_pixels 必须为正整数")
+                tq = ss.get("texture_quantiles", [])
+                if not isinstance(tq, list) or len(tq) < 2:
+                    errors.append("problem_discovery.spatial_strata.texture_quantiles 必须至少2个值")
+                bq = ss.get("brightness_quantiles", [])
+                if not isinstance(bq, list) or len(bq) < 2:
+                    errors.append("problem_discovery.spatial_strata.brightness_quantiles 必须至少2个值")
+
+            # multiwindow
+            mw = pd.get("multiwindow", {})
+            if mw and isinstance(mw, dict):
+                ws = mw.get("window_size", 1024)
+                if not isinstance(ws, int) or ws <= 0:
+                    errors.append("problem_discovery.multiwindow.window_size 必须为正整数")
+                mvr = mw.get("minimum_valid_ratio", 0.30)
+                if not isinstance(mvr, (int, float)) or mvr < 0 or mvr > 1:
+                    errors.append("problem_discovery.multiwindow.minimum_valid_ratio 必须在 [0,1]")
+
     return errors
 
 
@@ -476,6 +525,7 @@ def _dict_to_config(raw: Dict[str, Any]) -> ExperimentConfig:
         "seed": int,
         "dry_run": bool,
         "smoke": bool,
+        "problem_discovery": lambda v: dict(v) if isinstance(v, dict) else None,
     }
 
     for key, value in raw.items():

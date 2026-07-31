@@ -9,11 +9,13 @@
   - diagnostics: VOLRN 系数 / RBF 位移场诊断
   - seam:        接缝评估
   - spectral:    光谱保真度验证
+  - problem_discovery: Stage 2 问题诊断实验
 
 用法示例
 --------
 python -m src.experiment_runner --config configs/dz01_multiband.yaml multiband
 python -m src.experiment_runner --config configs/dz01_multiband.yaml ablation --dry-run
+python -m src.experiment_runner --config configs/dz01_stage2_problem_discovery.yaml problem_discovery --experiments band_attribution,nan_trace
 """
 
 from __future__ import annotations
@@ -39,6 +41,19 @@ from src.experiment_config import (
     validate_config,
     get_common_bands,
 )
+
+# Lazy import: problem_discovery is only imported when needed
+def run_problem_discovery(config, args):
+    from src.problem_discovery import run_problem_discovery as _run_pd
+    pd_config = config.problem_discovery
+    if pd_config is None:
+        raise ValueError("config.problem_discovery 不能为空")
+    output_dir = os.path.join(config.output_root, config.experiment_name)
+    os.makedirs(output_dir, exist_ok=True)
+    experiments = getattr(args, 'experiments', None)
+    if experiments:
+        experiments = [e.strip() for e in experiments.split(",") if e.strip()]
+    return _run_pd(config, output_dir, experiments=experiments)
 
 logger = logging.getLogger(__name__)
 
@@ -1003,6 +1018,7 @@ EXPERIMENT_RUNNERS = {
     "diagnostics": run_diagnostics,
     "seam": run_seam,
     "spectral": run_spectral,
+    "problem_discovery": run_problem_discovery,
 }
 
 
@@ -1018,18 +1034,19 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 实验类型:
-  multiband    完整多波段管线（加载→重叠→配准→归一化→镶嵌→指标）
-  ablation     消融实验（original / BAGRN / VOLRN / BAGRN-VOLRN）
-  sensitivity  参数敏感性分析（block_size / lambda / rho 扫描）
-  scale        多场景规模实验（N=4,8,12 景的时间、内存、指标）
-  diagnostics  VOLRN 系数与 RBF 位移场诊断
-  seam         接缝评估（羽化宽度 Pareto 分析）
-  spectral     光谱保真度验证（SAM / RMSE / 波段比值）
+  multiband          完整多波段管线（加载→重叠→配准→归一化→镶嵌→指标）
+  ablation           消融实验（original / BAGRN / VOLRN / BAGRN-VOLRN）
+  sensitivity        参数敏感性分析（block_size / lambda / rho 扫描）
+  scale              多场景规模实验（N=4,8,12 景的时间、内存、指标）
+  diagnostics        VOLRN 系数与 RBF 位移场诊断
+  seam               接缝评估（羽化宽度 Pareto 分析）
+  spectral           光谱保真度验证（SAM / RMSE / 波段比值）
+  problem_discovery  Stage 2 问题诊断（波段归因/场景归因/增益偏移消融/空间归因/多窗口/NaN追踪）
 
 示例:
   python -m src.experiment_runner --config configs/dz01.yaml multiband
   python -m src.experiment_runner --config configs/dz01.yaml ablation --dry-run
-  python -m src.experiment_runner --config configs/dz01.yaml sensitivity --resume
+  python -m src.experiment_runner --config configs/dz01_stage2.yaml problem_discovery --experiments band_attribution,nan_trace
         """,
     )
 
@@ -1100,6 +1117,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="输出根目录（覆盖配置文件中的值）",
+    )
+    parser.add_argument(
+        "--experiments",
+        type=str,
+        default=None,
+        help="problem_discovery 子实验列表，逗号分隔（如 band_attribution,nan_trace）",
     )
 
     return parser
