@@ -1027,6 +1027,255 @@ def run_nan_trace(
 
 
 # ===========================================================================
+# 7. Acquisition Attribution (diagnostic)
+# ===========================================================================
+
+def run_acquisition_attribution(
+    data: Dict[str, Any],
+    output_dir: str,
+    scene_metadata: Optional[List[Dict[str, Any]]] = None,
+    band_metadata: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Diagnostic experiment: correlate acquisition conditions with radiometric residuals.
+
+    Merges scene_attribution and band_attribution results with per-scene
+    acquisition parameters and per-band integration parameters.
+
+    Parameters
+    ----------
+    data : dict
+        Loaded Stage 1 data (from load_stage1_data).
+    output_dir : str
+        Output directory for results.
+    scene_metadata : list of dict or None
+        Per-scene MTL metadata (from parse_dz01_mtl).
+    band_metadata : list of dict or None
+        Per-band integration parameters (long-format table).
+
+    Returns
+    -------
+    dict
+        Experiment results.
+    """
+    logger.info("=== Experiment 7: Acquisition Attribution ===")
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "metrics"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "figures"), exist_ok=True)
+
+    overlaps = data["overlaps"]
+    band_names = data["band_names"]
+    n_bands = len(band_names)
+    scene_ids = data["scene_ids"]
+    n_scenes = len(scene_ids)
+    nodata_values = data["nodata_values"]
+
+    results: Dict[str, Any] = {"experiments": {}}
+
+    # Build per-scene per-band Ave for bagrn_volrn
+    method_name = "bagrn_volrn"
+    if method_name not in data["normalized"]:
+        # Fall back to bagrn
+        method_name = "bagrn"
+    if method_name not in data["normalized"]:
+        logger.warning("No normalized method available for acquisition attribution")
+        return results
+
+    method_arrays = data["normalized"][method_name]
+
+    # Per-pair per-band metrics
+    per_pair_per_band_ave = np.zeros((len(overlaps), n_bands))
+    per_pair_per_band_adm = np.zeros((len(overlaps), n_bands))
+    per_pair_per_band_adsd = np.zeros((len(overlaps), n_bands))
+
+    for p_idx, ov in enumerate(overlaps):
+        i, j = ov["idx_i"], ov["idx_j"]
+        if i >= len(method_arrays) or j >= len(method_arrays):
+            continue
+        (ri_s, ri_e, ci_s, ci_e) = ov["window_i"]
+        (rj_s, rj_e, cj_s, cj_e) = ov["window_j"]
+        arr_i = method_arrays[i]
+        arr_j = method_arrays[j]
+
+        for b_idx in range(n_bands):
+            pi = arr_i[b_idx, ri_s:ri_e, ci_s:ci_e]
+            pj = arr_j[b_idx, rj_s:rj_e, cj_s:cj_e]
+            nd_i = nodata_values[i] if i < len(nodata_values) else None
+            nd_j = nodata_values[j] if j < len(nodata_values) else None
+            mi = np.isfinite(pi)
+            if nd_i is not None:
+                mi &= (pi != nd_i)
+            mj = np.isfinite(pj)
+            if nd_j is not None:
+                mj &= (pj != nd_j)
+            valid = mi & mj
+            if valid.sum() < 10:
+                continue
+            adm = abs(float(pi[valid].mean()) - float(pj[valid].mean()))
+            adsd = abs(float(pi[valid].std()) - float(pj[valid].std()))
+            per_pair_per_band_adm[p_idx, b_idx] = adm
+            per_pair_per_band_adsd[p_idx, b_idx] = adsd
+            per_pair_per_band_ave[p_idx, b_idx] = (adm + adsd) / 2.0
+
+    # Per-scene per-band Ave: average over pairs involving that scene
+    scene_band_ave = np.zeros((n_scenes, n_bands))
+    scene_band_counts = np.zeros(n_scenes, dtype=int)
+    for p_idx, ov in enumerate(overlaps):
+        i, j = ov["idx_i"], ov["idx_j"]
+        scene_band_ave[i] += per_pair_per_band_ave[p_idx]
+        scene_band_ave[j] += per_pair_per_band_ave[p_idx]
+        scene_band_counts[i] += 1
+        scene_band_counts[j] += 1
+
+    for s in range(n_scenes):
+        if scene_band_counts[s] > 0:
+            scene_band_ave[s] /= scene_band_counts[s]
+
+    # Build scene_band_attribution.csv
+    scene_band_rows = []
+    # Build lookup for acquisition params per scene
+    acq_lookup = {}
+    if scene_metadata:
+        for meta in scene_metadata:
+            sid = meta.get("date_acquired", "unknown")
+            scene = meta.get("scene", {})
+            acq_lookup[sid] = {
+                "sun_elevation": scene.get("SUN_ELEVATION"),
+                "sun_zenith": scene.get("SUN_ZENITH"),
+                "sat_zenith": scene.get("SAT_ZENITH"),
+                "sat_azimuth": scene.get("SAT_AZIMUTH"),
+                "roll_angle": scene.get("ROLL_ANGLE"),
+                "cloud_cover": scene.get("CLOUD_COVER"),
+            }
+
+    # Build lookup for integration params per (scene, band)
+    int_lookup = {}
+    if band_metadata:
+        for row in band_metadata:
+            key = (row.get("scene_id"), row.get("band_name"))
+            int_lookup[key] = {
+                "integration_time": row.get("integration_time"),
+                "integration_level": row.get("integration_level"),
+            }
+
+    for s_idx, s_id in enumerate(scene_ids):
+        for b_idx, b_name in enumerate(band_names):
+            acq = acq_lookup.get(s_id, {})
+            integ = int_lookup.get((s_id, b_name), {})
+            wl_info = {}
+            if scene_metadata:
+                for meta in scene_metadata:
+                    if meta.get("date_acquired") == s_id:
+                        band_info = meta.get("bands", {}).get(b_name, {})
+                        wl_info = {"wavelength_center_nm": band_info.get("wavelength_center_nm")}
+                        break
+
+            row = {
+                "scene_id": s_id,
+                "band_name": b_name,
+                "wavelength_center_nm": wl_info.get("wavelength_center_nm"),
+                "ave": float(scene_band_ave[s_idx, b_idx]),
+                "adm": float(per_pair_per_band_adm[:, b_idx].mean()),
+                "adsd": float(per_pair_per_band_adsd[:, b_idx].mean()),
+                "integration_time": integ.get("integration_time"),
+                "integration_level": integ.get("integration_level"),
+                "sun_elevation": acq.get("sun_elevation"),
+                "sun_zenith": acq.get("sun_zenith"),
+                "sat_zenith": acq.get("sat_zenith"),
+                "sat_azimuth": acq.get("sat_azimuth"),
+                "roll_angle": acq.get("roll_angle"),
+                "cloud_cover": acq.get("cloud_cover"),
+            }
+            scene_band_rows.append(row)
+
+    # Save scene_band_attribution.csv
+    csv_path = os.path.join(output_dir, "metrics", "scene_band_attribution.csv")
+    if scene_band_rows:
+        headers = list(scene_band_rows[0].keys())
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write(",".join(headers) + "\n")
+            for row in scene_band_rows:
+                vals = [str(row.get(h, "")) for h in headers]
+                f.write(",".join(vals) + "\n")
+        logger.info("  scene_band_attribution.csv saved: %s", csv_path)
+
+    # Save acquisition_attribution.csv (per-scene summary)
+    acq_csv_path = os.path.join(output_dir, "metrics", "acquisition_attribution.csv")
+    scene_ave_per_method = {}
+    for m_name, m_arrays in data["normalized"].items():
+        scene_ave = np.zeros(n_scenes)
+        scene_cnt = np.zeros(n_scenes, dtype=int)
+        for p_idx, ov in enumerate(overlaps):
+            i, j = ov["idx_i"], ov["idx_j"]
+            if i >= len(m_arrays) or j >= len(m_arrays):
+                continue
+            (ri_s, ri_e, ci_s, ci_e) = ov["window_i"]
+            (rj_s, rj_e, cj_s, cj_e) = ov["window_j"]
+            adm_all = []
+            for b_idx in range(n_bands):
+                pi = m_arrays[i][b_idx, ri_s:ri_e, ci_s:ci_e]
+                pj = m_arrays[j][b_idx, rj_s:rj_e, cj_s:cj_e]
+                nd_i = nodata_values[i] if i < len(nodata_values) else None
+                nd_j = nodata_values[j] if j < len(nodata_values) else None
+                mi = np.isfinite(pi)
+                if nd_i is not None:
+                    mi &= (pi != nd_i)
+                mj = np.isfinite(pj)
+                if nd_j is not None:
+                    mj &= (pj != nd_j)
+                valid = mi & mj
+                if valid.sum() >= 10:
+                    adm_all.append(abs(float(pi[valid].mean()) - float(pj[valid].mean())))
+            if adm_all:
+                scene_ave[i] += np.mean(adm_all)
+                scene_ave[j] += np.mean(adm_all)
+                scene_cnt[i] += 1
+                scene_cnt[j] += 1
+        for s in range(n_scenes):
+            if scene_cnt[s] > 0:
+                scene_ave[s] /= scene_cnt[s]
+        scene_ave_per_method[m_name] = scene_ave.tolist()
+
+    acq_rows = []
+    for s_idx, s_id in enumerate(scene_ids):
+        acq = acq_lookup.get(s_id, {})
+        row = {"scene_id": s_id}
+        for m_name, aves in scene_ave_per_method.items():
+            row[f"{m_name}_ave"] = aves[s_idx]
+        row.update(acq)
+        acq_rows.append(row)
+
+    if acq_rows:
+        headers = list(acq_rows[0].keys())
+        with open(acq_csv_path, "w", encoding="utf-8") as f:
+            f.write(",".join(headers) + "\n")
+            for row in acq_rows:
+                vals = [str(row.get(h, "")) for h in headers]
+                f.write(",".join(vals) + "\n")
+        logger.info("  acquisition_attribution.csv saved: %s", acq_csv_path)
+
+    # Save JSON summary
+    json_path = os.path.join(output_dir, "acquisition_attribution.json")
+    summary = {
+        "method": method_name,
+        "scene_ids": scene_ids,
+        "band_names": band_names,
+        "scene_band_ave": scene_band_ave.tolist(),
+        "per_pair_per_band_ave": per_pair_per_band_ave.tolist(),
+        "n_scenes": n_scenes,
+        "n_bands": n_bands,
+        "n_overlaps": len(overlaps),
+        "note": "descriptive analysis only because n_scenes=4; exploratory only",
+    }
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    logger.info("  JSON saved: %s", json_path)
+
+    results["experiments"][method_name] = summary
+    return results
+
+
+# ===========================================================================
 # Master runner
 # ===========================================================================
 
@@ -1077,7 +1326,7 @@ def run_problem_discovery(
     ref_meta_path = (sensor_config.get("reference_metadata", {}) or {}).get("path") if isinstance(sensor_config, dict) else None
     scene_meta_paths = sensor_config.get("scene_metadata_paths", {}) if isinstance(sensor_config, dict) else {}
 
-    # Parse reference metadata if available
+    # ---- Parse reference metadata ----
     band_wavelengths: Dict[str, Dict[str, float]] = {}
     metadata_status = "no_mtl"
     if ref_meta_path and os.path.isfile(ref_meta_path):
@@ -1097,6 +1346,74 @@ def run_problem_discovery(
             logger.warning("参考元数据加载失败: %s", exc)
             metadata_status = "mtl_load_failed"
 
+    # ---- Parse per-scene metadata (all scenes) ----
+    from src.dz01_metadata import (
+        parse_dz01_mtl, extract_band_metadata, validate_cross_scene_band_metadata,
+        build_scene_acquisition_table, analyze_acquisition_differences,
+        build_band_acquisition_table, detect_integration_anomalies,
+    )
+    scene_metadata_list = []
+    scene_metadata_status = {}
+    for scene_cfg in config.scenes:
+        sid = scene_cfg.get("id", "unknown")
+        mtl_path = scene_meta_paths.get(sid)
+        if mtl_path and os.path.isfile(mtl_path):
+            try:
+                meta = parse_dz01_mtl(mtl_path)
+                scene_metadata_list.append(meta)
+                scene_metadata_status[sid] = "complete"
+                logger.info("已加载场景元数据: %s (sensor=%s)", sid, meta.get("sensor_id"))
+            except Exception as exc:
+                logger.warning("场景 %s 元数据加载失败: %s", sid, exc)
+                scene_metadata_status[sid] = "load_failed"
+        else:
+            scene_metadata_status[sid] = "missing"
+            logger.warning("场景 %s 无元数据路径或文件不存在: %s", sid, mtl_path)
+
+    n_scenes_loaded = len(scene_metadata_list)
+    n_scenes_expected = len(config.scenes)
+    scene_specific_metadata_complete = (
+        n_scenes_loaded == n_scenes_expected
+        and all(v == "complete" for v in scene_metadata_status.values())
+    )
+
+    # ---- Cross-scene band consistency validation ----
+    cross_scene_consistency = {}
+    if scene_metadata_list:
+        cross_scene_consistency = validate_cross_scene_band_metadata(
+            scene_metadata_list, selected_bands or None
+        )
+        if cross_scene_consistency.get("warnings"):
+            for w in cross_scene_consistency["warnings"]:
+                logger.warning("Cross-scene: %s", w)
+        else:
+            logger.info("Cross-scene band consistency: PASS")
+
+    # ---- Acquisition condition analysis ----
+    acquisition_analysis = {}
+    if scene_metadata_list:
+        acquisition_analysis = analyze_acquisition_differences(scene_metadata_list)
+
+    # ---- Band acquisition parameters (long-format) ----
+    band_acq_table = []
+    if scene_metadata_list:
+        band_acq_table = build_band_acquisition_table(scene_metadata_list, selected_bands or None)
+
+    # ---- Integration anomaly detection ----
+    integration_anomalies = []
+    if scene_metadata_list:
+        integration_anomalies = detect_integration_anomalies(
+            scene_metadata_list, selected_bands or None
+        )
+        if integration_anomalies:
+            logger.info("Detected %d integration anomalies", len(integration_anomalies))
+            for anom in integration_anomalies:
+                logger.warning(
+                    "  Anomaly: %s %s %s = %.4f (median=%.4f, ratio=%.4f)",
+                    anom["scene_id"], anom["band_name"], anom["parameter"],
+                    anom["value"], anom["cross_scene_median"], anom["ratio"],
+                )
+
     # Load Stage 1 data
     logger.info("加载 Stage 1 数据: %s", baseline_output)
     data = load_stage1_data(baseline_output, crop_size)
@@ -1112,6 +1429,24 @@ def run_problem_discovery(
         centers = [v["center_nm"] for v in band_wavelengths.values() if v.get("center_nm") is not None]
         if centers:
             wavelength_range = {"min": min(centers), "max": max(centers)}
+
+    # Build cross-scene band consistency summary
+    cross_scene_summary = {}
+    if cross_scene_consistency:
+        cross_scene_summary = {
+            "consistent": cross_scene_consistency.get("consistent", False),
+            "n_warnings": len(cross_scene_consistency.get("warnings", [])),
+        }
+
+    # Build acquisition summary
+    acq_summary = {}
+    if acquisition_analysis and "field_stats" in acquisition_analysis:
+        for field, stats in acquisition_analysis["field_stats"].items():
+            acq_summary[field] = {
+                "min": stats.get("min"),
+                "max": stats.get("max"),
+                "median": stats.get("median"),
+            }
 
     data_summary = {
         "scene_ids": data["scene_ids"],
@@ -1132,12 +1467,96 @@ def run_problem_discovery(
             "sensor": sensor_id,
             "role": "reference_only",
         },
-        "scene_specific_metadata_complete": False,
+        "metadata_coverage": {
+            "status": "complete" if scene_specific_metadata_complete else "incomplete",
+            "n_scenes_expected": n_scenes_expected,
+            "n_scenes_loaded": n_scenes_loaded,
+            "sensors": [sensor_id],
+            "scene_status": scene_metadata_status,
+        },
+        "band_definition_consistency": cross_scene_summary,
+        "scene_specific_metadata_complete": scene_specific_metadata_complete,
+        "acquisition_analysis": acq_summary,
+        "integration_anomaly_count": len(integration_anomalies),
     }
     with open(os.path.join(output_dir, "data_summary.json"), "w", encoding="utf-8") as f:
         json.dump(data_summary, f, indent=2, ensure_ascii=False)
 
     all_results: Dict[str, Any] = {"experiments_run": experiments, "sensor_id": sensor_id}
+
+    # Save metadata tables
+    meta_dir = os.path.join(output_dir, "metadata")
+    os.makedirs(meta_dir, exist_ok=True)
+
+    # Save scene_acquisition_conditions.csv
+    if scene_metadata_list:
+        acq_table = build_scene_acquisition_table(scene_metadata_list)
+        if acq_table:
+            headers = list(acq_table[0].keys())
+            with open(os.path.join(meta_dir, "scene_acquisition_conditions.csv"), "w", encoding="utf-8") as f:
+                f.write(",".join(headers) + "\n")
+                for row in acq_table:
+                    vals = [str(row.get(h, "")) for h in headers]
+                    f.write(",".join(vals) + "\n")
+
+    # Save band_acquisition_parameters.csv (long format)
+    if band_acq_table:
+        headers = list(band_acq_table[0].keys())
+        with open(os.path.join(meta_dir, "band_acquisition_parameters.csv"), "w", encoding="utf-8") as f:
+            f.write(",".join(headers) + "\n")
+            for row in band_acq_table:
+                vals = [str(row.get(h, "")) for h in headers]
+                f.write(",".join(vals) + "\n")
+
+    # Save acquisition_parameter_anomalies.csv
+    if integration_anomalies:
+        headers = list(integration_anomalies[0].keys())
+        with open(os.path.join(meta_dir, "acquisition_parameter_anomalies.csv"), "w", encoding="utf-8") as f:
+            f.write(",".join(headers) + "\n")
+            for row in integration_anomalies:
+                vals = [str(row.get(h, "")) for h in headers]
+                f.write(",".join(vals) + "\n")
+
+    # Save cross_scene_band_consistency.json
+    if cross_scene_consistency:
+        with open(os.path.join(meta_dir, "cross_scene_band_consistency.json"), "w", encoding="utf-8") as f:
+            json.dump(cross_scene_consistency, f, indent=2, ensure_ascii=False)
+
+    # Save band_metadata_table.csv
+    if scene_metadata_list:
+        band_table_rows = []
+        for meta in scene_metadata_list:
+            sid = meta.get("date_acquired", "unknown")
+            bands = meta.get("bands", {})
+            for band_name in sorted(bands.keys()):
+                band_info = bands[band_name]
+                consistent = cross_scene_consistency.get("band_consistency", {}).get(band_name, {}).get("consistent", True)
+                band_table_rows.append({
+                    "scene_id": sid,
+                    "date_acquired": meta.get("date_acquired"),
+                    "sensor_id": meta.get("sensor_id"),
+                    "band_name": band_name,
+                    "qualified_band_name": f"{meta.get('sensor_id', 'VNIR')}_{band_name}",
+                    "wavelength_min_nm": band_info.get("wavelength_min_nm"),
+                    "wavelength_center_nm": band_info.get("wavelength_center_nm"),
+                    "wavelength_max_nm": band_info.get("wavelength_max_nm"),
+                    "data_type": band_info.get("data_type"),
+                    "grid_cell_size_m": meta.get("resolution_vi"),
+                    "processing_software_version": meta.get("scene", {}).get("PROCESSING_SOFTWARE_VERSION"),
+                    "consistent_across_scenes": consistent,
+                })
+        if band_table_rows:
+            headers = list(band_table_rows[0].keys())
+            with open(os.path.join(meta_dir, "band_metadata_table.csv"), "w", encoding="utf-8") as f:
+                f.write(",".join(headers) + "\n")
+                for row in band_table_rows:
+                    vals = [str(row.get(h, "")) for h in headers]
+                    f.write(",".join(vals) + "\n")
+
+    # Save scene_acquisition_differences.json
+    if acquisition_analysis:
+        with open(os.path.join(meta_dir, "scene_acquisition_differences.json"), "w", encoding="utf-8") as f:
+            json.dump(acquisition_analysis, f, indent=2, ensure_ascii=False)
 
     # Run each experiment
     for exp_name in experiments:
@@ -1168,6 +1587,12 @@ def run_problem_discovery(
                     rho=config.volrn_params.get("rho", 1.0),
                     max_iter=config.volrn_params.get("max_iter", 200),
                     tol=config.volrn_params.get("tol", 1e-4),
+                )
+            elif exp_name == "acquisition_attribution":
+                result = run_acquisition_attribution(
+                    data, exp_dir,
+                    scene_metadata=scene_metadata_list,
+                    band_metadata=band_acq_table,
                 )
             else:
                 logger.warning("未知实验: %s, 跳过", exp_name)

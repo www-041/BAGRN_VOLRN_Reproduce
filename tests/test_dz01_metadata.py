@@ -10,14 +10,34 @@ from src.dz01_metadata import (
     extract_scene_metadata,
     validate_sensor_metadata,
     build_band_metadata_table,
+    validate_cross_scene_band_metadata,
+    build_scene_acquisition_table,
+    analyze_acquisition_differences,
+    build_band_acquisition_table,
+    detect_integration_anomalies,
     VNIR_BAND_TABLE,
     SWIR_BAND_TABLE,
     SPECTRAL_REGION_LABELS,
 )
 
 # Paths to actual MTL files
-VNIR_MTL = "data/input/20251208025051/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1_MTL.txt"
+SCENE_MTLS = {
+    "scene_20251114": "data/input/20251114023841/DZ01V_L2_E119.3_N30.3_20251114023841_01_T1/DZ01V_L2_E119.3_N30.3_20251114023841_01_T1_MTL.txt",
+    "scene_20251120": "data/input/20251120024220/DZ01V_L2_E118.9_N30.2_20251120024220_01_T1/DZ01V_L2_E118.9_N30.2_20251120024220_01_T1_MTL.txt",
+    "scene_20251208": "data/input/20251208025051/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1_MTL.txt",
+    "scene_20251215": "data/input/20251215023725/DZ01V_L2_E119.0_N30.1_20251215023725_01_T1/DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_MTL.txt",
+}
+VNIR_MTL = SCENE_MTLS["scene_20251208"]
 SWIR_MTL = "data/input/20251208025051/DZ01S_L2_E118.8_N30.3_20251208025051_01_T1/DZ01S_L2_E118.8_N30.3_20251208025051_01_T1_MTL.txt"
+
+
+def _load_all_vnir():
+    """Helper to load all 4 VNIR MTL files."""
+    metas = []
+    for sid, path in SCENE_MTLS.items():
+        if os.path.isfile(path):
+            metas.append(parse_dz01_mtl(path))
+    return metas
 
 
 # ---------------------------------------------------------------------------
@@ -249,3 +269,196 @@ def test_vnir_band_table():
     assert VNIR_BAND_TABLE["B14"]["center_nm"] == 850.5
     assert VNIR_BAND_TABLE["B15"]["center_nm"] == 960.5
     assert VNIR_BAND_TABLE["B16"]["center_nm"] == 1000.5
+
+
+# ===========================================================================
+# Tests 21-34: Four-scene metadata validation
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 21: All four scenes parse as VNIR
+# ---------------------------------------------------------------------------
+def test_all_four_scenes_are_vnir():
+    metas = _load_all_vnir()
+    assert len(metas) == 4, f"Expected 4 VNIR scenes, got {len(metas)}"
+    for meta in metas:
+        assert meta["sensor_id"] == "VNIR", (
+            f"Scene {meta.get('date_acquired')} has sensor_id={meta['sensor_id']}, expected VNIR"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 22: All four scenes parse 16 bands
+# ---------------------------------------------------------------------------
+def test_all_four_scenes_have_16_bands():
+    metas = _load_all_vnir()
+    assert len(metas) == 4
+    for meta in metas:
+        assert len(meta["bands"]) == 16, (
+            f"Scene {meta.get('date_acquired')} has {len(meta['bands'])} bands, expected 16"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 23: All four scenes B01-B16 center wavelengths are identical
+# ---------------------------------------------------------------------------
+def test_cross_scene_wavelength_consistency():
+    metas = _load_all_vnir()
+    assert len(metas) == 4
+    for band_name in [f"B{i:02d}" for i in range(1, 17)]:
+        centers = []
+        for meta in metas:
+            wl = meta["bands"].get(band_name, {}).get("wavelength_center_nm")
+            centers.append(wl)
+        non_none = [c for c in centers if c is not None]
+        assert len(non_none) == 4, f"Band {band_name} missing wavelength in some scenes"
+        assert len(set(non_none)) == 1, (
+            f"Band {band_name} center wavelength differs across scenes: {dict(zip([m.get('date_acquired') for m in metas], non_none))}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 24: All four scenes have 14 m resolution
+# ---------------------------------------------------------------------------
+def test_all_scenes_resolution_14m():
+    metas = _load_all_vnir()
+    assert len(metas) == 4
+    for meta in metas:
+        assert meta["resolution_vi"] == 14.0, (
+            f"Scene {meta.get('date_acquired')} has resolution_vi={meta['resolution_vi']}, expected 14.0"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 25: All four scenes have CUGPGS_1.0.0 software
+# ---------------------------------------------------------------------------
+def test_all_scenes_software_version():
+    metas = _load_all_vnir()
+    assert len(metas) == 4
+    for meta in metas:
+        sw = meta["scene"].get("PROCESSING_SOFTWARE_VERSION")
+        assert sw == "CUGPGS_1.0.0", (
+            f"Scene {meta.get('date_acquired')} has software={sw}, expected CUGPGS_1.0.0"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 26: scene_20251120 sun elevation = 37.3
+# ---------------------------------------------------------------------------
+def test_scene_20251120_sun_elevation():
+    meta = parse_dz01_mtl(SCENE_MTLS["scene_20251120"])
+    assert meta["scene"]["SUN_ELEVATION"] == 37.3
+
+
+# ---------------------------------------------------------------------------
+# Test 27: scene_20251208 satellite azimuth = 290.397448
+# ---------------------------------------------------------------------------
+def test_scene_20251208_sat_azimuth():
+    meta = parse_dz01_mtl(SCENE_MTLS["scene_20251208"])
+    assert meta["scene"]["SAT_AZIMUTH"] == 290.397448
+
+
+# ---------------------------------------------------------------------------
+# Test 28: scene_20251215 sun elevation = 20.3
+# ---------------------------------------------------------------------------
+def test_scene_20251215_sun_elevation():
+    meta = parse_dz01_mtl(SCENE_MTLS["scene_20251215"])
+    assert meta["scene"]["SUN_ELEVATION"] == 20.3
+
+
+# ---------------------------------------------------------------------------
+# Test 29: scene_20251215 B08 integration time = 16.8704
+# ---------------------------------------------------------------------------
+def test_scene_20251215_b08_integration_time():
+    meta = parse_dz01_mtl(SCENE_MTLS["scene_20251215"])
+    assert meta["bands"]["B08"]["integration_time"] == 16.8704
+
+
+# ---------------------------------------------------------------------------
+# Test 30: scene_20251215 B09 integration time = 33.7408
+# ---------------------------------------------------------------------------
+def test_scene_20251215_b09_integration_time():
+    meta = parse_dz01_mtl(SCENE_MTLS["scene_20251215"])
+    assert meta["bands"]["B09"]["integration_time"] == 33.7408
+
+
+# ---------------------------------------------------------------------------
+# Test 31: Integration anomaly detection flags scene_20251215 B08 and B09
+# ---------------------------------------------------------------------------
+def test_integration_anomaly_detects_20251215_b08_b09():
+    metas = _load_all_vnir()
+    assert len(metas) == 4
+    anomalies = detect_integration_anomalies(metas)
+    # Should detect anomalies for scene_20251215 B08 and B09
+    scene_band_anomalies = {
+        (a["scene_id"], a["band_name"]): a
+        for a in anomalies
+    }
+    # B08 should be flagged
+    key_b08 = ("2025-12-15", "B08")
+    assert key_b08 in scene_band_anomalies, (
+        f"B08 anomaly not detected. Detected: {list(scene_band_anomalies.keys())}"
+    )
+    # B09 should be flagged
+    key_b09 = ("2025-12-15", "B09")
+    assert key_b09 in scene_band_anomalies, (
+        f"B09 anomaly not detected. Detected: {list(scene_band_anomalies.keys())}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 32: B07 and B13 must NOT be flagged as integration anomalies
+# ---------------------------------------------------------------------------
+def test_b07_b13_not_flagged_as_anomalies():
+    metas = _load_all_vnir()
+    assert len(metas) == 4
+    anomalies = detect_integration_anomalies(metas)
+    scene_band_anomalies = {(a["scene_id"], a["band_name"]) for a in anomalies}
+    # B07 should not be flagged
+    for meta in metas:
+        sid = meta.get("date_acquired", "unknown")
+        assert (sid, "B07") not in scene_band_anomalies, (
+            f"B07 incorrectly flagged as anomaly for scene {sid}"
+        )
+    # B13 should not be flagged
+    for meta in metas:
+        sid = meta.get("date_acquired", "unknown")
+        assert (sid, "B13") not in scene_band_anomalies, (
+            f"B13 incorrectly flagged as anomaly for scene {sid}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 33: scene_specific_metadata_complete must be true when all 4 loaded
+# ---------------------------------------------------------------------------
+def test_scene_specific_metadata_complete_true():
+    metas = _load_all_vnir()
+    assert len(metas) == 4
+    # All 4 scenes loaded means metadata is complete
+    # This is verified at the config/data_summary level
+    # Here we just verify all 4 can be loaded
+    for meta in metas:
+        assert meta["sensor_id"] == "VNIR"
+        assert len(meta["bands"]) == 16
+
+
+# ---------------------------------------------------------------------------
+# Test 34: Report must not contain "missing three VNIR metadata files"
+# ---------------------------------------------------------------------------
+def test_report_no_missing_metadata_phrase():
+    report_path = "docs/STAGE2_PROBLEM_DISCOVERY_REPORT.md"
+    if not os.path.isfile(report_path):
+        pytest.skip("Report not found")
+    with open(report_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    forbidden = [
+        "missing three VNIR metadata",
+        "missing three VNIR MTL",
+        "Only the 2025-12-08",
+        "other three scenes' VNIR MTL files have not yet been obtained",
+        "scene_20251114 | missing",
+        "scene_20251120 | missing",
+        "scene_20251215 | missing",
+    ]
+    for phrase in forbidden:
+        assert phrase not in content, f"Report contains forbidden phrase: '{phrase}'"

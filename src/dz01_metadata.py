@@ -402,3 +402,348 @@ def build_band_metadata_table(
         })
 
     return table
+
+
+# ===========================================================================
+# Cross-scene band consistency validation
+# ===========================================================================
+
+def validate_cross_scene_band_metadata(
+    scene_metadata_list: List[Dict[str, Any]],
+    selected_bands: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Compare band definitions across multiple scenes for consistency.
+
+    Checks MEASURED_MIN/CENTER/MAX_WAVELENGTH, DATA_TYPE, GRID_CELL_SIZE_VI,
+    and PROCESSING_SOFTWARE_VERSION for each band across all scenes.
+
+    Parameters
+    ----------
+    scene_metadata_list : list of dict
+        Each dict is the output of parse_dz01_mtl() for one scene.
+    selected_bands : list of str or None
+        Bands to check. None = all bands from first scene.
+
+    Returns
+    -------
+    dict with keys:
+        'consistent': bool
+        'band_consistency': dict of band_name -> {field: {scene_id: value, ...}, consistent: bool}
+        'warnings': list of str
+    """
+    warnings: List[str] = []
+
+    if not scene_metadata_list:
+        return {"consistent": True, "band_consistency": {}, "warnings": ["No scenes provided"]}
+
+    # Determine bands to check
+    if selected_bands is None:
+        first_bands = scene_metadata_list[0].get("bands", {})
+        selected_bands = sorted(first_bands.keys())
+
+    # Fields to compare per band
+    band_fields = [
+        "wavelength_min_nm",
+        "wavelength_center_nm",
+        "wavelength_max_nm",
+        "data_type",
+    ]
+    # Scene-level fields
+    scene_fields = ["resolution_vi", "processing_software"]
+
+    band_consistency: Dict[str, Any] = {}
+    all_consistent = True
+
+    for band_name in selected_bands:
+        field_values: Dict[str, Dict[str, Any]] = {}
+        for field in band_fields:
+            field_values[field] = {}
+
+        for meta in scene_metadata_list:
+            scene_id = meta.get("date_acquired", meta.get("product_id", "unknown"))
+            bands = meta.get("bands", {})
+            band_info = bands.get(band_name, {})
+            for field in band_fields:
+                field_values[field][scene_id] = band_info.get(field)
+
+        # Check consistency per field
+        band_ok = True
+        for field in band_fields:
+            values = list(field_values[field].values())
+            non_none = [v for v in values if v is not None]
+            if non_none and len(set(str(v) for v in non_none)) > 1:
+                band_ok = False
+                all_consistent = False
+                warnings.append(
+                    f"Band {band_name} {field} differs across scenes: "
+                    f"{field_values[field]}"
+                )
+
+        band_consistency[band_name] = {
+            "values": field_values,
+            "consistent": band_ok,
+        }
+
+    # Check scene-level fields
+    for field in scene_fields:
+        values = {}
+        for meta in scene_metadata_list:
+            scene_id = meta.get("date_acquired", meta.get("product_id", "unknown"))
+            if field == "resolution_vi":
+                values[scene_id] = meta.get("resolution_vi")
+            elif field == "processing_software":
+                values[scene_id] = meta.get("scene", {}).get("PROCESSING_SOFTWARE_VERSION")
+
+        non_none = [v for v in values.values() if v is not None]
+        if non_none and len(set(str(v) for v in non_none)) > 1:
+            all_consistent = False
+            warnings.append(f"Scene field {field} differs across scenes: {values}")
+
+    return {
+        "consistent": all_consistent,
+        "band_consistency": band_consistency,
+        "warnings": warnings,
+    }
+
+
+# ===========================================================================
+# Scene acquisition condition table
+# ===========================================================================
+
+def build_scene_acquisition_table(
+    scene_metadata_list: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Build a table of acquisition conditions for each scene.
+
+    Parameters
+    ----------
+    scene_metadata_list : list of dict
+        Each dict is the output of parse_dz01_mtl().
+
+    Returns
+    -------
+    list of dict
+        One dict per scene with all acquisition parameters.
+    """
+    table = []
+    for meta in scene_metadata_list:
+        scene = meta.get("scene", {})
+        row = {
+            "scene_id": meta.get("date_acquired", "unknown"),
+            "date_acquired": meta.get("date_acquired"),
+            "scene_center_time": meta.get("scene_center_time"),
+            "start_imaging_time": scene.get("START_IMAGING_TIME"),
+            "end_imaging_time": scene.get("END_IMAGING_TIME"),
+            "cloud_cover": scene.get("CLOUD_COVER"),
+            "sun_azimuth": scene.get("SUN_AZIMUTH"),
+            "sun_zenith": scene.get("SUN_ZENITH"),
+            "sun_elevation": scene.get("SUN_ELEVATION"),
+            "sat_azimuth": scene.get("SAT_AZIMUTH"),
+            "sat_zenith": scene.get("SAT_ZENITH"),
+            "roll_angle": scene.get("ROLL_ANGLE"),
+            "pitch_angle": scene.get("PITCH_ANGLE"),
+            "yaw_angle": scene.get("YAW_ANGLE"),
+            "processing_software_version": scene.get("PROCESSING_SOFTWARE_VERSION"),
+            "resolution_vi": meta.get("resolution_vi"),
+            "sensor_id": meta.get("sensor_id"),
+            "n_bands": len(meta.get("bands", {})),
+        }
+        table.append(row)
+    return table
+
+
+def analyze_acquisition_differences(
+    scene_metadata_list: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Analyze differences in acquisition conditions across scenes.
+
+    Parameters
+    ----------
+    scene_metadata_list : list of dict
+        Each dict is the output of parse_dz01_mtl().
+
+    Returns
+    -------
+    dict with summary statistics and differences.
+    """
+    table = build_scene_acquisition_table(scene_metadata_list)
+
+    if not table:
+        return {"error": "No scenes provided"}
+
+    # Numeric fields to analyze
+    numeric_fields = [
+        "cloud_cover", "sun_azimuth", "sun_zenith", "sun_elevation",
+        "sat_azimuth", "sat_zenith", "roll_angle", "pitch_angle", "yaw_angle",
+    ]
+
+    analysis: Dict[str, Any] = {"scenes": table, "field_stats": {}}
+
+    for field in numeric_fields:
+        values = []
+        scene_ids = []
+        for row in table:
+            val = row.get(field)
+            if val is not None:
+                try:
+                    values.append(float(val))
+                    scene_ids.append(row["scene_id"])
+                except (ValueError, TypeError):
+                    pass
+
+        if values:
+            import statistics
+            median_val = statistics.median(values)
+            analysis["field_stats"][field] = {
+                "min": min(values),
+                "max": max(values),
+                "median": median_val,
+                "range": max(values) - min(values),
+                "values": dict(zip(scene_ids, values)),
+            }
+
+    return analysis
+
+
+# ===========================================================================
+# Band acquisition parameters (long-format table)
+# ===========================================================================
+
+def build_band_acquisition_table(
+    scene_metadata_list: List[Dict[str, Any]],
+    selected_bands: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Build a long-format table of per-band integration parameters.
+
+    Parameters
+    ----------
+    scene_metadata_list : list of dict
+        Each dict is the output of parse_dz01_mtl().
+    selected_bands : list of str or None
+        Bands to include. None = all bands from first scene.
+
+    Returns
+    -------
+    list of dict
+        One dict per (scene, band) combination.
+    """
+    if not scene_metadata_list:
+        return []
+
+    if selected_bands is None:
+        selected_bands = sorted(scene_metadata_list[0].get("bands", {}).keys())
+
+    table = []
+    for meta in scene_metadata_list:
+        scene_id = meta.get("date_acquired", "unknown")
+        bands = meta.get("bands", {})
+        for band_name in selected_bands:
+            band_info = bands.get(band_name, {})
+            center_wl = band_info.get("wavelength_center_nm")
+            table.append({
+                "scene_id": scene_id,
+                "date_acquired": meta.get("date_acquired"),
+                "band_name": band_name,
+                "wavelength_center_nm": center_wl,
+                "integration_time": band_info.get("integration_time"),
+                "integration_level": band_info.get("integration_level"),
+            })
+
+    return table
+
+
+# ===========================================================================
+# Integration parameter anomaly detection
+# ===========================================================================
+
+def detect_integration_anomalies(
+    scene_metadata_list: List[Dict[str, Any]],
+    selected_bands: Optional[List[str]] = None,
+    time_ratio_threshold: float = 1.5,
+    time_ratio_low: float = 0.67,
+) -> List[Dict[str, Any]]:
+    """
+    Detect integration time/level anomalies across scenes.
+
+    For each band, computes the median integration_time and integration_level
+    across all scenes, then flags scenes where the ratio exceeds thresholds.
+
+    Parameters
+    ----------
+    scene_metadata_list : list of dict
+        Each dict is the output of parse_dz01_mtl().
+    selected_bands : list of str or None
+        Bands to check. None = all bands from first scene.
+    time_ratio_threshold : float
+        Upper threshold for integration_time_ratio (default 1.5).
+    time_ratio_low : float
+        Lower threshold for integration_time_ratio (default 0.67).
+
+    Returns
+    -------
+    list of dict
+        One dict per anomaly with scene_id, band_name, parameter, value,
+        cross_scene_median, ratio, status.
+    """
+    if not scene_metadata_list:
+        return []
+
+    if selected_bands is None:
+        selected_bands = sorted(scene_metadata_list[0].get("bands", {}).keys())
+
+    import statistics
+
+    anomalies = []
+
+    for band_name in selected_bands:
+        # Collect integration_time and integration_level across scenes
+        time_values = {}
+        level_values = {}
+        for meta in scene_metadata_list:
+            scene_id = meta.get("date_acquired", "unknown")
+            band_info = meta.get("bands", {}).get(band_name, {})
+            it = band_info.get("integration_time")
+            il = band_info.get("integration_level")
+            if it is not None:
+                time_values[scene_id] = float(it)
+            if il is not None:
+                level_values[scene_id] = float(il)
+
+        # Compute medians
+        time_median = statistics.median(time_values.values()) if time_values else None
+        level_median = statistics.median(level_values.values()) if level_values else None
+
+        # Check for anomalies
+        for scene_id, it_val in time_values.items():
+            if time_median is not None and time_median > 0:
+                ratio = it_val / time_median
+                if ratio > time_ratio_threshold or ratio < time_ratio_low:
+                    anomalies.append({
+                        "scene_id": scene_id,
+                        "band_name": band_name,
+                        "parameter": "integration_time",
+                        "value": it_val,
+                        "cross_scene_median": time_median,
+                        "ratio": round(ratio, 4),
+                        "status": "anomaly",
+                    })
+
+        for scene_id, il_val in level_values.items():
+            if level_median is not None and level_median > 0:
+                ratio = il_val / level_median
+                if ratio > time_ratio_threshold or ratio < time_ratio_low:
+                    anomalies.append({
+                        "scene_id": scene_id,
+                        "band_name": band_name,
+                        "parameter": "integration_level",
+                        "value": il_val,
+                        "cross_scene_median": level_median,
+                        "ratio": round(ratio, 4),
+                        "status": "anomaly",
+                    })
+
+    return anomalies

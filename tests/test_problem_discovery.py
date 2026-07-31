@@ -280,6 +280,8 @@ def test_run_problem_discovery_master():
             volrn_params = {"block_size": 100, "lambda": 0.5, "rho": 1.0, "max_iter": 50, "tol": 1e-4}
             output_root = tmpdir
             experiment_name = "test_stage2"
+            scenes = []
+            sensor = {}
 
         config = MockConfig()
         output_dir = os.path.join(tmpdir, "test_stage2")

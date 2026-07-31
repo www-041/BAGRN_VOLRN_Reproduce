@@ -27,10 +27,10 @@ sensor:
     role: band_definition_reference
     applies_to_scene_geometry: false
   scene_metadata_paths:
-    scene_20251114: null
-    scene_20251120: null
+    scene_20251114: data/input/20251114023841/DZ01V_L2_E119.3_N30.3_20251114023841_01_T1/DZ01V_L2_E119.3_N30.3_20251114023841_01_T1_MTL.txt
+    scene_20251120: data/input/20251120024220/DZ01V_L2_E118.9_N30.2_20251120024220_01_T1/DZ01V_L2_E118.9_N30.2_20251120024220_01_T1_MTL.txt
     scene_20251208: data/input/20251208025051/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1_MTL.txt
-    scene_20251215: null
+    scene_20251215: data/input/20251215023725/DZ01V_L2_E119.0_N30.1_20251215023725_01_T1/DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_MTL.txt
 
 registration_band: B14
 control_scene: auto
@@ -168,6 +168,7 @@ problem_discovery:
     - spatial_attribution
     - multiwindow
     - nan_trace
+    - acquisition_attribution
   spatial_strata:
     boundary_width_pixels: 100
     texture_quantiles: [0.25, 0.75]

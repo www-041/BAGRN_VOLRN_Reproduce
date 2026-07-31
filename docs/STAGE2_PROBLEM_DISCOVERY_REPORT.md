@@ -1,7 +1,7 @@
 # Stage 2: Problem Discovery Report (Corrected)
 
 **Date:** 2026-08-01
-**Last corrected:** 2026-08-01 (sensor/band metadata correction)
+**Last corrected:** 2026-08-01 (full metadata correction — all four VNIR scenes)
 **Dataset:** DZ01 VNIR four-scene subset (scene_20251114, scene_20251120, scene_20251208, scene_20251215)
 **Sensor:** DZ01 VNIR (B01–B14, approximately 410–860 nm)
 **Crop size:** 1024 × 1024 px (centered on overlap edge centers)
@@ -64,12 +64,21 @@ Per-band Ave decomposition for each method. Bands are labeled by VNIR sensor ID 
 
 ### Key Finding
 
-VNIR B07–B09 and B13 show the largest residual Ave values in the current four-scene experiment.
+VNIR B07–B09 and B13 show relatively high residual radiometric differences in the current experiment.
 B07 (633.5 nm, red) has the highest residual at 65.6 (BAGRN) and 37.0 (BAGRN+VOLRN).
 VOLRN reduces B07 Ave from 65.6 → 37.0 (−44%) but B08 (678.5 nm) only from 43.2 → 38.2 (−12%).
-The cause of the larger residuals in these bands has not yet been determined. Possible factors
-include scene content, acquisition geometry, illumination differences, temporal surface changes,
-overlap quality, and sensor response, but the current evidence cannot distinguish among them.
+
+For B08 (678.5 nm) and B09 (701.5 nm):
+The 2025-12-15 scene used different integration settings for B08 and B09 (see Section 4),
+which is a candidate explanatory factor requiring scene-band analysis.
+
+For B07 (633.5 nm) and B13 (814.0 nm):
+No comparable integration-setting anomaly was found across the four
+metadata files, so their high residuals cannot currently be explained
+by integration time alone.
+
+These four bands must not be explained as a single sensor anomaly —
+they have different spectral characteristics and different metadata evidence.
 
 ---
 
@@ -101,11 +110,22 @@ Per-scene Ave (averaged over all pairs involving that scene).
 
 ### Key Finding
 
-Scene 20251120 (November 20) is consistently the weakest link, contributing disproportionately
-to overall Ave. This is consistent across BAGRN and BAGRN+VOLRN, suggesting the radiometric
-differences for this scene are too large for the current normalization to fully correct. Without
-the four scenes' individual VNIR metadata (sun angle, cloud cover, observation geometry), we
-cannot determine whether this is caused by acquisition conditions, surface changes, or other factors.
+scene_20251120 is consistently the worst scene in the current metrics.
+However, its metadata do not show an obvious extreme in cloud cover,
+solar elevation, satellite zenith angle, or integration settings.
+
+Therefore, the current evidence does not support attributing its poor
+performance to a single acquisition parameter.
+
+Possible explanations to investigate include:
+
+- overlap-region composition
+- local surface change
+- valid-pixel distribution
+- local illumination and terrain
+- residual registration error
+- heterogeneous land-cover composition
+- inadequacy of global moment constraints
 
 ---
 
@@ -185,6 +205,80 @@ The experiment returned empty results.
 
 ---
 
+## 7. Metadata Coverage and Band Consistency
+
+### Metadata Coverage
+
+All four scenes now have VNIR MTL metadata available:
+
+| Scene | Status | Sensor | Bands |
+|-------|--------|--------|-------|
+| scene_20251114 | complete | VNIR | 16 |
+| scene_20251120 | complete | VNIR | 16 |
+| scene_20251208 | complete | VNIR | 16 |
+| scene_20251215 | complete | VNIR | 16 |
+
+### Cross-Scene Band Definition Consistency
+
+B01–B16 wavelength definitions are identical across all four scenes:
+- B01: 421.0 nm (410–432 nm)
+- B14: 850.5 nm (841–860 nm)
+- B15: 960.5 nm (940–981 nm) — excluded from current experiment
+- B16: 1000.5 nm (982–1019 nm) — excluded from current experiment
+
+All scenes: GRID_CELL_SIZE_VI = 14.0 m, PROCESSING_SOFTWARE_VERSION = CUGPGS_1.0.0.
+
+### Acquisition Condition Comparison
+
+| Scene | Sun Elev. | Sun Zen. | Sat. Azim. | Sat. Zen. | Cloud | Roll |
+|-------|-----------|----------|------------|-----------|-------|------|
+| 20251114 | 38.6° | 51.4° | 87.4° | 16.3° | 3.6% | −15.1° |
+| 20251120 | 37.3° | 52.7° | 83.4° | 9.8° | 0.01% | −9.3° |
+| 20251208 | 34.4° | 55.6° | 290.4° | 14.8° | 6.7% | 13.2° |
+| 20251215 | **20.3°** | **69.7°** | 89.2° | 19.9° | 0.5% | −18.7° |
+
+### Integration Parameter Anomalies
+
+The 2025-12-15 scene uses different integration settings for B08 and B09 compared to all other scenes:
+
+| Scene | Band | Integration Time | Integration Level | Ratio (Time) | Ratio (Level) |
+|-------|------|-----------------|-------------------|-------------|---------------|
+| 20251114 | B08 | 8.2784 | 4 | 1.01 | 1.00 |
+| 20251120 | B08 | 8.064 | 4 | 0.99 | 1.00 |
+| 20251208 | B08 | 8.1656 | 4 | 1.00 | 1.00 |
+| **20251215** | **B08** | **16.8704** | **8** | **2.07** | **2.00** |
+| 20251114 | B09 | 8.2784 | 4 | 0.50 | 0.50 |
+| 20251120 | B09 | 8.064 | 4 | 0.49 | 0.50 |
+| 20251208 | B09 | 8.1656 | 4 | 0.50 | 0.50 |
+| **20251215** | **B09** | **33.7408** | **16** | **2.04** | **2.00** |
+
+Other bands in scene_20251215 use integration times consistent with other scenes.
+
+No comparable integration-setting anomaly was found for B07 (633.5 nm) or B13 (814.0 nm).
+
+---
+
+## 8. Acquisition Attribution (Diagnostic)
+
+### Scene-Band Attribution
+
+The scene-band attribution analysis shows:
+- scene_20251215 B08 and B09 have integration time ratios of ~2× the cross-scene median
+- This is a candidate explanatory factor for B08/B09 residuals in scene_20251215
+- However, with only 4 scenes, this is exploratory only and cannot establish causality
+
+### Important Caveats
+
+1. Only four scenes are available, so acquisition-condition attribution
+   is exploratory and cannot establish causality.
+2. Scene content and overlap composition differ across scenes, so scene
+   metadata and radiometric metrics are confounded.
+3. No terrain, atmospheric, or land-cover labels are currently included.
+4. B15 and B16 were not included in the current experiment.
+5. SWIR data were not included in Stage 1 or Stage 2.
+
+---
+
 ## Experiment Completion Status
 
 | Experiment | Status | Note |
@@ -195,6 +289,7 @@ The experiment returned empty results.
 | multiwindow | completed | |
 | nan_trace | completed_for_primary_question | no new NaN introduced by VOLRN |
 | gain_offset_ablation | incomplete | BAGRN coefficients not in persisted outputs |
+| acquisition_attribution | diagnostic_added | descriptive analysis only because n_scenes=4 |
 
 ---
 
@@ -208,6 +303,7 @@ The experiment returned empty results.
 | **Boundary effects** | Low | Boundary/interior ratio ≈ 1.0 for BAGRN and BAGRN+VOLRN |
 | **NaN propagation** | None | 0 new nan pixels from VOLRN; all pre-existing |
 | **ADMM convergence** | None | All 14 bands converged; no extreme a/b values |
+| **Integration settings (B08/B09)** | Candidate | scene_20251215 B08/B09 have ~2× integration time; requires further validation |
 
 ### Conclusion
 
@@ -216,10 +312,17 @@ The residual radiometric differences in the current four-scene VNIR experiment a
 2. **Scene 20251120** having systematically different radiometric characteristics
 3. **High spatial heterogeneity** — some overlap regions have very poor statistics while others are excellent
 
-The cause of the larger residuals in VNIR B07–B09 and B13 has not yet been determined.
-Possible factors include scene content, acquisition geometry, illumination differences,
-temporal surface changes, overlap quality, and sensor response, but the current evidence
-cannot distinguish among them.
+For B08 and B09: The 2025-12-15 scene used different integration settings, which is a
+candidate explanatory factor. For B07 and B13: No comparable integration-setting anomaly
+was found, so their high residuals cannot currently be explained by integration time alone.
+
+scene_20251120 is consistently the worst scene in the current metrics. However, its metadata
+do not show an obvious extreme in cloud cover, solar elevation, satellite zenith angle, or
+integration settings. Therefore, the current evidence does not support attributing its poor
+performance to a single acquisition parameter. Possible explanations include overlap-region
+composition, local surface change, valid-pixel distribution, local illumination and terrain,
+residual registration error, heterogeneous land-cover composition, and inadequacy of global
+moment constraints.
 
 The solution direction for Stage 3 should focus on:
 - Spatially quality-aware overlap weighting (down-weight regions with poor statistics)
@@ -232,22 +335,14 @@ These are statistical observations from the current data, not sensor defects.
 
 ## Metadata Limitations
 
-- Band center wavelengths are from the 2025-12-08 VNIR MTL file (reference only)
-- The other three scenes' VNIR MTL files have not yet been obtained
-- Scene-specific sun angle, cloud cover, observation geometry, and attitude parameters
-  are **not available** for scenes 20251114, 20251120, and 20251215
-- We cannot determine whether scene_20251120's poor performance is caused by
-  acquisition conditions (sun angle, cloud cover, etc.) or surface properties
-- The four scenes' individual VNIR MTL files are needed for further analysis
-
-### Missing Metadata
-
-| Scene | VNIR MTL Status |
-|-------|----------------|
-| scene_20251114 | missing |
-| scene_20251120 | missing |
-| scene_20251208 | available (reference only) |
-| scene_20251215 | missing |
+1. Scene-specific VNIR metadata are available for all four Stage 2 scenes.
+2. Only four scenes are available, so acquisition-condition attribution
+   is exploratory and cannot establish causality.
+3. Scene content and overlap composition differ across scenes, so scene
+   metadata and radiometric metrics are confounded.
+4. No terrain, atmospheric, or land-cover labels are currently included.
+5. B15 and B16 were not included in the current experiment.
+6. SWIR data were not included in Stage 1 or Stage 2.
 
 ---
 
@@ -259,13 +354,15 @@ Different window Ave max/min ratio ~17–18×.
 
 ### 2. Scene- and acquisition-condition-aware normalization
 **Evidence:** partially supported
-scene_20251120 consistently worst. Limitation: missing four scenes' individual VNIR metadata.
+scene_20251120 consistently worst. Metadata available for all four scenes, but with only
+four scenes, acquisition-condition attribution is exploratory only.
 
 ### 3. VNIR red-to-near-infrared spectral preservation
 **Evidence:** partially supported
 B07 (633.5 nm), B08 (678.5 nm), B09 (701.5 nm), and B13 (814.0 nm) have larger residuals,
-and BAGRN introduces larger overall SAM. Limitation: gain/offset ablation incomplete,
-no ground truth land cover classification, incomplete scene metadata.
+and BAGRN introduces larger overall SAM. For B08/B09, the 2025-12-15 integration setting
+difference is a candidate explanatory factor. For B07/B13, no integration anomaly found.
+Limitation: gain/offset ablation incomplete, no ground truth land cover classification.
 
 ---
 
@@ -289,6 +386,18 @@ data/output/stage2_problem_discovery/dz01_stage2_problem_discovery/
 │   └── nan_trace.json
 ├── gain_offset_ablation/
 │   └── gain_offset_ablation.json
+├── acquisition_attribution/
+│   ├── acquisition_attribution.json
+│   └── metrics/
+│       ├── scene_band_attribution.csv
+│       └── acquisition_attribution.csv
+├── metadata/
+│   ├── cross_scene_band_consistency.json
+│   ├── band_metadata_table.csv
+│   ├── scene_acquisition_conditions.csv
+│   ├── scene_acquisition_differences.json
+│   ├── band_acquisition_parameters.csv
+│   └── acquisition_parameter_anomalies.csv
 ├── data_summary.json
 ├── environment.json
 └── summary.json
