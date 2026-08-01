@@ -195,13 +195,56 @@ no blocks have extreme gain/offset values.
 
 ## 6. Gain/Offset Ablation
 
-| Status | incomplete |
+| Status | **completed** |
 |--------|-----------|
-| Reason | BAGRN global gain/offset coefficients were not available in persisted Stage 1 outputs |
+| Coefficient type | BAGRN global (per-scene per-band) |
+| Full reconstruction verified | Yes (RMSE=0.000000 for all scenes) |
 
-The gain/offset ablation requires per-block VOLRN coefficients (a, b) per band, which are
-available when running VOLRN from code but not when loading GeoTIFF outputs from Stage 1.
-The experiment returned empty results.
+### BAGRN Formula
+
+```
+mu_target  = mu_orig + theta_mu[band, scene]
+sigma_target = sigma_orig + theta_sigma[band, scene]
+omega  = sigma_target / sigma_orig       # gain
+upsilon = mu_target - omega * mu_orig    # offset
+output = omega * input + upsilon
+```
+
+### Radiometric Decomposition
+
+| Method | ADM | ADSD | Ave |
+|--------|------|------|------|
+| original | 326.85 | 60.86 | 193.85 |
+| gain_only | 314.12 | **14.59** | 164.35 |
+| offset_only | **259.56** | 60.86 | 160.21 |
+| full_reconstructed | 28.47 | 14.59 | 21.53 |
+
+- **Gain** primarily reduces **ADSD** (−76%): adjusts standard deviation/contrast
+- **Offset** primarily reduces **ADM** (−20%): adjusts mean/brightness
+- **Full BAGRN** synergistically reduces **both** (Ave −89%)
+
+### SAM Analysis
+
+| Method | SAM Mean | Fraction of Full |
+|--------|----------|-----------------|
+| gain_only | 1.957 | 1.986 |
+| offset_only | 1.487 | 1.509 |
+| full | 0.985 | 1.000 |
+
+Both gain-only and offset-only produce higher SAM than full BAGRN. Gain and offset **partially cancel** in spectral angle space.
+
+### Dominant Effect: joint_effect
+
+Gain and offset each address different components (std vs mean) and are both necessary. Neither alone reproduces the full BAGRN effect.
+
+### Key Coefficient Findings
+
+- scene_20251215 B07: gain=0.302 (70% reduction) — no integration anomaly
+- scene_20251215 B08: gain=0.509 (49% reduction) — coincides with 2× integration time
+- scene_20251208 B07: gain=0.614 (39% reduction)
+- scene_20251120 coefficients are moderate, not explaining its worst Ave
+
+See detailed report: `docs/STAGE2_GAIN_OFFSET_ABLATION_REPORT.md`
 
 ---
 
@@ -288,7 +331,7 @@ The scene-band attribution analysis shows:
 | spatial_attribution | partially_completed | only boundary/interior attribution available |
 | multiwindow | completed | |
 | nan_trace | completed_for_primary_question | no new NaN introduced by VOLRN |
-| gain_offset_ablation | incomplete | BAGRN coefficients not in persisted outputs |
+| gain_offset_ablation | **completed** | coefficient_type=BAGRN_global, full_reconstruction_verified=true |
 | acquisition_attribution | diagnostic_added | descriptive analysis only because n_scenes=4 |
 
 ---
@@ -362,7 +405,7 @@ four scenes, acquisition-condition attribution is exploratory only.
 B07 (633.5 nm), B08 (678.5 nm), B09 (701.5 nm), and B13 (814.0 nm) have larger residuals,
 and BAGRN introduces larger overall SAM. For B08/B09, the 2025-12-15 integration setting
 difference is a candidate explanatory factor. For B07/B13, no integration anomaly found.
-Limitation: gain/offset ablation incomplete, no ground truth land cover classification.
+Limitation: no ground truth land cover classification.
 
 ---
 
@@ -385,7 +428,16 @@ data/output/stage2_problem_discovery/dz01_stage2_problem_discovery/
 ├── nan_trace/
 │   └── nan_trace.json
 ├── gain_offset_ablation/
-│   └── gain_offset_ablation.json
+│   ├── coefficients/
+│   │   ├── bagrn_global_coefficients.csv
+│   │   └── bagrn_global_coefficients.json
+│   ├── validation/
+│   │   ├── full_reconstruction_validation.csv
+│   │   └── full_reconstruction_summary.json
+│   ├── metrics/
+│   │   ├── radiometric_global.csv
+│   │   └── spectral_global.csv
+│   └── summary.json
 ├── acquisition_attribution/
 │   ├── acquisition_attribution.json
 │   └── metrics/

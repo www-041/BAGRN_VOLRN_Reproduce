@@ -166,12 +166,12 @@ def test_gain_offset_ablation_runs():
     data = _make_synthetic_data()
     with tempfile.TemporaryDirectory() as tmpdir:
         result = run_gain_offset_ablation(data, tmpdir)
-        assert "experiments" in result
-        # bagrn_volrn should be ablatable
-        if "bagrn_volrn" in result["experiments"]:
-            exp = result["experiments"]["bagrn_volrn"]
-            assert "full_ave" in exp
-            assert exp["n_pairs"] >= 1
+        assert "dominant_effect" in result
+        assert "radiometric_global" in result
+        assert "spectral_global" in result
+        assert result["dominant_effect"] in (
+            "gain_dominant", "offset_dominant", "joint_effect", "interaction_or_nonlinear"
+        )
 
 
 # ---------------------------------------------------------------------------

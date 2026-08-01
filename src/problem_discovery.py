@@ -519,91 +519,52 @@ def _compute_pair_metrics(
 def run_gain_offset_ablation(
     data: Dict[str, Any],
     output_dir: str,
+    metadata_list: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
-    Ablation: isolate gain vs offset contribution.
+    BAGRN gain/offset ablation experiment.
 
-    For each method, reconstruct normalized arrays using:
-      (a) full:     f' = a*f + b  (VOLRN as-is)
-      (b) gain_only: f' = a*f + 0 (gain only, no offset)
-      (c) offset_only: f' = 1*f + b (offset only, no gain)
+    Determines whether BAGRN's spectral changes come primarily from
+    multiplicative gain (omega) or additive offset (upsilon).
 
-    Then compute Ave for each variant to quantify how much each term
-    contributes to the Ave reduction.
+    BAGRN formula (Eq. 10-11):
+        mu_target  = mu_orig + theta_mu[band, scene]
+        sigma_target = sigma_orig + theta_sigma[band, scene]
+        omega  = sigma_target / sigma_orig       # gain
+        upsilon = mu_target - omega * mu_orig    # offset
+        output  = omega * input + upsilon        # moment matching
+
+    Ablation variants:
+        1. original            - registered, no normalization
+        2. bagrn_gain_only     - omega * input (upsilon = 0)
+        3. bagrn_offset_only   - input + upsilon (omega = 1)
+        4. bagrn_full_reconstructed - omega * input + upsilon
+        5. bagrn_volrn_reference    - loaded from Stage 1
     """
-    logger.info("=== Experiment 3: Gain/Offset Ablation ===")
+    logger.info("=== Experiment 3: BAGRN Gain/Offset Ablation ===")
     os.makedirs(output_dir, exist_ok=True)
 
-    overlaps = data["overlaps"]
-    nodata_values = data["nodata_values"]
+    from src.gain_offset_ablation import run_gain_offset_ablation as _run_ablation
 
-    # We can only ablate for methods that produce VOLRN block coefficients
-    # For 'original' and 'bagrn' there's no VOLRN coefficient to ablate
-    ablatable_methods = []
-    for method_name in data["normalized"]:
-        if "volrn" in method_name and method_name != "original":
-            ablatable_methods.append(method_name)
+    # Load Stage 1 BAGRN and VOLRN outputs for validation/reference
+    baseline_output = data.get("baseline_output", "")
+    bagrn_arrays = data["normalized"].get("bagrn")
+    volrn_arrays = data["normalized"].get("bagrn_volrn")
 
-    if not ablatable_methods:
-        logger.info("  无可消融的 VOLRN 方法，跳过")
-        return {"experiments": {}}
+    # Run ablation
+    result = _run_ablation(
+        registered_arrays=data["registered_arrays"],
+        nodata_values=data["nodata_values"],
+        overlaps=data["overlaps"],
+        band_names=data["band_names"],
+        scene_ids=data["scene_ids"],
+        bagrn_output_arrays=bagrn_arrays,
+        volrn_output_arrays=volrn_arrays,
+        output_dir=output_dir,
+        control_idx=0,
+    )
 
-    results: Dict[str, Any] = {"experiments": {}}
-
-    for method_name in ablatable_methods:
-        method_arrays = data["normalized"][method_name]
-        # Use VOLRN block coefficients if available
-        coeff_key = f"{method_name}_block_coefficients"
-        if coeff_key not in data["normalized"]:
-            logger.info("  [%s] 无 VOLRN 块系数，跳过消融", method_name)
-            continue
-        block_coeffs = data["normalized"][coeff_key]  # (n_bands, n_blocks, 2)
-
-        # Build a/b maps per band using IDW (simplified: nearest block)
-        # We'll compute metrics directly on the arrays
-        full_metrics = []
-        gain_only_metrics = []
-        offset_only_metrics = []
-
-        for ov in overlaps:
-            i, j = ov["idx_i"], ov["idx_j"]
-            if i >= len(method_arrays) or j >= len(method_arrays):
-                continue
-
-            # Full VOLRN result
-            full = _compute_pair_metrics(
-                method_arrays[i], method_arrays[j],
-                ov["window_i"], ov["window_j"],
-                nodata_values[i] if i < len(nodata_values) else None,
-                nodata_values[j] if j < len(nodata_values) else None,
-            )
-            full_metrics.append(full)
-
-            # For gain-only: we need the original registered arrays
-            # Use registered arrays with BAGRN (method = 'bagrn' if available)
-            reg_key = "bagrn"
-            if reg_key in data["normalized"]:
-                reg_arrs = data["normalized"][reg_key]
-                if i < len(reg_arrs) and j < len(reg_arrs):
-                    # gain-only: f' = a * f_bagrn
-                    # offset-only: f' = f_bagrn + b
-                    # We approximate: the difference between full and the original BAGRN
-                    # represents the VOLRN contribution
-                    pass
-
-        results["experiments"][method_name] = {
-            "full_ave": float(np.mean([m["ave"] for m in full_metrics])) if full_metrics else 0.0,
-            "full_adm": float(np.mean([m["adm"] for m in full_metrics])) if full_metrics else 0.0,
-            "full_adsd": float(np.mean([m["adsd"] for m in full_metrics])) if full_metrics else 0.0,
-            "n_pairs": len(full_metrics),
-        }
-
-    json_path = os.path.join(output_dir, "gain_offset_ablation.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-    logger.info("  JSON 已保存: %s", json_path)
-
-    return results
+    return result["summary"]
 
 
 # ===========================================================================
@@ -1417,6 +1378,7 @@ def run_problem_discovery(
     # Load Stage 1 data
     logger.info("加载 Stage 1 数据: %s", baseline_output)
     data = load_stage1_data(baseline_output, crop_size)
+    data["baseline_output"] = baseline_output
     logger.info(
         "加载完成: %d 景, %d 波段, %d 对重叠, %d 种归一化方法",
         len(data["scene_ids"]), len(data["band_names"]),
@@ -1573,7 +1535,9 @@ def run_problem_discovery(
             elif exp_name == "scene_attribution":
                 result = run_scene_attribution(data, exp_dir)
             elif exp_name == "gain_offset_ablation":
-                result = run_gain_offset_ablation(data, exp_dir)
+                result = run_gain_offset_ablation(
+                    data, exp_dir, metadata_list=scene_metadata_list,
+                )
             elif exp_name == "spatial_attribution":
                 result = run_spatial_attribution(data, exp_dir)
             elif exp_name == "multiwindow":
