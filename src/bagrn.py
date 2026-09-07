@@ -38,7 +38,7 @@ def _overlap_means_stds(
     nodata_values: List[Optional[float]],
     overlaps: List[dict],
     bands: List[int],
-) -> Tuple[List[np.ndarray], List[np.ndarray], np.ndarray]:
+) -> Tuple[List[np.ndarray], List[np.ndarray], np.ndarray, np.ndarray]:
     """
     对每对重叠影像、每个指定波段，计算重叠区（排除 nodata 和非有限值）的 mean 和 std。
 
@@ -49,6 +49,7 @@ def _overlap_means_stds(
     pair_means = [np.zeros((n_bands, 2)) for _ in range(n_pairs)]
     pair_stds  = [np.zeros((n_bands, 2)) for _ in range(n_pairs)]
     pair_pixels = np.zeros(n_pairs, dtype=np.int64)
+    pair_valid = np.zeros((n_pairs, n_bands), dtype=bool)
 
     for k, ov in enumerate(overlaps):
         i, j = ov["idx_i"], ov["idx_j"]
@@ -76,11 +77,13 @@ def _overlap_means_stds(
             if n_valid_i == 0 or n_valid_j == 0:
                 pair_means[k][b_idx] = [0.0, 0.0]
                 pair_stds[k][b_idx]  = [0.0, 0.0]
+                pair_valid[k, b_idx] = False
             else:
                 pair_means[k][b_idx] = [float(patch_i[mask_i].mean()), float(patch_j[mask_j].mean())]
                 pair_stds[k][b_idx]  = [float(patch_i[mask_i].std()),  float(patch_j[mask_j].std())]
+                pair_valid[k, b_idx] = True
 
-    return pair_means, pair_stds, pair_pixels
+    return pair_means, pair_stds, pair_pixels, pair_valid
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +97,7 @@ def _solve_compensation(
     pair_pixels: np.ndarray,
     control_idx: int,
     n_bands: int,
+    pair_valid: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     构建并求解 BAGRN 的加权最小二乘系统。
@@ -123,24 +127,35 @@ def _solve_compensation(
     comp = np.zeros((n_bands, n_images), dtype=np.float64)
 
     for b_idx in range(n_bands):
+        # 确定当前波段的有效方程
+        if pair_valid is not None:
+            valid_pairs = [k for k in range(n_pairs) if pair_valid[k, b_idx]]
+        else:
+            valid_pairs = list(range(n_pairs))
+        
+        if len(valid_pairs) == 0:
+            # 当前波段无有效方程，补偿为零
+            continue
+
         # ---- D_α 与 L_α ----
         rows_da, cols_da, data_da = [], [], []
-        L_alpha = np.zeros(n_pairs, dtype=np.float64)
+        L_alpha = np.zeros(len(valid_pairs), dtype=np.float64)
 
-        for k, ov in enumerate(overlaps):
+        for idx, k in enumerate(valid_pairs):
+            ov = overlaps[k]
             i, j = ov["idx_i"], ov["idx_j"]
             mu_i = pair_values[k][b_idx, 0]
             mu_j = pair_values[k][b_idx, 1]
 
             # 方程: θ_i - θ_j = μ_j - μ_i  (Eq.1)
-            rows_da.extend([k, k])
+            rows_da.extend([idx, idx])
             cols_da.extend([i, j])
             data_da.extend([1.0, -1.0])
-            L_alpha[k] = mu_j - mu_i
+            L_alpha[idx] = mu_j - mu_i
 
         D_alpha = sparse.csr_matrix(
             (data_da, (rows_da, cols_da)),
-            shape=(n_pairs, n_images),
+            shape=(len(valid_pairs), n_images),
         )
 
         # ---- D_β 与 L_β: 控制影像约束 (Eq.4-5) ----
@@ -155,7 +170,9 @@ def _solve_compensation(
         L = np.concatenate([L_alpha, L_beta])
 
         # ---- 权重矩阵 P (Eq.8) ----
-        sqrt_w = np.sqrt(weights)
+        # 只使用有效方程的权重
+        valid_weights = weights[valid_pairs] if len(valid_pairs) < n_pairs else weights
+        sqrt_w = np.sqrt(valid_weights)
         p_diag = np.concatenate([sqrt_w, [1.0]])
         P_sqrt = sparse.diags(p_diag, format="csr")
 
@@ -289,16 +306,16 @@ def bagrn_normalize(
             "Multi-image BAGRN requires at least one overlap pair")
 
     # ---- 步骤 1: 计算重叠区的 μ 和 σ ----
-    pair_means, pair_stds, pair_pixels = _overlap_means_stds(
+    pair_means, pair_stds, pair_pixels, pair_valid = _overlap_means_stds(
         arrays, nodata_values, overlaps, bands,
     )
 
     # ---- 步骤 2: 求解补偿系数 ----
     theta_mu = _solve_compensation(
-        n_images, overlaps, pair_means, pair_pixels, control_idx, n_bands,
+        n_images, overlaps, pair_means, pair_pixels, control_idx, n_bands, pair_valid,
     )
     theta_sigma = _solve_compensation(
-        n_images, overlaps, pair_stds, pair_pixels, control_idx, n_bands,
+        n_images, overlaps, pair_stds, pair_pixels, control_idx, n_bands, pair_valid,
     )
 
     # ---- 步骤 3: 对每幅影像计算全局 μ、σ 然后 moment matching ----
