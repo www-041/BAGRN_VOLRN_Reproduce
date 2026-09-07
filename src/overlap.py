@@ -5,6 +5,7 @@
 以及计算重叠区域在各自像素坐标系下的窗口范围。
 """
 
+import math
 import numpy as np
 import rasterio
 from shapely.geometry import box
@@ -26,17 +27,21 @@ def has_overlap(bounds1: Tuple[float, float, float, float],
     返回
     -------
     bool
-        有重叠返回 True，否则返回 False。
+        有正面积重叠返回 True，否则返回 False。
+        仅边/角接触（零面积交集）返回 False。
     """
     rect1 = box(*bounds1)
     rect2 = box(*bounds2)
-    return rect1.intersects(rect2)
+    if not rect1.intersects(rect2):
+        return False
+    inter = rect1.intersection(rect2)
+    return inter.area > 0
 
 
 def intersection_bounds(bounds1: Tuple[float, float, float, float],
                         bounds2: Tuple[float, float, float, float]) -> Optional[Tuple[float, float, float, float]]:
     """
-    计算两幅影像地理包围盒的交集范围。若无重叠返回 None。
+    计算两幅影像地理包围盒的交集范围。若无正面积重叠返回 None。
 
     参数
     ----------
@@ -53,6 +58,8 @@ def intersection_bounds(bounds1: Tuple[float, float, float, float],
     if not rect1.intersects(rect2):
         return None
     inter = rect1.intersection(rect2)
+    if inter.area <= 0:
+        return None
     return inter.bounds
 
 
@@ -70,7 +77,8 @@ def get_overlap_window(
          (row_start2, row_end2, col_start2, col_end2))
 
     其中 row_end / col_end 遵循 Python 切片约定（不含终点）。
-    若无重叠则返回 None。
+    使用 floor/ceil 保守覆盖地理交集的分数像素边界。
+    若无正面积重叠则返回 None。
 
     参数
     ----------
@@ -88,33 +96,44 @@ def get_overlap_window(
     ((row_start1, row_end1, col_start1, col_end1),
      (row_start2, row_end2, col_start2, col_end2)) or None
     """
-    # 计算地理交集包围盒
+    # 计算地理交集包围盒（已确保正面积）
     inter = intersection_bounds(bounds1, bounds2)
     if inter is None:
         return None
 
     left, bottom, right, top = inter
+    inv_t1 = ~transform1
+    inv_t2 = ~transform2
 
-    # 将交集角点投影到影像1的像素坐标
-    col1_min, row1_min = ~transform1 * (left, top)       # 左上角
-    col1_max, row1_max = ~transform1 * (right, bottom)   # 右下角
+    # 将交集所有四个角投影到影像1的像素坐标，取保守范围
+    geo_corners = [(left, top), (right, top), (left, bottom), (right, bottom)]
+    pix1 = [inv_t1 * (gx, gy) for gx, gy in geo_corners]
+    row1_vals = [p[1] for p in pix1]
+    col1_vals = [p[0] for p in pix1]
 
-    # 将交集角点投影到影像2的像素坐标
-    col2_min, row2_min = ~transform2 * (left, top)
-    col2_max, row2_max = ~transform2 * (right, bottom)
+    # floor 起点，ceil 终点 → 保守覆盖分数边界
+    row_start1 = int(math.floor(min(row1_vals)))
+    row_end1   = int(math.ceil(max(row1_vals)))
+    col_start1 = int(math.floor(min(col1_vals)))
+    col_end1   = int(math.ceil(max(col1_vals)))
 
-    # 转换为整数像素范围（取整并裁剪有效范围）
-    row_start1 = max(0, int(round(row1_min)))
-    row_end1   = max(0, int(round(row1_max)))
-    col_start1 = max(0, int(round(col1_min)))
-    col_end1   = max(0, int(round(col1_max)))
+    # 同样处理影像2
+    pix2 = [inv_t2 * (gx, gy) for gx, gy in geo_corners]
+    row2_vals = [p[1] for p in pix2]
+    col2_vals = [p[0] for p in pix2]
 
-    row_start2 = max(0, int(round(row2_min)))
-    row_end2   = max(0, int(round(row2_max)))
-    col_start2 = max(0, int(round(col2_min)))
-    col_end2   = max(0, int(round(col2_max)))
+    row_start2 = int(math.floor(min(row2_vals)))
+    row_end2   = int(math.ceil(max(row2_vals)))
+    col_start2 = int(math.floor(min(col2_vals)))
+    col_end2   = int(math.ceil(max(col2_vals)))
 
-    # 确保范围有效（行/列至少有 1 个像素）
+    # 裁剪到非负范围
+    row_start1 = max(0, row_start1)
+    col_start1 = max(0, col_start1)
+    row_start2 = max(0, row_start2)
+    col_start2 = max(0, col_start2)
+
+    # 确保范围有效（至少有 1 个像素）
     if row_end1 <= row_start1 or col_end1 <= col_start1:
         return None
     if row_end2 <= row_start2 or col_end2 <= col_start2:
