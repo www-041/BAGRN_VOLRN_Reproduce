@@ -647,7 +647,7 @@ def volrn_normalize(
             img_masks[b_idx] = valid
             # 有效像素归一化，无效像素设为 0（后续不参与计算）
             arr_norm[b_idx, valid] = (patch[valid] - vmin) / scale
-            arr_norm[b_idx, ~valid] = 0.0
+            arr_norm[b_idx, ~valid] = np.nan
         norm_arrays.append(arr_norm)
         nodata_masks.append(img_masks)
 
@@ -720,10 +720,15 @@ def volrn_normalize(
                 results[img_idx][b_idx, ~nodata_masks[img_idx][b_idx]] = nd
 
     # 组装 block 系数输出: shape (n_bands, n_blocks, 2)
+    # a 不变，b 从归一化单位转换为原始 DN 单位
+    # b_original = scale * b_n + (1 - a) * vmin
     block_coeffs = np.zeros((n_bands, T, 2))
     for b_idx in range(n_bands):
-        block_coeffs[b_idx, :, 0] = all_x[b_idx, 0::2]  # a
-        block_coeffs[b_idx, :, 1] = all_x[b_idx, 1::2]  # b
+        vmin, scale = common_ranges[b_idx]
+        a_vals = all_x[b_idx, 0::2]
+        b_n = all_x[b_idx, 1::2]
+        block_coeffs[b_idx, :, 0] = a_vals
+        block_coeffs[b_idx, :, 1] = scale * b_n + (1.0 - a_vals) * vmin
 
     if return_diagnostics:
         block_list = []
