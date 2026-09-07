@@ -63,7 +63,7 @@ def process_band(band):
     # BAGRN
     t0 = time.time()
     bagrn_result, _, _ = bagrn_normalize(arrs_3d, nodatas, overlaps, control_idx=0)
-    bagrn_metrics = compute_all(bagrn_result, bagrn_result, nodatas, overlaps, [0])
+    bagrn_metrics = compute_all(arrs_3d, bagrn_result, nodatas, overlaps, [0])  # Fixed: before=original
     bagrn_time = time.time() - t0
     print(f"  BAGRN ({bagrn_time:.1f}s): RDOA={bagrn_metrics['rdoa']:.6f}")
 
@@ -84,7 +84,7 @@ def process_band(band):
             max_iter=200, tol=1e-4, verbose=False)
         volrn_time = time.time() - t0
 
-        volrn_metrics = compute_all(volrn_result, volrn_result, nodatas, overlaps, [0])
+        volrn_metrics = compute_all(arrs_3d, volrn_result, nodatas, overlaps, [0])  # Fixed: before=original
 
         # Block coefficient diagnostics
         a_diag = ""
