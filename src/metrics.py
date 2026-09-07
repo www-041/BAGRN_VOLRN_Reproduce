@@ -30,7 +30,10 @@ def _extract_overlap_pixels(
     nodata_j: Optional[float],
     band: int,
 ):
-    """提取一对重叠影像在指定波段上的重叠区有效像素。"""
+    """提取一对重叠影像在指定波段上的重叠区有效像素。
+
+    独立过滤每个窗口的有效像素（支持不同分辨率/不同像素数）。
+    """
     r1s, r1e, c1s, c1e = window_i
     r2s, r2e, c2s, c2e = window_j
     pi = array_i[band, r1s:r1e, c1s:c1e].ravel()
@@ -43,8 +46,8 @@ def _extract_overlap_pixels(
     if nodata_j is not None:
         mj &= (pj != nodata_j)
 
-    valid = mi & mj
-    return pi[valid], pj[valid]
+    # 独立过滤，不要求相同长度（支持不同分辨率）
+    return pi[mi], pj[mj]
 
 
 # ---------------------------------------------------------------------------
@@ -59,13 +62,13 @@ def _has_valid_overlap_pixels(
 ) -> bool:
     """检查给定波段在任意重叠对中是否有有效像素。"""
     for ov in overlaps:
-        pi, _ = _extract_overlap_pixels(
+        pi, pj = _extract_overlap_pixels(
             arrays[ov["idx_i"]], arrays[ov["idx_j"]],
             ov["window_i"], ov["window_j"],
             nodata_values[ov["idx_i"]], nodata_values[ov["idx_j"]],
             band,
         )
-        if len(pi) > 0:
+        if len(pi) > 0 and len(pj) > 0:
             return True
     return False
 
@@ -112,6 +115,7 @@ def compute_adm(
     """
     计算 ADM (Absolute Difference of Mean)。
     按实际有效重叠对计数，跳过无有效像素的对。
+    支持不同分辨率（独立过滤 pi/pj）。
     """
     if bands is None:
         bands = list(range(arrays[0].shape[0]))
@@ -151,6 +155,7 @@ def compute_adsd(
     """
     计算 ADSD (Absolute Difference of Standard Deviation)。
     按实际有效重叠对计数。
+    支持不同分辨率。
     """
     if bands is None:
         bands = list(range(arrays[0].shape[0]))
@@ -195,31 +200,31 @@ def compute_cd(
     CD_band = sum_k( w_k * TV(h_i^k, h_j^k) )
     CD = mean over bands
 
-    权重 w_k 基于各重叠对的有效像元数（非窗口理论面积）。
+    权重 w_k 基于各重叠对在当前波段的有效像元数。
     """
     if bands is None:
         bands = list(range(arrays[0].shape[0]))
     if len(overlaps) == 0:
         return 0.0
 
-    ref_band = bands[0]
-    valid_counts = []
-    for ov in overlaps:
-        pi, _ = _extract_overlap_pixels(
-            arrays[ov["idx_i"]], arrays[ov["idx_j"]],
-            ov["window_i"], ov["window_j"],
-            nodata_values[ov["idx_i"]], nodata_values[ov["idx_j"]],
-            ref_band,
-        )
-        valid_counts.append(len(pi))
-    valid_counts = np.array(valid_counts, dtype=np.float64)
-    total_valid = valid_counts.sum()
-    if total_valid == 0:
-        return 0.0
-    weights = valid_counts / total_valid
-
     cd_per_band = []
     for band in bands:
+        # 计算当前波段每个重叠对的有效像素权重
+        valid_counts = []
+        for ov in overlaps:
+            pi, pj = _extract_overlap_pixels(
+                arrays[ov["idx_i"]], arrays[ov["idx_j"]],
+                ov["window_i"], ov["window_j"],
+                nodata_values[ov["idx_i"]], nodata_values[ov["idx_j"]],
+                band,
+            )
+            valid_counts.append(len(pi) + len(pj))
+        valid_counts = np.array(valid_counts, dtype=np.float64)
+        total_valid = valid_counts.sum()
+        if total_valid == 0:
+            continue
+        weights = valid_counts / total_valid
+
         cd_weighted = 0.0
         has_valid = False
         for k, ov in enumerate(overlaps):
@@ -229,7 +234,7 @@ def compute_cd(
                 nodata_values[ov["idx_i"]], nodata_values[ov["idx_j"]],
                 band,
             )
-            if len(pi) < 2:
+            if len(pi) < 2 or len(pj) < 2:
                 continue
             cd_val = _compute_cd_from_pixels(pi, pj, n_bins)
             cd_weighted += weights[k] * cd_val
@@ -271,7 +276,7 @@ def compute_gl(
     计算 GL (Gradient Loss)。
 
     对每幅影像分别计算梯度方向差异，然后取均值。
-    无效像元在 Sobel 之前替换为 0，避免梯度污染。
+    除以实际贡献者数量（有有效像素的影像），而非所有影像数。
     """
     if bands is None:
         bands = list(range(arrays_before[0].shape[0]))
@@ -282,6 +287,7 @@ def compute_gl(
     gl_sum = 0.0
     for band in bands:
         total_gl = 0.0
+        contributing_count = 0
         for idx in range(n_images):
             before = arrays_before[idx][band]
             after = arrays_after[idx][band]
@@ -301,7 +307,10 @@ def compute_gl(
             diff = np.abs(orient_before - orient_after)
             delta_g = diff[valid_mask].sum()
             total_gl += delta_g / n_valid
-        gl_sum += total_gl / n_images
+            contributing_count += 1
+
+        if contributing_count > 0:
+            gl_sum += total_gl / contributing_count
     return float(gl_sum / len(bands))
 
 
@@ -427,7 +436,7 @@ def compute_per_pair(
                 'gl': float(round(gl, 10)) if gl is not None else None,
                 'rdoa': float(round(rdoa, 10)),
                 'ave': float(round(ave, 10)) if ave is not None else None,
-                'n_valid': len(pi),
+                'n_valid': len(pi) + len(pj),
             }
             adm_vals.append(adm)
             adsd_vals.append(adsd)
