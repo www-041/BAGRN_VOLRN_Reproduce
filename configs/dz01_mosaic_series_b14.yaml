@@ -1,0 +1,78 @@
+experiment_name: dz01v_mosaic_series_b14
+output_root: data/output/mosaic_series
+
+registration_band: B14
+control_scene: scene_20251114
+common_bands_strategy: strict
+
+selected_bands:
+  - B14
+
+rgb_bands: []
+false_color_bands: []
+
+scenes:
+  - id: scene_20251114
+    datetime: "2025-11-14"
+    sensor: DZ01V
+    bands:
+      B14: data/input/20251114023841/DZ01V_L2_E119.3_N30.3_20251114023841_01_T1/DZ01V_L2_E119.3_N30.3_20251114023841_01_T1_B14.TIF
+
+  - id: scene_20251120
+    datetime: "2025-11-20"
+    sensor: DZ01V
+    bands:
+      B14: data/input/20251120024220/DZ01V_L2_E118.9_N30.2_20251120024220_01_T1/DZ01V_L2_E118.9_N30.2_20251120024220_01_T1_B14.TIF
+
+  - id: scene_20251208
+    datetime: "2025-12-08"
+    sensor: DZ01V
+    bands:
+      B14: data/input/20251208025051/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1_B14.TIF
+
+  - id: scene_20251215
+    datetime: "2025-12-15"
+    sensor: DZ01V
+    bands:
+      B14: data/input/20251215023725/DZ01V_L2_E119.0_N30.1_20251215023725_01_T1/DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B14.TIF
+
+  - id: scene_20251214_025253
+    datetime: "2025-12-14T02:52:53"
+    sensor: DZ01V
+    bands:
+      B14: data/input/20251214025253/DZ01V_L2_E118.9_N29.9_20251214025253_01_T1/DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B14.TIF
+
+  - id: scene_20251214_025247
+    datetime: "2025-12-14T02:52:47"
+    sensor: DZ01V
+    bands:
+      B14: data/input/20251214025247/DZ01V_L2_E119.0_N30.3_20251214025247_01_T1/DZ01V_L2_E119.0_N30.3_20251214025247_01_T1_B14.TIF
+
+mosaic_modes:
+  - weighted
+
+feather_widths:
+  - 100
+
+volrn_params:
+  block_size: 200
+  lambda: 0.1
+  rho: 1.0
+  max_iter: 200
+  tol: 1.0e-4
+
+ablation_methods: []
+
+scale_scene_counts:
+  - 2
+  - 4
+  - 6
+
+enable_spectral_metrics: false
+
+smoke_crop_size: 512
+smoke_scene_count: 6
+
+seed: 42
+dry_run: false
+smoke: false
