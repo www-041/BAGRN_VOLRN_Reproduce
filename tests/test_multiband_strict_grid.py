@@ -54,3 +54,66 @@ def test_strict_grid_rejects_different_crs():
     
     with pytest.raises(ValueError, match="CRS"):
         validate_strict_scene_grids(scene_ids, transforms, crs_list)
+
+
+def test_detect_overlaps_independent_masks():
+    """detect_overlaps must use independent valid masks for each window.
+    
+    When two windows have different sizes (e.g., due to floor/ceil rounding),
+    the code must not use joint masking (mi & mj) which would fail with
+    broadcasting error.
+    """
+    import numpy as np
+    from unittest.mock import patch
+    from rasterio.transform import from_origin
+    
+    # Create a minimal MultibandPipeline instance with smoke mode
+    from src.experiment_config import ExperimentConfig
+    from src.multiband_pipeline import MultibandPipeline
+    
+    config = ExperimentConfig()
+    config.smoke = True  # Reduce min_pixels threshold
+    pipeline = MultibandPipeline(config)
+    pipeline.n_bands = 1  # Manually set for test
+    
+    # Two scenes with larger arrays to pass min_pixels check
+    # Scene 0: 100x100, Scene 1: 100x100
+    rng = np.random.default_rng(42)
+    arrays = [
+        rng.random((1, 100, 100)),
+        rng.random((1, 100, 100)),
+    ]
+    transforms = [from_origin(0, 100, 1, 1), from_origin(0, 100, 1, 1)]
+    bounds = [(0, 0, 100, 100), (0, 0, 100, 100)]
+    nodata_values = [None, None]
+    scene_ids = ["scene0", "scene1"]
+    
+    scene_data = {
+        "arrays": arrays,
+        "transforms": transforms,
+        "bounds": bounds,
+        "nodata_values": nodata_values,
+        "scene_ids": scene_ids,
+    }
+    
+    # Monkeypatch get_overlap_window to return different-sized windows
+    # This simulates floor/ceil rounding causing 1-pixel differences
+    def mock_get_overlap_window(*args, **kwargs):
+        # Scene 0 window: 50x50
+        # Scene 1 window: 51x50 (1 pixel wider due to rounding)
+        return ((0, 50, 0, 50), (0, 50, 0, 51))
+    
+    with patch('src.multiband_pipeline.get_overlap_window', side_effect=mock_get_overlap_window):
+        overlaps = pipeline.detect_overlaps(scene_data)
+    
+    # Should not raise broadcasting error
+    assert len(overlaps) > 0
+    overlap = overlaps[0]
+    
+    # Should have finite mean/std for both scenes
+    assert 'per_band_stats' in overlap
+    stats = overlap['per_band_stats'][0]
+    assert np.isfinite(stats['mean_i'])
+    assert np.isfinite(stats['mean_j'])
+    assert np.isfinite(stats['std_i'])
+    assert np.isfinite(stats['std_j'])

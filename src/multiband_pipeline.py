@@ -676,14 +676,17 @@ class MultibandPipeline:
                     mj = np.isfinite(pj)
                     if nd_j is not None:
                         mj &= (pj != nd_j)
-                    valid = mi & mj
+                    
+                    # Use independent valid masks to support different-sized windows
+                    valid_i = pi[mi]
+                    valid_j = pj[mj]
 
-                    if valid.sum() > 0:
+                    if valid_i.size > 0 and valid_j.size > 0:
                         per_band_stats[b_idx] = {
-                            "mean_i": float(pi[valid].mean()),
-                            "mean_j": float(pj[valid].mean()),
-                            "std_i": float(pi[valid].std()),
-                            "std_j": float(pj[valid].std()),
+                            "mean_i": float(valid_i.mean()),
+                            "mean_j": float(valid_j.mean()),
+                            "std_i": float(valid_i.std()),
+                            "std_j": float(valid_j.std()),
                         }
 
                 overlaps.append({
