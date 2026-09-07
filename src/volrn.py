@@ -193,12 +193,39 @@ def image_blocking(
             img_idxs = list(cell_blocks.keys())
             for ii in range(len(img_idxs)):
                 for jj in range(ii + 1, len(img_idxs)):
-                    pairs.append(BlockPairInfo(
-                        block_id_i=cell_blocks[img_idxs[ii]].block_id,
-                        block_id_j=cell_blocks[img_idxs[jj]].block_id,
-                        grid_m=gm,
-                        grid_n=gn,
-                    ))
+                    img_i = img_idxs[ii]
+                    img_j = img_idxs[jj]
+                    blk_i = cell_blocks[img_i]
+                    blk_j = cell_blocks[img_j]
+                    
+                    # Check if the two blocks actually overlap geographically
+                    # Get geographic bounds for block i
+                    r_s_i, r_e_i, c_s_i, c_e_i = blk_i.window
+                    tr_i = transforms[img_i]
+                    left_i = tr_i.c + c_s_i * tr_i.a
+                    right_i = tr_i.c + c_e_i * tr_i.a
+                    top_i = tr_i.f + r_s_i * tr_i.e
+                    bottom_i = tr_i.f + r_e_i * tr_i.e
+                    
+                    # Get geographic bounds for block j
+                    r_s_j, r_e_j, c_s_j, c_e_j = blk_j.window
+                    tr_j = transforms[img_j]
+                    left_j = tr_j.c + c_s_j * tr_j.a
+                    right_j = tr_j.c + c_e_j * tr_j.a
+                    top_j = tr_j.f + r_s_j * tr_j.e
+                    bottom_j = tr_j.f + r_e_j * tr_j.e
+                    
+                    # Check if bounding boxes overlap
+                    overlap_x = (left_i < right_j) and (right_i > left_j)
+                    overlap_y = (top_i > bottom_j) and (bottom_i < top_j)
+                    
+                    if overlap_x and overlap_y:
+                        pairs.append(BlockPairInfo(
+                            block_id_i=blk_i.block_id,
+                            block_id_j=blk_j.block_id,
+                            grid_m=gm,
+                            grid_n=gn,
+                        ))
 
     return blocks, pairs
 
