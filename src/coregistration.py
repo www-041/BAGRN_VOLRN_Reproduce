@@ -59,17 +59,49 @@ def phase_correlation(img_ref, img_target, valid_ref=None, valid_tgt=None):
     """
     from skimage.registration import phase_cross_correlation
     from scipy.ndimage import shift as ndimage_shift
+    from rasterio.warp import reproject, Resampling
 
-    h = min(img_ref.shape[0], img_target.shape[0])
-    w = min(img_ref.shape[1], img_target.shape[1])
-    ref = img_ref[:h, :w].astype(np.float64)
-    tgt = img_target[:h, :w].astype(np.float64)
+    # Multi-resolution fix: use common grid instead of naive truncation
+    # Determine common resolution (finer of the two)
+    res_ref = abs(tr_ref.a)
+    res_tgt = abs(tr_tgt.a)
+    common_res = min(res_ref, res_tgt)
+    
+    # Calculate common grid dimensions based on geographic overlap
+    # For simplicity, use the reference image's grid as common grid
+    # and reproject target to match
+    h_ref, w_ref = img_ref.shape
+    ref = img_ref.astype(np.float64)
+    
+    # If target has different resolution, reproject to common grid
+    if abs(res_ref - res_tgt) > 1e-10:
+        # Create target array on common grid
+        tgt = np.full((h_ref, w_ref), np.nan, dtype=np.float64)
+        reproject(
+            source=img_target.astype(np.float64),
+            destination=tgt,
+            src_transform=tr_tgt,
+            src_crs=crs_tgt if 'crs_tgt' in locals() else 'EPSG:4326',
+            dst_transform=tr_ref,
+            dst_crs=crs_ref if 'crs_ref' in locals() else 'EPSG:4326',
+            resampling=Resampling.bilinear,
+        )
+    else:
+        # Same resolution: use original approach
+        h = min(img_ref.shape[0], img_target.shape[0])
+        w = min(img_ref.shape[1], img_target.shape[1])
+        ref = img_ref[:h, :w].astype(np.float64)
+        tgt = img_target[:h, :w].astype(np.float64)
 
     # 构建联合有效掩膜
     if valid_ref is not None and valid_tgt is not None:
-        joint = valid_ref[:h, :w] & valid_tgt[:h, :w]
+        if ref.shape == valid_ref.shape and tgt.shape == valid_tgt.shape:
+            joint = valid_ref & valid_tgt
+        else:
+            # Different shapes after reprojection: use finite check
+            joint = np.isfinite(ref) & np.isfinite(tgt)
     else:
-        joint = np.isfinite(ref) & np.isfinite(tgt) & (ref != 0) & (tgt != 0)
+        joint = np.isfinite(ref) & np.isfinite(tgt)
 
     if joint.sum() < 100:
         return 0.0, 0.0, 0.0
@@ -286,7 +318,7 @@ def compute_shifts_from_overlap(arr_ref, tr_ref, arr_tgt, tr_tgt,
         n_inlier = int(inlier.sum())
     else:
         shift_y, shift_x = float(med_y), float(med_x)
-        confidence = 1.0
+        confidence = 0.0  # Zero inliers = no reliable estimate
         n_inlier = 0
 
     # 块级残差统计（相对全局模型的残差，不是绝对位移量）
@@ -1527,8 +1559,8 @@ def spatial_holdout_validation(
                 'total_cells': n_grid_rows * n_grid_cols, 'coverage_ratio': 0,
                 'folds': [], 'aggregate': None}
 
-    c0, r0 = rowcol(tr_ref, overlap[0], overlap[3])
-    c1, r1 = rowcol(tr_ref, overlap[2], overlap[1])
+    r0, c0 = rowcol(tr_ref, overlap[0], overlap[3])
+    r1, c1 = rowcol(tr_ref, overlap[2], overlap[1])
     r0, r1 = max(0, r0), min(h_ref, r1)
     c0, c1 = max(0, c0), min(w_ref, c1)
 
@@ -1987,8 +2019,8 @@ def analyze_displacement_spikes(
 
     # overlap = (left, bottom, right, top) 地理坐标，转为参考图像的行列范围
     from rasterio.transform import rowcol
-    c0, r0 = rowcol(tr_ref, overlap[0], overlap[3])   # left, top → row0, col0
-    c1, r1 = rowcol(tr_ref, overlap[2], overlap[1])   # right, bottom → row1, col1
+    r0, c0 = rowcol(tr_ref, overlap[0], overlap[3])   # left, top → row0, col0
+    r1, c1 = rowcol(tr_ref, overlap[2], overlap[1])   # right, bottom → row1, col1
     r0 = max(0, r0)
     c0 = max(0, c0)
     r1 = min(h_ref, r1)
@@ -2559,8 +2591,8 @@ def validate_registration_independent_grid(
         return {'blocks': [], 'stats': None, 'coverage': None,
                 'failure_reason': 'No geographic overlap between images'}
 
-    c0, r0 = rowcol(tr_ref, overlap[0], overlap[3])
-    c1, r1 = rowcol(tr_ref, overlap[2], overlap[1])
+    r0, c0 = rowcol(tr_ref, overlap[0], overlap[3])
+    r1, c1 = rowcol(tr_ref, overlap[2], overlap[1])
     r0, r1 = max(0, r0), min(h_ref, r1)
     c0, c1 = max(0, c0), min(w_ref, c1)
     overlap_h, overlap_w = r1 - r0, c1 - c0
@@ -2866,8 +2898,8 @@ def generate_hard_seam_mosaic(arr_ref, arr_target, tr_ref, tr_target,
     if overlap is None:
         return None, 0, tr_ref
 
-    c0, r0 = rowcol(tr_ref, overlap[0], overlap[3])
-    c1, r1 = rowcol(tr_ref, overlap[2], overlap[1])
+    r0, c0 = rowcol(tr_ref, overlap[0], overlap[3])
+    r1, c1 = rowcol(tr_ref, overlap[2], overlap[1])
     r0, r1 = max(0, r0), min(h_ref, r1)
     c0, c1 = max(0, c0), min(w_ref, c1)
 

@@ -94,7 +94,7 @@ print(f"\n{'='*60}")
 print("  Step 5: Metrics after BAGRN")
 print("="*60)
 
-bagrn_metrics = compute_all(bagrn_result, arrays, nodata_list, overlaps, bands)
+bagrn_metrics = compute_all(arrays, bagrn_result, nodata_list, overlaps, bands)  # Fixed
 print(f"  BAGRN: {bagrn_metrics}")
 
 # Comparison table

@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple
 
 def _overlap_valid_pixels(array_i, array_j, window_i, window_j,
                           nodata_i, nodata_j, band):
+    """提取重叠区有效像素，独立过滤（支持不同分辨率）。"""
     r1s, r1e, c1s, c1e = window_i
     r2s, r2e, c2s, c2e = window_j
     pi = array_i[band, r1s:r1e, c1s:c1e].ravel()
@@ -27,8 +28,8 @@ def _overlap_valid_pixels(array_i, array_j, window_i, window_j,
         mi &= (pi != nodata_i)
     if nodata_j is not None:
         mj &= (pj != nodata_j)
-    valid = mi & mj
-    return pi[valid], pj[valid]
+    # 独立过滤，不要求相同长度
+    return pi[mi], pj[mj]
 
 
 # ---------------------------------------------------------------------------
@@ -147,10 +148,9 @@ def histogram_matching_normalize(
             # 对整幅影像做映射
             nd = nodata_values[idx]
             img_band = result[idx][band]
+            valid = np.isfinite(img_band)
             if nd is not None:
-                valid = (result[idx][band] != nd)
-            else:
-                valid = np.isfinite(result[idx][band])
+                valid &= (img_band != nd)
 
             # 离散化像素值到 bin 中心再查表
             pixel_indices = np.digitize(img_band, edges) - 1
@@ -267,10 +267,9 @@ def moment_matching_normalize(
             # 矩匹配：corrected = (src - μ_src) * (σ_ref / σ_src) + μ_ref
             nd = nodata_values[idx]
             img_band = result[idx][band]
+            valid = np.isfinite(img_band)
             if nd is not None:
-                valid = (result[idx][band] != nd)
-            else:
-                valid = np.isfinite(result[idx][band])
+                valid &= (img_band != nd)
 
             img_band[valid] = (img_band[valid] - mu_src) * (std_ref / std_src) + mu_ref
 
@@ -348,6 +347,8 @@ def wallis_normalize(
 
     for band in range(n_bands):
         for idx in range(n_images):
+            if idx == control_idx:
+                continue  # 控制影像保持不变
             nd = nodata_values[idx]
             img = arrays[idx][band].astype(np.float64)
 

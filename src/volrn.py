@@ -359,8 +359,9 @@ def _idw_interpolate(
     """
     九邻域反距离加权插值（论文 Eq.34-35）— 向量化实现。
 
-    对每个像素，在其周围的 3×3 网格块中，按距离倒数加权插值 a, b 系数。
-    无有效邻域时回退到最近邻块。
+    对每个像素，首先确定最近的整数网格单元，然后在该单元的
+    3×3 邻域（|dm|<=1, |dn|<=1）内查找有效块。
+    如果局部邻域没有有效块，回退到全局最近有效块。
     """
     n_gm = len(all_gm)
     n_gn = len(all_gn)
@@ -374,8 +375,7 @@ def _idw_interpolate(
     b_out = np.zeros((rows_img, cols_img), dtype=np.float64)
 
     # 有效块的位置和值
-    valid_mask = has_block
-    valid_gm_idx, valid_gn_idx = np.where(valid_mask)
+    valid_gm_idx, valid_gn_idx = np.where(has_block)
     if len(valid_gm_idx) == 0:
         return a_out, b_out
 
@@ -386,14 +386,10 @@ def _idw_interpolate(
 
     # 像素网格
     PG, PN = np.meshgrid(pixel_gm, pixel_gn, indexing='ij')
-    # PG, PN shape: (rows_img, cols_img)
-    # 重塑为 (N_pixels,)
     pg_flat = PG.ravel()
     pn_flat = PN.ravel()
     n_pixels = len(pg_flat)
 
-    # 计算所有像素到所有有效块的距离: (N_pixels, N_valid_blocks)
-    # 使用分块计算避免内存爆炸
     CHUNK = 5000
     a_flat = np.zeros(n_pixels, dtype=np.float64)
     b_flat = np.zeros(n_pixels, dtype=np.float64)
@@ -405,47 +401,92 @@ def _idw_interpolate(
         n_chunk = end - start
 
         # 距离矩阵: (n_chunk, N_valid_blocks)
-        dg = pg_chunk[:, None] - valid_gm[None, :]  # (n_chunk, N_blocks)
+        dg = pg_chunk[:, None] - valid_gm[None, :]
         dn = pn_chunk[:, None] - valid_gn[None, :]
-        dist = np.sqrt(dg**2 + dn**2)  # (n_chunk, N_blocks)
+        dist = np.sqrt(dg**2 + dn**2)
 
-        # 对每个像素取最近的9个块
-        k = min(9, dist.shape[1])
-        if k <= 1:
-            nearest_idx = np.zeros((n_chunk, 1), dtype=int)
-        else:
-            nearest_idx = np.argpartition(dist, k - 1, axis=1)[:, :k]  # (n_chunk, k)
-
-        # 提取最近邻的距离和值
-        row_idx = np.arange(n_chunk)[:, None]
-        near_dist = dist[row_idx, nearest_idx]  # (n_chunk, k)
-        near_a = valid_a[nearest_idx]  # (n_chunk, k)
-        near_b = valid_b[nearest_idx]  # (n_chunk, k)
-
-        # 距离为0的直接使用
-        exact = near_dist < 1e-10
-        has_exact = exact.any(axis=1)
-
-        # 非精确匹配的用IDW
-        inv_dist = np.zeros_like(near_dist)
-        mask = near_dist > 1e-10
-        np.divide(1.0, near_dist, out=inv_dist, where=mask)
-        weights = np.where(mask, inv_dist, 0.0)
-        w_sum = weights.sum(axis=1, keepdims=True)
-        w_sum = np.where(w_sum > 0, w_sum, 1.0)
-        idw_a = (weights * near_a).sum(axis=1) / w_sum.ravel()
-        idw_b = (weights * near_b).sum(axis=1) / w_sum.ravel()
-
-        # 精确匹配的直接使用
-        if has_exact.any():
-            exact_rows = np.where(has_exact)[0]
-            for pi in exact_rows:
-                col = np.argmax(exact[pi])
-                idw_a[pi] = near_a[pi, col]
-                idw_b[pi] = near_b[pi, col]
-
-        a_flat[start:end] = idw_a
-        b_flat[start:end] = idw_b
+        # 局部 3x3 邻域：对于每个像素，找最近的整数网格单元，
+        # 然后取 |cell - pixel_cell| <= 1 的有效块
+        pixel_cell_gm = np.round(pg_chunk)  # 最近整数网格行
+        pixel_cell_gn = np.round(pn_chunk)  # 最近整数网格列
+        
+        # 有效块网格索引到像素网格单元的距离
+        dg_cell = np.abs(valid_gm[None, :] - pixel_cell_gm[:, None])
+        dn_cell = np.abs(valid_gn[None, :] - pixel_cell_gn[:, None])
+        
+        # 局部邻域掩码: 块网格索引与像素网格单元差 <= 1
+        local_mask = (dg_cell <= 1.0) & (dn_cell <= 1.0)
+        
+        # 检查每个像素是否有局部候选
+        n_local = local_mask.sum(axis=1)
+        has_local = n_local > 0
+        
+        # 对于有局部候选的像素：只使用局部块
+        # 对于无局部候选的像素：使用全局最近块
+        result_a = np.zeros(n_chunk, dtype=np.float64)
+        result_b = np.zeros(n_chunk, dtype=np.float64)
+        
+        # 处理有局部候选的像素
+        local_pixels = np.where(has_local)[0]
+        if len(local_pixels) > 0:
+            for pi in local_pixels:
+                local_indices = np.where(local_mask[pi])[0]
+                local_dist = dist[pi, local_indices]
+                local_a_vals = valid_a[local_indices]
+                local_b_vals = valid_b[local_indices]
+                
+                # 精确匹配
+                exact = local_dist < 1e-10
+                if exact.any():
+                    best = np.argmax(exact)
+                    result_a[pi] = local_a_vals[best]
+                    result_b[pi] = local_b_vals[best]
+                else:
+                    # IDW
+                    inv_d = 1.0 / local_dist
+                    w_sum = inv_d.sum()
+                    result_a[pi] = (inv_d * local_a_vals).sum() / w_sum
+                    result_b[pi] = (inv_d * local_b_vals).sum() / w_sum
+        
+        # 处理无局部候选的像素（全局回退）
+        global_pixels = np.where(~has_local)[0]
+        if len(global_pixels) > 0:
+            g_dist = dist[global_pixels]
+            k = min(1, g_dist.shape[1])
+            if k == 1:
+                nearest_idx = np.argmin(g_dist, axis=1, keepdims=True)
+            else:
+                nearest_idx = np.argpartition(g_dist, k - 1, axis=1)[:, :k]
+            
+            row_idx = np.arange(len(global_pixels))[:, None]
+            near_dist = g_dist[row_idx, nearest_idx]
+            near_a = valid_a[nearest_idx]
+            near_b = valid_b[nearest_idx]
+            
+            exact = near_dist < 1e-10
+            has_exact = exact.any(axis=1)
+            
+            inv_dist = np.zeros_like(near_dist)
+            mask = near_dist > 1e-10
+            np.divide(1.0, near_dist, out=inv_dist, where=mask)
+            weights = np.where(mask, inv_dist, 0.0)
+            w_sum = weights.sum(axis=1, keepdims=True)
+            w_sum = np.where(w_sum > 0, w_sum, 1.0)
+            idw_a = (weights * near_a).sum(axis=1) / w_sum.ravel()
+            idw_b = (weights * near_b).sum(axis=1) / w_sum.ravel()
+            
+            if has_exact.any():
+                exact_rows = np.where(has_exact)[0]
+                for pi in exact_rows:
+                    col = np.argmax(exact[pi])
+                    idw_a[pi] = near_a[pi, col]
+                    idw_b[pi] = near_b[pi, col]
+            
+            result_a[global_pixels] = idw_a
+            result_b[global_pixels] = idw_b
+        
+        a_flat[start:end] = result_a
+        b_flat[start:end] = result_b
 
     a_out = a_flat.reshape(rows_img, cols_img)
     b_out = b_flat.reshape(rows_img, cols_img)
@@ -647,7 +688,7 @@ def volrn_normalize(
             img_masks[b_idx] = valid
             # 有效像素归一化，无效像素设为 0（后续不参与计算）
             arr_norm[b_idx, valid] = (patch[valid] - vmin) / scale
-            arr_norm[b_idx, ~valid] = 0.0
+            arr_norm[b_idx, ~valid] = np.nan
         norm_arrays.append(arr_norm)
         nodata_masks.append(img_masks)
 
@@ -720,10 +761,15 @@ def volrn_normalize(
                 results[img_idx][b_idx, ~nodata_masks[img_idx][b_idx]] = nd
 
     # 组装 block 系数输出: shape (n_bands, n_blocks, 2)
+    # a 不变，b 从归一化单位转换为原始 DN 单位
+    # b_original = scale * b_n + (1 - a) * vmin
     block_coeffs = np.zeros((n_bands, T, 2))
     for b_idx in range(n_bands):
-        block_coeffs[b_idx, :, 0] = all_x[b_idx, 0::2]  # a
-        block_coeffs[b_idx, :, 1] = all_x[b_idx, 1::2]  # b
+        vmin, scale = common_ranges[b_idx]
+        a_vals = all_x[b_idx, 0::2]
+        b_n = all_x[b_idx, 1::2]
+        block_coeffs[b_idx, :, 0] = a_vals
+        block_coeffs[b_idx, :, 1] = scale * b_n + (1.0 - a_vals) * vmin
 
     if return_diagnostics:
         block_list = []

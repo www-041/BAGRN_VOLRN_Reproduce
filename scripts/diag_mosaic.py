@@ -64,7 +64,7 @@ if win:
     # Check image values in overlap
     p1 = arr1[wi[0]:wi[1], wi[2]:wi[3]].astype(np.float64)
     p2 = arr2[wj[0]:wj[1], wj[2]:wj[3]].astype(np.float64)
-    mask = (p1 > 0) & (p2 > 0)
+    mask = np.isfinite(p1) & np.isfinite(p2)  # Fixed: check finite, not > 0
     
     print(f"\nImage values in overlap:")
     print(f"  Image 1: min={p1[mask].min():.1f}, max={p1[mask].max():.1f}, mean={p1[mask].mean():.1f}")

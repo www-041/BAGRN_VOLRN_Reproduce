@@ -89,8 +89,8 @@ for band in BANDS:
     print(f"  VOLRN done ({t_volrn:.1f}s)")
 
     # Metrics
-    metrics_bagrn = compute_all(bagrn_result, arrs_3d, nodatas, overlaps, [0])
-    metrics_volrn = compute_all(volrn_result, arrs_3d, nodatas, overlaps, [0])
+    metrics_bagrn = compute_all(arrs_3d, bagrn_result, nodatas, overlaps, [0])  # Fixed
+    metrics_volrn = compute_all(arrs_3d, volrn_result, nodatas, overlaps, [0])  # Fixed
     print(f"  BAGRN: {metrics_bagrn}")
     print(f"  VOLRN: {metrics_volrn}")
 

@@ -18,7 +18,19 @@ from typing import List, Tuple, Optional
 
 
 # ---------------------------------------------------------------------------
-# 辅助：从重叠窗口提取有效像素（排除 nodata）
+# 辅助：有效像素掩码（排除 nodata AND NaN/Inf）
+# ---------------------------------------------------------------------------
+
+def _valid_mask(data: np.ndarray, nodata: Optional[float]) -> np.ndarray:
+    """创建有效像素掩码：有限值 AND（如果定义了 nodata）不等于 nodata。"""
+    mask = np.isfinite(data)
+    if nodata is not None:
+        mask &= (data != nodata)
+    return mask
+
+
+# ---------------------------------------------------------------------------
+# 辅助：从重叠窗口提取有效像素（排除 nodata AND NaN/Inf）
 # ---------------------------------------------------------------------------
 
 def _overlap_means_stds(
@@ -28,27 +40,9 @@ def _overlap_means_stds(
     bands: List[int],
 ) -> Tuple[List[np.ndarray], List[np.ndarray], np.ndarray]:
     """
-    对每对重叠影像、每个指定波段，计算重叠区（排除 nodata）的 mean 和 std。
+    对每对重叠影像、每个指定波段，计算重叠区（排除 nodata 和非有限值）的 mean 和 std。
 
-    参数
-    ----------
-    arrays : list of np.ndarray
-        每幅影像的数组，形状均为 (bands, rows, cols)。
-    nodata_values : list of float or None
-        每幅影像的 nodata 值。
-    overlaps : list of dict
-        重叠信息，每项含 idx_i, idx_j, window_i, window_j 四个 key。
-    bands : list of int
-        要处理的波段索引（0-based）。
-
-    返回
-    -------
-    pair_means : list of np.ndarray
-        pair_means[k] 形状 (len(bands), 2)，两列分别为影像 i、j 的均值。
-    pair_stds  : list of np.ndarray
-        与 pair_means 形状相同的标准差。
-    pair_pixels : np.ndarray
-        每对重叠的有效像素数（1D）。
+    支持不同分辨率：i 和 j 的有效像素独立过滤。
     """
     n_pairs = len(overlaps)
     n_bands = len(bands)
@@ -72,11 +66,14 @@ def _overlap_means_stds(
             patch_i = arr_i[band, r1_s:r1_e, c1_s:c1_e]
             patch_j = arr_j[band, r2_s:r2_e, c2_s:c2_e]
 
-            # 排除 nodata（两幅影像分辨率可能不同，分开计算有效像素）
-            mask_i = np.isfinite(patch_i) if nd_i is None else (patch_i != nd_i)
-            mask_j = np.isfinite(patch_j) if nd_j is None else (patch_j != nd_j)
+            # 独立过滤有效像素（支持不同分辨率）
+            mask_i = _valid_mask(patch_i, nd_i)
+            mask_j = _valid_mask(patch_j, nd_j)
 
-            if mask_i.sum() == 0 or mask_j.sum() == 0:
+            n_valid_i = mask_i.sum()
+            n_valid_j = mask_j.sum()
+
+            if n_valid_i == 0 or n_valid_j == 0:
                 pair_means[k][b_idx] = [0.0, 0.0]
                 pair_stds[k][b_idx]  = [0.0, 0.0]
             else:
@@ -96,6 +93,7 @@ def _solve_compensation(
     pair_values: List[np.ndarray],
     pair_pixels: np.ndarray,
     control_idx: int,
+    n_bands: int,
 ) -> np.ndarray:
     """
     构建并求解 BAGRN 的加权最小二乘系统。
@@ -107,42 +105,25 @@ def _solve_compensation(
     Eq.(5)  : D_β X = 0  (控制影像)
     Eq.(7)  : D X = L
     Eq.(8)  : 加权 W — 重叠像素数占比
-
-    参数
-    ----------
-    n_images : int
-        影像总数 N。
-    overlaps : list of dict
-        每项含 idx_i, idx_j。
-    pair_values : list of np.ndarray
-        pair_values[k] 形状 (n_bands, 2)，两列分别为 i、j 的均值/标准差。
-    pair_pixels : np.ndarray
-        每对重叠的有效像素数。
-    control_idx : int
-        控制影像的索引，其补偿值设为 0。
-
-    返回
-    -------
-    comp : np.ndarray
-        形状 (n_images,)，每幅影像的补偿值。
     """
     n_pairs = len(overlaps)
-    n_bands = pair_values[0].shape[0]
 
     # --- 权重 W（Eq.8）---
+    if n_pairs == 0:
+        # 没有重叠对时，补偿为零
+        return np.zeros((n_bands, n_images), dtype=np.float64)
+
     total_pixels = pair_pixels.sum()
     if total_pixels == 0:
         weights = np.ones(n_pairs) / n_pairs
     else:
         weights = pair_pixels.astype(np.float64) / total_pixels
 
-    # --- 对所有波段联合求解（每个波段独立建系统，但此处按波段循环）---
-    # 论文中每个波段独立处理
+    # --- 对所有波段联合求解 ---
     comp = np.zeros((n_bands, n_images), dtype=np.float64)
 
     for b_idx in range(n_bands):
         # ---- D_α 与 L_α ----
-        # D_α: 稀疏矩阵 (n_pairs × n_images), 每行 +1 在 i, -1 在 j
         rows_da, cols_da, data_da = [], [], []
         L_alpha = np.zeros(n_pairs, dtype=np.float64)
 
@@ -204,56 +185,25 @@ def _apply_moment_matching(
     """
     对整幅影像逐波段应用 moment matching（Eq.10-11）。
 
-    对每个波段：
-      μ' = μ_orig + θ_μ
-      σ' = σ_orig + θ_σ
-      ω  = σ' / σ_orig
-      υ  = μ' - ω · μ_orig
-      f' = ω · f + υ
-
-    参数
-    ----------
-    array : np.ndarray
-        原始影像数组 (bands, rows, cols)。
-    nodata : float or None
-        NoData 值。
-    mu_orig : np.ndarray
-        原始均值，形状 (n_bands,)。
-    sigma_orig : np.ndarray
-        原始标准差，形状 (n_bands,)。
-    theta_mu : np.ndarray
-        均值补偿，形状 (n_bands,)。
-    theta_sigma : np.ndarray
-        标准差补偿，形状 (n_bands,)。
-    bands : list of int
-        要处理的波段索引。
-
-    返回
-    -------
-    result : np.ndarray
-        归一化后的数组，形状与 array 相同。
+    有效像素使用 _valid_mask：排除 nodata AND NaN/Inf。
     """
     result = array.astype(np.float64, copy=True)
 
     for b_idx, band in enumerate(bands):
-        mu_t = mu_orig[b_idx] + theta_mu[b_idx]    # 补偿后均值 μ'
-        sg_t = sigma_orig[b_idx] + theta_sigma[b_idx]  # 补偿后标准差 σ'
+        mu_t = mu_orig[b_idx] + theta_mu[b_idx]
+        sg_t = sigma_orig[b_idx] + theta_sigma[b_idx]
 
-        # 避免除零
         sg_orig = sigma_orig[b_idx]
         if sg_orig < 1e-12 or sg_t < 1e-12:
             omega = 1.0
         else:
-            omega = sg_t / sg_orig   # ω (Eq.11)
+            omega = sg_t / sg_orig
 
-        upsilon = mu_t - omega * mu_orig[b_idx]  # υ (Eq.11)
+        upsilon = mu_t - omega * mu_orig[b_idx]
 
         band_data = result[band]
-        if nodata is None:
-            band_data[:] = omega * band_data + upsilon
-        else:
-            mask = band_data != nodata
-            band_data[mask] = omega * band_data[mask] + upsilon
+        valid = _valid_mask(band_data, nodata)
+        band_data[valid] = omega * band_data[valid] + upsilon
 
     return result
 
@@ -272,9 +222,10 @@ def bagrn_normalize(
     BAGRN 全局辐射归一化主函数。
 
     流程：
-      1. 对每对重叠区域，计算每个波段的 μ、σ（排除 nodata）
-      2. 构建加权最小二乘系统，求解 θ_μ、θ_σ
-      3. 对每幅影像做 moment matching，得到归一化结果
+      1. 验证输入
+      2. 对每对重叠区域，计算每个波段的 μ、σ（排除 nodata 和非有限值）
+      3. 构建加权最小二乘系统，求解 θ_μ、θ_σ
+      4. 对每幅影像做 moment matching，得到归一化结果
 
     参数
     ----------
@@ -283,10 +234,7 @@ def bagrn_normalize(
     nodata_values : list of float or None
         各影像的 nodata 值。
     overlaps : list of dict
-        重叠信息，每项包含：
-            idx_i, idx_j : int         — 重叠的两幅影像索引
-            window_i     : (rS, rE, cS, cE)  — 在影像 i 中的窗口
-            window_j     : (rS, rE, cS, cE)  — 在影像 j 中的窗口
+        重叠信息，每项包含 idx_i, idx_j, window_i, window_j。
     control_idx : int
         控制影像索引（其补偿值为 0）。默认为 0。
 
@@ -297,14 +245,48 @@ def bagrn_normalize(
     theta_mu : np.ndarray
         每幅影像每个波段的均值补偿，形状 (n_bands, n_images)。
     theta_sigma : np.ndarray
-        每幅影像每个波段的标注差补偿，形状 (n_bands, n_images)。
+        每幅影像每个波段的标准差补偿，形状 (n_bands, n_images)。
     """
+    # ---- 输入验证 ----
     if len(arrays) == 0:
         return [], np.array([]), np.array([])
 
     n_images = len(arrays)
-    n_bands = arrays[0].shape[0]
+
+    # 验证 list 长度一致
+    if len(nodata_values) != n_images:
+        raise ValueError(
+            f"nodata_values length ({len(nodata_values)}) != arrays length ({n_images})")
+
+    # 验证 3D 输入和公共波段数
+    n_bands = arrays[0].shape[0] if arrays[0].ndim == 3 else None
+    if n_bands is None:
+        raise ValueError("All arrays must be 3-D (bands, rows, cols)")
+    for idx, arr in enumerate(arrays):
+        if arr.ndim != 3:
+            raise ValueError(f"Array {idx} is {arr.ndim}-D, expected 3-D")
+        if arr.shape[0] != n_bands:
+            raise ValueError(
+                f"Array {idx} has {arr.shape[0]} bands, expected {n_bands}")
+
+    # 验证 control_idx
+    if control_idx < 0 or control_idx >= n_images:
+        raise ValueError(
+            f"control_idx={control_idx} out of range [0, {n_images})")
+
     bands = list(range(n_bands))
+
+    # ---- 单影像特例：恒等变换 ----
+    if n_images == 1:
+        result = [arrays[0].astype(np.float64, copy=True)]
+        theta_mu = np.zeros((n_bands, 1), dtype=np.float64)
+        theta_sigma = np.zeros((n_bands, 1), dtype=np.float64)
+        return result, theta_mu, theta_sigma
+
+    # ---- 多影像但无重叠：报错 ----
+    if len(overlaps) == 0:
+        raise ValueError(
+            "Multi-image BAGRN requires at least one overlap pair")
 
     # ---- 步骤 1: 计算重叠区的 μ 和 σ ----
     pair_means, pair_stds, pair_pixels = _overlap_means_stds(
@@ -313,10 +295,10 @@ def bagrn_normalize(
 
     # ---- 步骤 2: 求解补偿系数 ----
     theta_mu = _solve_compensation(
-        n_images, overlaps, pair_means, pair_pixels, control_idx,
+        n_images, overlaps, pair_means, pair_pixels, control_idx, n_bands,
     )
     theta_sigma = _solve_compensation(
-        n_images, overlaps, pair_stds, pair_pixels, control_idx,
+        n_images, overlaps, pair_stds, pair_pixels, control_idx, n_bands,
     )
 
     # ---- 步骤 3: 对每幅影像计算全局 μ、σ 然后 moment matching ----
@@ -329,12 +311,10 @@ def bagrn_normalize(
         sg_i = np.zeros(n_bands)
         for b_idx, band in enumerate(bands):
             band_data = arr[band]
-            if nd is None:
-                valid = np.isfinite(band_data)
-            else:
-                valid = band_data != nd
-            mu_i[b_idx] = band_data[valid].mean() if valid.sum() > 0 else 0.0
-            sg_i[b_idx] = band_data[valid].std()  if valid.sum() > 0 else 0.0
+            valid = _valid_mask(band_data, nd)
+            n_valid = valid.sum()
+            mu_i[b_idx] = band_data[valid].mean() if n_valid > 0 else 0.0
+            sg_i[b_idx] = band_data[valid].std()  if n_valid > 0 else 0.0
 
         result = _apply_moment_matching(
             arr, nd,

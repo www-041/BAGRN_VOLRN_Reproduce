@@ -335,6 +335,17 @@ def run_pipeline(args):
         if len(filtered) < 1:
             print(f"  跳过 {group_name}: 有效波段不足")
             continue
+        # 验证所有波段的 transform 和 CRS 一致
+        ref_tr = filtered[0][1]
+        ref_crs = filtered[0][2]
+        for idx, (_, tr, crs, _) in enumerate(filtered[1:], 1):
+            if tr != ref_tr:
+                raise ValueError(
+                    f"波段 {idx} 的 transform 与波段 0 不一致: {tr} vs {ref_tr}")
+            if crs != ref_crs:
+                raise ValueError(
+                    f"波段 {idx} 的 CRS 与波段 0 不一致: {crs} vs {ref_crs}")
+        
         # 堆叠为 (n_bands, rows, cols)，使用第一幅有效波段的元数据
         stacked = np.stack([f[0] for f in filtered], axis=0)
         arrays.append(stacked)
@@ -578,11 +589,11 @@ def run_pipeline(args):
         "volrn": {
             "executed": args.mode in ("volrn", "bagrn_volrn"),
             "time_seconds": round(t_volrn, 2),
-            "n_blocks": volrn_coeffs.shape[0] if volrn_coeffs is not None and (hasattr(volrn_coeffs, 'size') and volrn_coeffs.size > 0) else 0,
+            "n_blocks": volrn_coeffs.shape[1] if volrn_coeffs is not None and volrn_coeffs.ndim >= 2 and (hasattr(volrn_coeffs, 'size') and volrn_coeffs.size > 0) else 0,
         },
         "output_files": output_paths,
         "mosaic": mosaic_path,
-        "metrics": metrics_data if args.eval else None,
+        "metrics": metrics_data if (args.eval or args.compare) else None,
     }
 
     if volrn_error is not None:

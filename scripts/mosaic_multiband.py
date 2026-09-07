@@ -85,7 +85,7 @@ def process_band(band_name, sensor_filter=None):
     t0 = time.time()
     bagrn_result, _, _ = bagrn_normalize(arrays, nodata_list, overlaps, control_idx=0)
     t_bagrn = time.time() - t0
-    bagrn_metrics = compute_all(bagrn_result, arrays, nodata_list, overlaps, bands)
+    bagrn_metrics = compute_all(arrays, bagrn_result, nodata_list, overlaps, bands)  # Fixed
     print(f"  BAGRN ({t_bagrn:.1f}s): {bagrn_metrics}")
 
     # Save BAGRN individual images

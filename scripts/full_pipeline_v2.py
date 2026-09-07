@@ -159,7 +159,7 @@ def step2_bagrn(images, overlaps, out_dir):
     bands = [0]
 
     bagrn_result, _, _ = bagrn_normalize(arrs, nodatas, overlaps, control_idx=0)
-    metrics = compute_all(bagrn_result, arrs, nodatas, overlaps, bands)
+    metrics = compute_all(arrs, bagrn_result, nodatas, overlaps, bands)  # Fixed: before=original, after=bagrn
     print(f"  BAGRN metrics: {metrics}")
 
     # Save BAGRN individual images (squeeze back to 2D)
@@ -188,7 +188,7 @@ def step3_volrn(images, bagrn_result, overlaps, out_dir):
 
     # Compute metrics (need 3D arrays)
     arrs_3d = [img['arr'][np.newaxis, :, :] for img in images]
-    metrics = compute_all(volrn_result, arrs_3d, nodatas, overlaps, [0])
+    metrics = compute_all(arrs_3d, volrn_result, nodatas, overlaps, [0])  # Fixed: before=original, after=volrn
     print(f"  VOLRN metrics: {metrics}")
 
     # Save VOLRN individual images (squeeze band dim)

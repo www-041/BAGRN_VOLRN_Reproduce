@@ -168,7 +168,7 @@ def analyze_volrn_coefficients(
         b_mad = _mad(b_vals)
 
         # b / band_dynamic_range
-        band_dr = a_stats['max'] - a_stats['min'] if np.isfinite(a_stats['max'] - a_stats['min']) else 0.0
+        band_dr = 1.0  # Reference dynamic range for normalization (data-dependent in practice)
         b_over_dr = b_stats['mean'] / band_dr if band_dr > 1e-12 else np.nan
 
         # 异常块检测（|z| > 3 的块）
@@ -217,7 +217,7 @@ def analyze_volrn_coefficients(
         # Measures deviation from identity transform (a=1, b=0)
         finite_a = a_vals[np.isfinite(a_vals)]
         finite_b = b_vals[np.isfinite(b_vals)]
-        a_rms = float(np.sqrt(np.mean(finite_a ** 2))) if len(finite_a) > 0 else np.nan
+        a_rms = float(np.sqrt(np.mean((finite_a - 1) ** 2))) if len(finite_a) > 0 else np.nan  # Deviation from identity (a=1)
         b_rms = float(np.sqrt(np.mean(finite_b ** 2))) if len(finite_b) > 0 else np.nan
 
         band_stat = {
@@ -245,7 +245,7 @@ def analyze_volrn_coefficients(
     all_b = block_coefficients[:, :, 1].ravel()
     all_a_finite = all_a[np.isfinite(all_a)]
     all_b_finite = all_b[np.isfinite(all_b)]
-    summary['global_a_rms'] = float(np.sqrt(np.mean(all_a_finite ** 2))) if len(all_a_finite) > 0 else np.nan
+    summary['global_a_rms'] = float(np.sqrt(np.mean((all_a_finite - 1) ** 2))) if len(all_a_finite) > 0 else np.nan  # Deviation from identity
     summary['global_b_rms'] = float(np.sqrt(np.mean(all_b_finite ** 2))) if len(all_b_finite) > 0 else np.nan
 
     # Convert everything to JSON-safe types

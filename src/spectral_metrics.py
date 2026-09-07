@@ -154,6 +154,11 @@ def compute_sam(
             逐像素 SAM 值；无效像素为 NaN。
     """
     orig_f, norm_f = _validate_inputs(original, normalized, nodata)
+    
+    # Honor bands parameter: select only specified bands
+    if bands is not None:
+        orig_f = orig_f[bands]
+        norm_f = norm_f[bands]
 
     # 有效像素掩码：所有波段均有效
     all_valid = _build_valid_mask(orig_f, nodata)

@@ -1092,7 +1092,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--crop-size",
         type=int,
-        default=512,
+        default=None,  # Don't override YAML when omitted
         help="冒烟测试裁剪大小（默认 512）",
     )
     parser.add_argument(
@@ -1142,7 +1142,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         config.smoke = True
     if args.output_root:
         config.output_root = args.output_root
-    if args.crop_size:
+    if args.crop_size is not None:  # Only override if explicitly provided
         config.smoke_crop_size = args.crop_size
 
     # 输出目录

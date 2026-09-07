@@ -79,7 +79,7 @@ for band in BANDS:
     print(f"  BAGRN done ({t_bagrn:.1f}s)")
 
     # Metrics
-    metrics = compute_all(bagrn_result, arrs, nodatas, overlaps, [0])
+    metrics = compute_all(arrs, bagrn_result, nodatas, overlaps, [0])  # Fixed: before=original, after=bagrn
     print(f"  Metrics: {metrics}")
 
     # Save metrics

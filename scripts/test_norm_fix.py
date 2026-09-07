@@ -44,7 +44,7 @@ def run_two_images(name, dir1, dir2, band_idx=0, crop_size=512):
         tifs = sorted(glob.glob(os.path.join(d, '*.TIF')))
         tifs = [f for f in tifs if '_PAN' not in os.path.basename(f).upper()]
         f = tifs[min(band_idx, len(tifs) - 1)]
-        arr, tr, nd, crs = read_geotiff(f)
+        arr, tr, crs, nd = read_geotiff(f)  # Fixed: correct order is arr, transform, crs, nodata
         arrays.append(arr)
         transforms.append(tr)
         nodata_list.append(nd)

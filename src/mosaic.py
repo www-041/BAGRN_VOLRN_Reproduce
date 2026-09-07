@@ -170,9 +170,9 @@ def create_mosaic(
     output_path : str
     """
     n_images = len(arrays)
-    n_bands = arrays[0].shape[0]
     if n_images == 0:
         raise ValueError("没有影像可供镶嵌")
+    n_bands = arrays[0].shape[0]
 
     from src.experiment_config import VALID_MOSAIC_MODES
     if mode not in VALID_MOSAIC_MODES:
@@ -189,8 +189,9 @@ def create_mosaic(
     if resolution <= 0:
         raise ValueError(f"无效分辨率: {resolution}")
 
-    width = max(1, int(round(out_width_geo / resolution)))
-    height = max(1, int(round(out_height_geo / resolution)))
+    import math
+    width = max(1, int(math.ceil(out_width_geo / resolution)))
+    height = max(1, int(math.ceil(out_height_geo / resolution)))
 
     out_transform = rasterio.Affine(resolution, 0, left, 0, -resolution, top)
 
@@ -214,7 +215,7 @@ def create_mosaic(
                 src_crs=crs,
                 dst_transform=out_transform,
                 dst_crs=crs,
-                src_nodata=nd if nd is not None else 0,
+                src_nodata=nd,
                 dst_nodata=np.nan,
                 init_dest_nodata=True,
                 resampling=Resampling.bilinear,
@@ -508,11 +509,16 @@ def create_mosaic(
     print(f"  NaN inside final mask: {nan_in_valid}")
     print(f"  Inf inside final mask: {inf_in_valid}")
 
-    # 未覆盖区域设为 nodata
-    nd_val = nodata_values[0] if nodata_values[0] is not None else 0.0
+    # 确定输出 nodata 值
+    # 如果所有 nodata 都是 None，使用 NaN（浮点输出）；否则使用声明的 nodata
+    any_nodata = any(nd is not None for nd in nodata_values)
+    if any_nodata:
+        nd_val = next(nd for nd in nodata_values if nd is not None)
+    else:
+        nd_val = np.nan  # 无声明 nodata 时，用 NaN 表示未覆盖区
 
-    # 强制清理：有效区内残留 NaN/Inf → nodata
-    bad_mask = ~np.isfinite(result[0])
+    # 强制清理：有效区内残留 NaN/Inf → nodata（检查所有波段）
+    bad_mask = ~np.all(np.isfinite(result), axis=0)
     result[:, bad_mask] = nd_val
     result[:, ~final_mask] = nd_val
 
@@ -521,7 +527,12 @@ def create_mosaic(
     assert nan_check == 0, f"Assertion failed: {nan_check} NaN in final valid pixels"
 
     # ---- 4. 写出 ----
+    # 如果 nodata 是 None 且结果含 NaN，使用 float32 保留 NaN
     out_dtype = arrays[0].dtype.name
+    has_nan_nodata = (np.isnan(nd_val) if np.isscalar(nd_val) and isinstance(nd_val, float) else False)
+    if has_nan_nodata:
+        out_dtype = "float32"
+
     profile = {
         "driver": "GTiff",
         "dtype": out_dtype,
@@ -531,7 +542,7 @@ def create_mosaic(
         "transform": out_transform,
         "crs": crs,
         "compress": "lzw",
-        "nodata": nd_val,
+        "nodata": None if has_nan_nodata else nd_val,
     }
 
     with rasterio.open(output_path, "w", **profile) as dst:

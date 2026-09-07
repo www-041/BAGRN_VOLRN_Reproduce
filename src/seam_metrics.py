@@ -20,9 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_array(arr: NDArray, nodata: Optional[float] = None) -> NDArray:
-    """将输入转为float64并处理NoData，返回掩码（True=有效像素）"""
+    """将输入转为float64并处理NoData，返回掩码（True=有效像素）
+    始终排除 NaN/Inf，即使 nodata=None。
+    """
     a = np.asarray(arr, dtype=np.float64)
-    mask = np.ones(a.shape, dtype=bool)
+    mask = np.isfinite(a)  # Always exclude NaN/Inf
     if nodata is not None:
         mask &= a != nodata
     return a, mask
