@@ -772,8 +772,8 @@ class MultibandPipeline:
             i, j = ov["idx_i"], ov["idx_j"]
             arr_i_reg = arrays[i][registration_band_idx]
             arr_j_reg = arrays[j][registration_band_idx]
-            nd_i = nodata_values[i] if nodata_values[i] is not None else 0
-            nd_j = nodata_values[j] if nodata_values[j] is not None else 0
+            nd_i = nodata_values[i]  # Keep None as None, don't convert to 0
+            nd_j = nodata_values[j]  # Keep None as None, don't convert to 0
 
             # 尝试1: 块匹配
             matches, screening = collect_block_matches(
@@ -955,7 +955,7 @@ class MultibandPipeline:
                 h, w = arrays[idx].shape[1], arrays[idx].shape[2]
                 local_dx = np.zeros((h, w), dtype=np.float64)
                 local_dy = np.zeros((h, w), dtype=np.float64)
-                nd_val = nodata_values[idx] if nodata_values[idx] is not None else 0.0
+                nd_val = nodata_values[idx]  # Keep None as None, don't convert to 0.0
 
                 warped = warp_multiband_with_displacement_field(
                     arrays[idx], gdx, gdy,
@@ -1090,7 +1090,7 @@ class MultibandPipeline:
                         bagrn_normalized, _, _ = bagrn_normalize(
                             arrays, nodata_values_list, overlaps, control_idx,
                         )
-                    volrn_normalized, volrn_block_coeffs = volrn_normalize(
+                    volrn_normalized, volrn_block_coeffs, volrn_diagnostics = volrn_normalize(
                         bagrn_normalized, transforms, bounds_list, nodata_values_list,
                         block_size_pixels=volrn_params.get("block_size", 400),
                         lambda_param=volrn_params.get("lambda", 0.5),
@@ -1098,6 +1098,7 @@ class MultibandPipeline:
                         max_iter=volrn_params.get("max_iter", 200),
                         tol=volrn_params.get("tol", 1e-4),
                         verbose=False,
+                        return_diagnostics=True,
                     )
                     results[method] = volrn_normalized
                     results[f"{method}_block_coefficients"] = volrn_block_coeffs
@@ -1551,7 +1552,7 @@ class MultibandPipeline:
                         h, w = scene_data["arrays"][idx].shape[1], scene_data["arrays"][idx].shape[2]
                         local_dx = np.zeros((h, w), dtype=np.float64)
                         local_dy = np.zeros((h, w), dtype=np.float64)
-                        nd_val = scene_data["nodata_values"][idx] if scene_data["nodata_values"][idx] is not None else 0.0
+                        nd_val = scene_data["nodata_values"][idx]  # Keep None as None
                         warped = warp_multiband_with_displacement_field(
                             scene_data["arrays"][idx], gdx, gdy,
                             local_dx, local_dy, nd_val,
