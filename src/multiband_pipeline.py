@@ -577,15 +577,24 @@ class MultibandPipeline:
                 )
 
         # 统一分辨率
-        resolutions = [abs(tr.a) for tr in transforms]
-        resolution = min(resolutions)  # 取最精细分辨率
-
-        # 验证 CRS 一致性
-        if len(set(crs_list)) > 1:
-            raise ValueError(
-                f"CRS 不一致: {dict(zip(scene_ids, crs_list))}。"
-                f"所有场景必须使用相同 CRS"
-            )
+        # Strict mode validation
+        if self.config.common_bands_strategy == "strict":
+            from src.scene_preflight import validate_strict_scene_grids
+            validate_strict_scene_grids(scene_ids, transforms, crs_list)
+            # Use first scene's resolution (all should be same in strict mode)
+            resolution = abs(transforms[0].a)
+        else:
+            # Non-strict mode: use minimum resolution
+            resolutions = [abs(tr.a) for tr in transforms]
+            resolution = min(resolutions)
+            
+            # Still validate CRS consistency
+            if len(set(crs_list)) > 1:
+                raise ValueError(
+                    f"CRS 不一致: {dict(zip(scene_ids, crs_list))}。"
+                    f"所有场景必须使用相同 CRS"
+                )
+        
         crs = crs_list[0]
 
         elapsed = time.time() - t0
