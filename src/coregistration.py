@@ -286,7 +286,7 @@ def compute_shifts_from_overlap(arr_ref, tr_ref, arr_tgt, tr_tgt,
         n_inlier = int(inlier.sum())
     else:
         shift_y, shift_x = float(med_y), float(med_x)
-        confidence = 1.0
+        confidence = 0.0  # Zero inliers = no reliable estimate
         n_inlier = 0
 
     # 块级残差统计（相对全局模型的残差，不是绝对位移量）
@@ -1527,8 +1527,8 @@ def spatial_holdout_validation(
                 'total_cells': n_grid_rows * n_grid_cols, 'coverage_ratio': 0,
                 'folds': [], 'aggregate': None}
 
-    c0, r0 = rowcol(tr_ref, overlap[0], overlap[3])
-    c1, r1 = rowcol(tr_ref, overlap[2], overlap[1])
+    r0, c0 = rowcol(tr_ref, overlap[0], overlap[3])
+    r1, c1 = rowcol(tr_ref, overlap[2], overlap[1])
     r0, r1 = max(0, r0), min(h_ref, r1)
     c0, c1 = max(0, c0), min(w_ref, c1)
 
@@ -1987,8 +1987,8 @@ def analyze_displacement_spikes(
 
     # overlap = (left, bottom, right, top) 地理坐标，转为参考图像的行列范围
     from rasterio.transform import rowcol
-    c0, r0 = rowcol(tr_ref, overlap[0], overlap[3])   # left, top → row0, col0
-    c1, r1 = rowcol(tr_ref, overlap[2], overlap[1])   # right, bottom → row1, col1
+    r0, c0 = rowcol(tr_ref, overlap[0], overlap[3])   # left, top → row0, col0
+    r1, c1 = rowcol(tr_ref, overlap[2], overlap[1])   # right, bottom → row1, col1
     r0 = max(0, r0)
     c0 = max(0, c0)
     r1 = min(h_ref, r1)
@@ -2559,8 +2559,8 @@ def validate_registration_independent_grid(
         return {'blocks': [], 'stats': None, 'coverage': None,
                 'failure_reason': 'No geographic overlap between images'}
 
-    c0, r0 = rowcol(tr_ref, overlap[0], overlap[3])
-    c1, r1 = rowcol(tr_ref, overlap[2], overlap[1])
+    r0, c0 = rowcol(tr_ref, overlap[0], overlap[3])
+    r1, c1 = rowcol(tr_ref, overlap[2], overlap[1])
     r0, r1 = max(0, r0), min(h_ref, r1)
     c0, c1 = max(0, c0), min(w_ref, c1)
     overlap_h, overlap_w = r1 - r0, c1 - c0
@@ -2866,8 +2866,8 @@ def generate_hard_seam_mosaic(arr_ref, arr_target, tr_ref, tr_target,
     if overlap is None:
         return None, 0, tr_ref
 
-    c0, r0 = rowcol(tr_ref, overlap[0], overlap[3])
-    c1, r1 = rowcol(tr_ref, overlap[2], overlap[1])
+    r0, c0 = rowcol(tr_ref, overlap[0], overlap[3])
+    r1, c1 = rowcol(tr_ref, overlap[2], overlap[1])
     r0, r1 = max(0, r0), min(h_ref, r1)
     c0, c1 = max(0, c0), min(w_ref, c1)
 
