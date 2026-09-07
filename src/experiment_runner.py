@@ -571,16 +571,17 @@ def run_scale(config: ExperimentConfig, args: argparse.Namespace) -> Dict[str, A
     """
     多场景规模实验。
 
-    测试 N=4, 8, 12 景场景下的运行时间、内存占用和指标。
+    测试 N=2, 4, 6 景场景下的运行时间、内存占用和指标。
+    每个 N 值有独立的输出目录 (n2, n4, n6)。
     """
     from src.multiband_pipeline import MultibandPipeline
 
-    output_dir = os.path.join(config.output_root, config.experiment_name, "scale")
-    os.makedirs(output_dir, exist_ok=True)
+    scale_root = os.path.join(config.output_root, config.experiment_name, "scale")
+    os.makedirs(scale_root, exist_ok=True)
 
     logger.info("=" * 60)
     logger.info("实验类型: scale")
-    logger.info("输出目录: %s", output_dir)
+    logger.info("输出根目录: %s", scale_root)
     logger.info("=" * 60)
 
     scene_counts = config.scale_scene_counts
@@ -595,21 +596,40 @@ def run_scale(config: ExperimentConfig, args: argparse.Namespace) -> Dict[str, A
         "scene_counts": scene_counts,
         "total_available_scenes": total_scenes,
         "results": [],
+        "pipeline_status": "success",
     }
 
-    scale_csv = os.path.join(output_dir, "scale_results.csv")
-    scale_header = ["n_scenes", "elapsed_sec", "peak_memory_gb", "adm", "adsd", "cd", "gl", "rdoa", "ave"]
+    scale_csv = os.path.join(scale_root, "scale_results.csv")
+    scale_header = ["n_scenes", "elapsed_sec", "peak_memory_gb", "adm", "adsd", "cd", "gl", "rdoa", "ave", "status"]
+
+    any_failed = False
 
     for n in scene_counts:
-        if n > total_scenes:
-            logger.warning("请求 %d 景，但仅有 %d 景，跳过", n, total_scenes)
-            continue
+        # Create isolated output directory for this N
+        n_dir = os.path.join(scale_root, f"n{n}")
+        os.makedirs(n_dir, exist_ok=True)
 
         logger.info("测试规模: N=%d 景", n)
+        logger.info("输出目录: %s", n_dir)
+
+        result_entry = {
+            "n_scenes": n,
+            "scene_ids": [s["id"] for s in all_scenes[:n]],
+            "output_dir": n_dir,
+        }
+
+        if n > total_scenes:
+            logger.error("请求 %d 景，但仅有 %d 景，标记为失败", n, total_scenes)
+            result_entry["pipeline_status"] = "failed"
+            result_entry["error"] = f"Requested {n} scenes but only {total_scenes} available"
+            summary["results"].append(result_entry)
+            any_failed = True
+            continue
 
         # 截取前 n 景
         cfg = copy.deepcopy(config)
         cfg.scenes = all_scenes[:n]
+        cfg.output_root = n_dir  # Isolate output for this N
 
         t0 = time.time()
         peak_mem = 0.0
@@ -626,6 +646,11 @@ def run_scale(config: ExperimentConfig, args: argparse.Namespace) -> Dict[str, A
             except Exception:
                 peak_mem = 0.0
 
+            # Check pipeline status
+            pipeline_status = results.get("pipeline_status", "unknown")
+            if pipeline_status != "success":
+                any_failed = True
+
             metrics = {}
             if results.get("metrics") and "bagrn_volrn" in results["metrics"]:
                 metrics = results["metrics"]["bagrn_volrn"]
@@ -634,28 +659,37 @@ def run_scale(config: ExperimentConfig, args: argparse.Namespace) -> Dict[str, A
                 first_method = next(iter(results["metrics"]))
                 metrics = results["metrics"][first_method]
 
-            row = {
-                "n_scenes": n,
+            result_entry.update({
                 "elapsed_sec": round(elapsed, 2),
                 "peak_memory_gb": round(peak_mem, 3),
+                "pipeline_status": pipeline_status,
+                "registration_connected": results.get("registration_connected", False),
+                "failed_methods": results.get("failed_methods", []),
                 "adm": metrics.get("adm", float("nan")),
                 "adsd": metrics.get("adsd", float("nan")),
                 "cd": metrics.get("cd", float("nan")),
                 "gl": metrics.get("gl", float("nan")),
                 "rdoa": metrics.get("rdoa", float("nan")),
                 "ave": metrics.get("ave", float("nan")),
-            }
-            summary["results"].append(row)
+            })
+            summary["results"].append(result_entry)
 
             _csv_writerow(scale_csv, scale_header, [[
-                row["n_scenes"], row["elapsed_sec"], row["peak_memory_gb"],
-                row["adm"], row["adsd"], row["cd"], row["gl"],
-                row["rdoa"], row["ave"],
+                result_entry["n_scenes"], result_entry["elapsed_sec"], result_entry["peak_memory_gb"],
+                result_entry["adm"], result_entry["adsd"], result_entry["cd"], result_entry["gl"],
+                result_entry["rdoa"], result_entry["ave"], result_entry["pipeline_status"],
             ]])
 
         except Exception as exc:
             logger.error("规模实验失败 (N=%d): %s", n, exc)
-            summary["results"].append({"n_scenes": n, "error": str(exc)})
+            result_entry["pipeline_status"] = "failed"
+            result_entry["error"] = str(exc)
+            summary["results"].append(result_entry)
+            any_failed = True
+
+    # Aggregate failure status
+    if any_failed:
+        summary["pipeline_status"] = "failed"
 
     summary["scale_results_csv"] = scale_csv
     return summary
