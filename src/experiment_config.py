@@ -116,6 +116,7 @@ class ExperimentConfig:
     seed: int = 42
     dry_run: bool = False
     smoke: bool = False
+    enable_spectral_metrics: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +447,30 @@ def resolve_band_path(scene: Dict[str, Any], band_name: str) -> Optional[str]:
 # 内部工具函数
 # ---------------------------------------------------------------------------
 
+
+def _parse_bool(value) -> bool:
+    """
+    Robust boolean parser for configuration values.
+    
+    Accepts: bool, str ("true"/"false"/"yes"/"no"/"1"/"0"), int (0/1)
+    Raises ValueError for invalid inputs.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        value_lower = value.strip().lower()
+        if value_lower in {"true", "yes", "1", "on"}:
+            return True
+        if value_lower in {"false", "no", "0", "off"}:
+            return False
+        raise ValueError(f"Cannot parse '{value}' as boolean")
+    if isinstance(value, (int, float)):
+        if value in (0, 1):
+            return bool(value)
+        raise ValueError(f"Cannot parse {value} as boolean (must be 0 or 1)")
+    raise ValueError(f"Cannot parse {type(value).__name__} as boolean")
+
+
 def _dict_to_config(raw: Dict[str, Any]) -> ExperimentConfig:
     """
     将原始字典转换为 ExperimentConfig 数据类。
@@ -474,8 +499,9 @@ def _dict_to_config(raw: Dict[str, Any]) -> ExperimentConfig:
         "smoke_scene_count": int,
         "common_bands_strategy": str,
         "seed": int,
-        "dry_run": bool,
-        "smoke": bool,
+        "dry_run": _parse_bool,
+        "smoke": _parse_bool,
+        "enable_spectral_metrics": _parse_bool,
     }
 
     for key, value in raw.items():

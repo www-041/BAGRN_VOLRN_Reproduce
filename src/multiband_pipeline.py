@@ -240,6 +240,26 @@ class MultibandPipeline:
         if self.smoke:
             self._smoke_meta = self._collect_smoke_metadata()
 
+    def _requested_normalization_methods(self) -> List[str]:
+        """
+        Get the list of requested normalization methods in order.
+        
+        Returns base methods (original, bagrn, bagrn_volrn) plus any
+        ablation methods, with duplicates removed while preserving order.
+        """
+        base_methods = ["original", "bagrn", "bagrn_volrn"]
+        all_methods = base_methods + list(self.config.ablation_methods)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        result = []
+        for method in all_methods:
+            if method not in seen:
+                seen.add(method)
+                result.append(method)
+        
+        return result
+
     # -----------------------------------------------------------------------
     # 冒烟模式辅助
     # -----------------------------------------------------------------------
