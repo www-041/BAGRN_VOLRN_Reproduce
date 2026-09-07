@@ -45,7 +45,7 @@ def phase_corr_shift(ref, tgt):
     r = ref.copy()
     t = tgt.copy()
 
-    mask = (r > 0) & (t > 0)
+    mask = np.isfinite(r) & np.isfinite(t)  # Fixed: check finite, not > 0
     valid = mask.sum()
     if valid < 100:
         return 0.0, 0.0, 0.0, valid

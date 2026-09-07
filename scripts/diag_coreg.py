@@ -56,7 +56,7 @@ for name, r1, r2, c1, c2 in [
     ph, pw = p1.shape
     if ph < 10 or pw < 10:
         continue
-    mask = (p1 > 0) & (p2 > 0)
+    mask = np.isfinite(p1) & np.isfinite(p2)  # Fixed: check finite, not > 0
     if mask.sum() < 100:
         continue
     cc2 = correlate(p2, p1, mode='full', method='fft')
@@ -68,7 +68,7 @@ for name, r1, r2, c1, c2 in [
 # Check: what if we DON'T shift at all?
 print("\n--- Without co-registration ---")
 diff_noshift = patch1 - patch2
-mask = (patch1 > 0) & (patch2 > 0)
+mask = np.isfinite(patch1) & np.isfinite(patch2)  # Fixed
 print(f"  Mean diff: {diff_noshift[mask].mean():.2f}")
 print(f"  Std diff: {diff_noshift[mask].std():.2f}")
 print(f"  ADM: {abs(diff_noshift[mask].mean()):.2f}")
