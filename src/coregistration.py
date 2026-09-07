@@ -42,108 +42,98 @@ def structural_image(img, valid):
 
 
 def phase_correlation(img_ref, img_target, valid_ref=None, valid_tgt=None):
-    """Compute subpixel shift using true phase correlation (normalized cross-power spectrum).
+    """Pure same-grid phase correlation.
 
-    Uses skimage.registration.phase_cross_correlation with normalization="phase".
-    返回值直接是 moving_image 需要施加的位移（不需要取反）。
+    Computes subpixel shift between two 2D arrays on the same grid.
+    No transforms, CRS, or reprojection - purely array-based.
 
     Parameters
     ----------
     img_ref, img_target : 2D ndarray
+        Reference and target images on the same grid.
     valid_ref, valid_tgt : 2D bool ndarray or None
+        Optional validity masks.
 
     Returns
     -------
-    shift_y, shift_x : float, 像素位移（直接施加到 target 即可对齐到 ref）
-    confidence : float, 配准后 NCC
+    shift_y, shift_x : float
+        Pixel shift to apply to target to align with ref.
+    confidence : float
+        NCC confidence after alignment.
     """
     from skimage.registration import phase_cross_correlation
     from scipy.ndimage import shift as ndimage_shift
-    from rasterio.warp import reproject, Resampling
 
-    # Multi-resolution fix: use common grid instead of naive truncation
-    # Determine common resolution (finer of the two)
-    res_ref = abs(tr_ref.a)
-    res_tgt = abs(tr_tgt.a)
-    common_res = min(res_ref, res_tgt)
+    # Require 2D arrays
+    if img_ref.ndim != 2 or img_target.ndim != 2:
+        raise ValueError("phase_correlation requires 2D arrays")
+
+    # Defensive crop to common minimum shape (one-pixel rounding tolerance)
+    h = min(img_ref.shape[0], img_target.shape[0])
+    w = min(img_ref.shape[1], img_target.shape[1])
+    ref = img_ref[:h, :w].astype(np.float64)
+    tgt = img_target[:h, :w].astype(np.float64)
+
+    # Build finite + optional masks
+    finite_ref = np.isfinite(ref)
+    finite_tgt = np.isfinite(tgt)
     
-    # Calculate common grid dimensions based on geographic overlap
-    # For simplicity, use the reference image's grid as common grid
-    # and reproject target to match
-    h_ref, w_ref = img_ref.shape
-    ref = img_ref.astype(np.float64)
+    if valid_ref is not None:
+        mask_ref = finite_ref & valid_ref[:h, :w]
+    else:
+        mask_ref = finite_ref
     
-    # If target has different resolution, reproject to common grid
-    if abs(res_ref - res_tgt) > 1e-10:
-        # Create target array on common grid
-        tgt = np.full((h_ref, w_ref), np.nan, dtype=np.float64)
-        reproject(
-            source=img_target.astype(np.float64),
-            destination=tgt,
-            src_transform=tr_tgt,
-            src_crs=crs_tgt if 'crs_tgt' in locals() else 'EPSG:4326',
-            dst_transform=tr_ref,
-            dst_crs=crs_ref if 'crs_ref' in locals() else 'EPSG:4326',
-            resampling=Resampling.bilinear,
-        )
+    if valid_tgt is not None:
+        mask_tgt = finite_tgt & valid_tgt[:h, :w]
     else:
-        # Same resolution: use original approach
-        h = min(img_ref.shape[0], img_target.shape[0])
-        w = min(img_ref.shape[1], img_target.shape[1])
-        ref = img_ref[:h, :w].astype(np.float64)
-        tgt = img_target[:h, :w].astype(np.float64)
+        mask_tgt = finite_tgt
 
-    # 构建联合有效掩膜
-    if valid_ref is not None and valid_tgt is not None:
-        if ref.shape == valid_ref.shape and tgt.shape == valid_tgt.shape:
-            joint = valid_ref & valid_tgt
-        else:
-            # Different shapes after reprojection: use finite check
-            joint = np.isfinite(ref) & np.isfinite(tgt)
-    else:
-        joint = np.isfinite(ref) & np.isfinite(tgt)
-
+    # Joint valid pixels
+    joint = mask_ref & mask_tgt
+    
     if joint.sum() < 100:
         return 0.0, 0.0, 0.0
 
-    ref[~joint] = 0
-    tgt[~joint] = 0
+    # Zero out invalid pixels for phase correlation
+    ref_clean = np.where(joint, ref, 0.0)
+    tgt_clean = np.where(joint, tgt, 0.0)
 
-    # 真正的相位相关：normalization="phase" 使用归一化互功率谱
+    # Phase correlation
     shift, error, diffphase = phase_cross_correlation(
-        ref, tgt,
+        ref_clean, tgt_clean,
         upsample_factor=50,
-        normalization="phase",
+        normalization=None,
         disambiguate=True,
     )
 
     shift_y, shift_x = float(shift[0]), float(shift[1])
 
-    # 配准后 NCC：先应用位移，同时移动目标有效掩膜
-    aligned = ndimage_shift(tgt, [shift_y, shift_x], order=1,
+    # Compute NCC confidence on post-shift joint valid pixels
+    aligned = ndimage_shift(tgt_clean, [shift_y, shift_x], order=1,
                             mode='constant', cval=0, prefilter=False)
 
-    # 移动目标有效掩膜（nearest neighbor，不插值）
-    aligned_valid_tgt = ndimage_shift(
-        valid_tgt[:h, :w].astype(np.uint8) if valid_tgt is not None else joint.astype(np.uint8),
+    # Shift the target validity mask
+    aligned_mask = ndimage_shift(
+        mask_tgt.astype(np.uint8),
         [shift_y, shift_x], order=0, mode='constant', cval=0, prefilter=False
     ).astype(bool)
 
-    # 共同有效区域（排除平移后产生的空白）
-    v_ref_mask = valid_ref[:h, :w] if valid_ref is not None else joint
-    valid_after = v_ref_mask & aligned_valid_tgt & np.isfinite(ref) & np.isfinite(aligned)
+    # Final valid region
+    valid_after = mask_ref & aligned_mask & np.isfinite(aligned)
 
     if valid_after.sum() > 100:
-        r = ref[valid_after].ravel().astype(np.float64)
+        r = ref_clean[valid_after].ravel().astype(np.float64)
         a = aligned[valid_after].ravel().astype(np.float64)
-        r -= r.mean()
-        a -= a.mean()
+        r = r - r.mean()
+        a = a - a.mean()
         denom = np.linalg.norm(r) * np.linalg.norm(a) + 1e-12
         confidence = float(abs(np.dot(r, a) / denom))
     else:
         confidence = 0.0
 
     return shift_y, shift_x, confidence
+
+
 
 
 def compute_shifts_from_overlap(arr_ref, tr_ref, arr_tgt, tr_tgt,
