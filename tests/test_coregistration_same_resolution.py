@@ -59,3 +59,33 @@ def test_phase_correlation_no_undefined_variables():
         if re.search(pat, source_no_comments):
             found.append(pat)
     assert not found, f"phase_correlation contains forbidden variable references: {found}"
+
+
+def test_phase_correlation_from_overlap_uses_ground_overlap_only():
+    """phase_correlation_from_overlap must use geographic overlap, not full arrays."""
+    from rasterio.transform import from_origin
+    from src.coregistration import phase_correlation_from_overlap
+    
+    tr_ref = from_origin(0, 64, 1, 1)
+    tr_tgt = from_origin(32, 64, 1, 1)
+
+    ref = np.zeros((64, 64), dtype=np.float64)
+    tgt = np.zeros((64, 64), dtype=np.float64)
+
+    rng = np.random.default_rng(456)
+    pattern = rng.normal(size=(64, 32))
+
+    # Same ground region x=[32,64].
+    ref[:, 32:64] = pattern
+    tgt[:, 0:32] = pattern
+
+    sy, sx, confidence = phase_correlation_from_overlap(
+        ref, tr_ref,
+        tgt, tr_tgt,
+        nodata_ref=None,
+        nodata_tgt=None,
+    )
+
+    assert abs(sy) < 0.15
+    assert abs(sx) < 0.15
+    assert confidence > 0.5

@@ -763,7 +763,7 @@ class MultibandPipeline:
             }
 
         # ---- Step 1: 逐对匹配（用配准波段） ----
-        from src.coregistration import phase_correlation as pc_phase_correlation
+        from src.coregistration import phase_correlation_from_overlap
 
         pair_measurements: List[dict] = []
         rejected_edges: List[dict] = []
@@ -812,14 +812,15 @@ class MultibandPipeline:
                 )
                 continue
 
-            # 尝试2: phase correlation fallback（全重叠区）
+            # 尝试2: overlap phase correlation fallback（地理重叠区）
             logger.info("  [%d]-[%d] 块匹配失败，尝试 phase correlation fallback...", i, j)
             valid_i = np.isfinite(arr_i_reg) & (arr_i_reg != nd_i)
             valid_j = np.isfinite(arr_j_reg) & (arr_j_reg != nd_j)
             try:
-                sy, sx, conf_pc = pc_phase_correlation(
-                    arr_i_reg, arr_j_reg,
-                    valid_ref=valid_i, valid_tgt=valid_j,
+                sy, sx, conf_pc = phase_correlation_from_overlap(
+                    arr_i_reg, transforms[i],
+                    arr_j_reg, transforms[j],
+                    nodata_ref=nd_i, nodata_tgt=nd_j,
                 )
             except Exception as exc:
                 logger.warning("  [%d]-[%d] phase correlation 异常: %s", i, j, exc)
@@ -833,10 +834,10 @@ class MultibandPipeline:
                     "n_blocks": 1,
                     "rmse": 0.0, "p95": 0.0,
                     "matches": [], "screening": screening,
-                    "method": "phase_correlation",
+                    "method": "overlap_phase_correlation",
                 })
                 logger.info(
-                    "  [%d]-[%d] phase_correlation: dx=%.4f, dy=%.4f, conf=%.3f",
+                    "  [%d]-[%d] overlap_phase_correlation: dx=%.4f, dy=%.4f, conf=%.3f",
                     i, j, float(sx), float(sy), float(conf_pc),
                 )
                 continue

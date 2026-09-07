@@ -136,6 +136,68 @@ def phase_correlation(img_ref, img_target, valid_ref=None, valid_tgt=None):
 
 
 
+def phase_correlation_from_overlap(
+    arr_ref,
+    tr_ref,
+    arr_tgt,
+    tr_tgt,
+    nodata_ref=None,
+    nodata_tgt=None,
+):
+    """Phase correlation using geographic overlap only.
+
+    Extracts the geographic overlap region from both images,
+    then calls phase_correlation on the overlap patches.
+
+    Parameters
+    ----------
+    arr_ref, arr_tgt : 2D ndarray
+        Reference and target images.
+    tr_ref, tr_tgt : rasterio.Affine
+        Affine transforms for both images.
+    nodata_ref, nodata_tgt : float or None
+        NoData values.
+
+    Returns
+    -------
+    shift_y, shift_x, confidence : float
+    """
+    from rasterio.transform import array_bounds
+    from src.overlap import get_overlap_window
+
+    # Get bounds
+    bounds_ref = array_bounds(arr_ref.shape[0], arr_ref.shape[1], tr_ref)
+    bounds_tgt = array_bounds(arr_tgt.shape[0], arr_tgt.shape[1], tr_tgt)
+
+    # Get overlap window
+    overlap = get_overlap_window(bounds_ref, tr_ref, bounds_tgt, tr_tgt)
+    if overlap is None:
+        return 0.0, 0.0, 0.0
+
+    (row_start_ref, row_end_ref, col_start_ref, col_end_ref),     (row_start_tgt, row_end_tgt, col_start_tgt, col_end_tgt) = overlap
+
+    # Extract patches
+    patch_ref = arr_ref[row_start_ref:row_end_ref, col_start_ref:col_end_ref]
+    patch_tgt = arr_tgt[row_start_tgt:row_end_tgt, col_start_tgt:col_end_tgt]
+
+    # Crop to same size (defensive for rounding)
+    h = min(patch_ref.shape[0], patch_tgt.shape[0])
+    w = min(patch_ref.shape[1], patch_tgt.shape[1])
+    patch_ref = patch_ref[:h, :w]
+    patch_tgt = patch_tgt[:h, :w]
+
+    # Build masks
+    valid_ref = np.isfinite(patch_ref)
+    valid_tgt = np.isfinite(patch_tgt)
+    if nodata_ref is not None:
+        valid_ref &= (patch_ref != nodata_ref)
+    if nodata_tgt is not None:
+        valid_tgt &= (patch_tgt != nodata_tgt)
+
+    # Call phase_correlation
+    return phase_correlation(patch_ref, patch_tgt, valid_ref, valid_tgt)
+
+
 def compute_shifts_from_overlap(arr_ref, tr_ref, arr_tgt, tr_tgt,
                                  nodata_ref=0, nodata_tgt=0,
                                  max_global_shift=40):
