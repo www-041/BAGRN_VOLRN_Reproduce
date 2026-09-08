@@ -1404,6 +1404,7 @@ class MultibandPipeline:
         检查每种方法输出的数据质量：NaN/Inf/valid pixels/shape/transform/CRS。
 
         如果有效数据区出现 NaN 或 Inf，标记该方法为失败。
+        使用 normalized_dict["original"] 作为 reference valid mask。
         """
         logger.info("执行数据质量检查...")
         quality_results: Dict[str, dict] = {}
@@ -1413,6 +1414,9 @@ class MultibandPipeline:
         crs = scene_data["crs"]
         resolution = scene_data["resolution"]
         band_names = scene_data["band_names"]
+        
+        # 获取 reference (original) 作为 valid mask 的基准
+        reference_arrays = normalized_dict.get("original", None)
 
         for method, arrays in normalized_dict.items():
             if not isinstance(arrays, list) or not arrays or not isinstance(arrays[0], np.ndarray):
@@ -1426,30 +1430,41 @@ class MultibandPipeline:
                 bands_shape = arr.shape
                 n_bands_out = bands_shape[0]
 
-                # Count NaN / Inf in valid data area
-                if nd is not None:
-                    valid_mask = np.isfinite(arr).all(axis=0) & ~np.any(arr == nd, axis=0)
+                # 使用 reference 构建 valid mask
+                if reference_arrays and i < len(reference_arrays):
+                    ref = reference_arrays[i]
+                    ref_valid = np.isfinite(ref).all(axis=0)
+                    if nd is not None:
+                        ref_valid &= ~np.any(ref == nd, axis=0)
                 else:
-                    valid_mask = np.isfinite(arr).all(axis=0)
+                    # 无 reference 时使用 arr 自身
+                    if nd is not None:
+                        ref_valid = np.isfinite(arr).all(axis=0) & ~np.any(arr == nd, axis=0)
+                    else:
+                        ref_valid = np.isfinite(arr).all(axis=0)
 
-                nan_count = int(np.sum(~np.isfinite(arr)))
-                inf_count = int(np.sum(np.isinf(arr)))
-                valid_pixels = int(valid_mask.sum())
-                nodata_pixels = int(arr.shape[1] * arr.shape[2] - valid_pixels)
+                # 只统计 reference valid area 中的 NaN/Inf
+                nan_in_valid = int(np.sum(np.isnan(arr) & ref_valid[np.newaxis, :, :]))
+                inf_in_valid = int(np.sum(np.isinf(arr) & ref_valid[np.newaxis, :, :]))
+                total_nan = int(np.sum(np.isnan(arr)))
+                total_inf = int(np.sum(np.isinf(arr)))
+                valid_pixels = int(ref_valid.sum())
 
-                if nan_count > 0 or inf_count > 0:
+                # 只有 reference valid area 中出现 NaN/Inf 才判 fail
+                if nan_in_valid > 0 or inf_in_valid > 0:
                     method_quality["status"] = "fail"
                     method_quality["issues"].append(
-                        f"scene_{i}: NaN={nan_count}, Inf={inf_count} in valid area"
+                        f"scene_{i}: NaN={nan_in_valid}, Inf={inf_in_valid} in valid area"
                     )
 
                 method_quality[f"scene_{i}"] = {
                     "shape": list(bands_shape),
                     "n_bands": n_bands_out,
-                    "nan_count": nan_count,
-                    "inf_count": inf_count,
+                    "nan_in_valid": nan_in_valid,
+                    "inf_in_valid": inf_in_valid,
+                    "total_nan": total_nan,
+                    "total_inf": total_inf,
                     "valid_pixels": valid_pixels,
-                    "nodata_pixels": nodata_pixels,
                 }
 
             # Check transform and CRS consistency (use first scene)
@@ -1699,15 +1714,25 @@ class MultibandPipeline:
 
         total_elapsed = time.time() - total_t0
 
-        # 确定 pipeline_status
-        # Stage 1 methods: original, bagrn, volrn_only, bagrn_volrn
-        all_core_methods_ok = all(
-            m in method_arrays for m in ["original", "bagrn", "volrn_only", "bagrn_volrn"]
-        )
-        if registration_connected and all_core_methods_ok and not failed_methods:
+        # 确定 pipeline_status - 使用请求的方法列表
+        requested_methods = self._requested_normalization_methods()
+        failed_methods = [
+            m for m in requested_methods
+            if m not in method_arrays
+        ]
+        quality_failed_methods = [
+            m for m in requested_methods
+            if quality.get(m, {}).get("status") == "fail"
+        ]
+        
+        if registration_connected and not failed_methods and not quality_failed_methods:
             pipeline_status = "success"
         else:
             pipeline_status = "failed"
+            if failed_methods:
+                logger.warning("失败的方法: %s", failed_methods)
+            if quality_failed_methods:
+                logger.warning("质量检查失败的方法: %s", quality_failed_methods)
 
         logger.info("=" * 60)
         logger.info("管线完成: 总耗时 %.1fs, 状态=%s", total_elapsed, pipeline_status)

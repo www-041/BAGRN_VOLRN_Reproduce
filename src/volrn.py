@@ -603,21 +603,30 @@ def _interpolate_and_apply(
                 all_gm, all_gn, pixel_gm, pixel_gn,
             )
 
-            # 应用 f' = a*f + b，仅对有效像素且有有效系数的像素
+            # 应用 f' = a*f + b，处理三种情况：
+            # 1. 数据有效 + 系数有效：正常应用
+            # 2. 数据有效 + 系数无效：保持输入值（identity fallback）
+            # 3. 数据无效：保持 np.nan
             val = result[band]
-            if nd is not None:
-                valid = (val != nd) & np.isfinite(val)
-            else:
-                valid = np.isfinite(val)
+            data_valid = np.isfinite(val)  # 归一化域 nodata=None，只检查 finite
             
-            # 检查系数是否有效（IDW 插值可能产生 NaN）
             coeff_valid = np.isfinite(a_vals) & np.isfinite(b_vals)
-            apply_mask = valid & coeff_valid
             
-            # 只对既有有效数据又有有效系数的像素应用校正
+            # Case 1: 数据有效 + 系数有效
+            apply_mask = data_valid & coeff_valid
             result[band, apply_mask] = a_vals[apply_mask] * val[apply_mask] + b_vals[apply_mask]
-            # 将无数据或无有效系数的像素设为 np.nan
-            result[band, ~apply_mask] = np.nan
+            
+            # Case 2: 数据有效 + 系数无效 - 保持输入值，记录 warning
+            identity_mask = data_valid & ~coeff_valid
+            if identity_mask.any():
+                # 保持 val 不变（identity fallback）
+                logger.warning(
+                    f"Image {img_idx}, band {band}: {identity_mask.sum()} pixels "
+                    f"have valid data but invalid coefficients, using identity"
+                )
+            
+            # Case 3: 数据无效 - 保持 np.nan
+            result[band, ~data_valid] = np.nan
 
         results.append(result)
 
@@ -726,8 +735,10 @@ def volrn_normalize(
         nodata_masks.append(img_masks)
 
     # ---- Step 1: 图像分块 ----
+    # 归一化域使用 None 作为 nodata（invalid pixels are NaN）
+    norm_nodata_values = [None] * len(norm_arrays)
     blocks, pairs = image_blocking(
-        norm_arrays, transforms, bounds_list, nodata_values,
+        norm_arrays, transforms, bounds_list, norm_nodata_values,
         block_size_pixels, bands,
     )
 
@@ -778,8 +789,9 @@ def volrn_normalize(
         print("  警告: 部分波段 ADMM 未收敛")
 
     # ---- Step 4-5: 逐波段 IDW 插值并应用 ----
+    # 归一化域使用 None 作为 nodata
     results = _interpolate_and_apply(
-        norm_arrays, nodata_values, blocks, all_x,
+        norm_arrays, norm_nodata_values, blocks, all_x,
         block_size_pixels, transforms, bounds_list, bands,
     )
 
