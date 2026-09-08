@@ -8,6 +8,7 @@ Image Co-Registration Software for Multi-Sensor Satellite Data"
 Remote Sensing. 2017; 9(7):676.
 """
 import logging
+from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
 from scipy.ndimage import fourier_shift, shift as ndimage_shift
 from scipy.signal import fftconvolve
@@ -3292,3 +3293,136 @@ if __name__ == '__main__':
 
     info = coregister_pair(ref, tgt, out)
     print(f"\nResult: {info}")
+
+
+# ---------------------------------------------------------------------------
+# Robust 2-D shift estimation
+# ---------------------------------------------------------------------------
+
+def robust_shift_estimate(
+    shifts_x: np.ndarray,
+    shifts_y: np.ndarray,
+    confidences: np.ndarray,
+    params: Dict[str, Any] = None,
+) -> Dict[str, Any]:
+    """
+    Robust 2-D translation estimation using MAD-based filtering.
+    
+    Filters outliers using median absolute deviation, then computes
+    weighted mean of inliers.
+    """
+    if params is None:
+        params = {}
+    
+    mad_scale = params.get("robust_mad_scale", 3.0)
+    residual_floor = params.get("robust_residual_floor", 0.75)
+    min_inliers = params.get("robust_min_inliers", 5)
+    min_inlier_ratio = params.get("robust_min_inlier_ratio", 0.35)
+    
+    n = len(shifts_x)
+    if n == 0:
+        return {"shift_x": 0.0, "shift_y": 0.0, "confidence": 0.0, "n_inliers": 0, "status": "fail"}
+    
+    shifts_x = np.asarray(shifts_x, dtype=np.float64)
+    shifts_y = np.asarray(shifts_y, dtype=np.float64)
+    confidences = np.asarray(confidences, dtype=np.float64)
+    
+    # Filter by confidence threshold
+    conf_threshold = params.get("global_confidence_threshold", 0.50)
+    conf_mask = confidences >= conf_threshold
+    
+    if conf_mask.sum() < min_inliers:
+        return {"shift_x": 0.0, "shift_y": 0.0, "confidence": 0.0, "n_inliers": int(conf_mask.sum()), "status": "fail"}
+    
+    shifts_x_conf = shifts_x[conf_mask]
+    shifts_y_conf = shifts_y[conf_mask]
+    confs_conf = confidences[conf_mask]
+    
+    # Iterative MAD-based outlier rejection
+    for iteration in range(5):
+        median_x = np.median(shifts_x_conf)
+        median_y = np.median(shifts_y_conf)
+        
+        residuals = np.sqrt((shifts_x_conf - median_x)**2 + (shifts_y_conf - median_y)**2)
+        mad = np.median(residuals)
+        if mad < 1e-10:
+            break
+        
+        threshold = max(mad_scale * mad, residual_floor)
+        inlier_mask = residuals <= threshold
+        
+        if inlier_mask.sum() < min_inliers:
+            break
+        
+        shifts_x_conf = shifts_x_conf[inlier_mask]
+        shifts_y_conf = shifts_y_conf[inlier_mask]
+        confs_conf = confs_conf[inlier_mask]
+    
+    n_inliers = len(shifts_x_conf)
+    inlier_ratio = n_inliers / n
+    
+    if n_inliers < min_inliers or inlier_ratio < min_inlier_ratio:
+        return {"shift_x": 0.0, "shift_y": 0.0, "confidence": 0.0, "n_inliers": n_inliers, 
+                "inlier_ratio": inlier_ratio, "status": "fail"}
+    
+    # Weighted mean of inliers
+    weights = confs_conf / confs_conf.sum()
+    shift_x = float(np.sum(weights * shifts_x_conf))
+    shift_y = float(np.sum(weights * shifts_y_conf))
+    mean_conf = float(np.mean(confs_conf))
+    
+    # Compute residual statistics
+    residuals_final = np.sqrt((shifts_x_conf - shift_x)**2 + (shifts_y_conf - shift_y)**2)
+    
+    return {
+        "shift_x": shift_x,
+        "shift_y": shift_y,
+        "confidence": mean_conf,
+        "n_inliers": n_inliers,
+        "inlier_ratio": inlier_ratio,
+        "residual_median": float(np.median(residuals_final)),
+        "residual_rmse": float(np.sqrt(np.mean(residuals_final**2))),
+        "residual_p95": float(np.percentile(residuals_final, 95)),
+        "status": "pass",
+    }
+
+
+def classify_registration_quality(
+    result: Dict[str, Any],
+    params: Dict[str, Any],
+) -> str:
+    """
+    Classify registration quality as 'pass', 'warn', or 'fail'.
+    """
+    if result.get("status") == "fail":
+        return "fail"
+    
+    mean_conf = result.get("confidence", 0.0)
+    median = result.get("residual_median", 999.0)
+    rmse = result.get("residual_rmse", 999.0)
+    p95 = result.get("residual_p95", 999.0)
+    n_inliers = result.get("n_inliers", 0)
+    
+    # Check PASS thresholds
+    pass_conf = params.get("pass_min_mean_confidence", 0.50)
+    pass_median = params.get("pass_max_median", 0.35)
+    pass_rmse = params.get("pass_max_rmse", 0.60)
+    pass_p95 = params.get("pass_max_p95", 1.00)
+    min_blocks = params.get("final_min_blocks", 5)
+    
+    if (mean_conf >= pass_conf and median <= pass_median and 
+        rmse <= pass_rmse and p95 <= pass_p95 and n_inliers >= min_blocks):
+        return "pass"
+    
+    # Check WARN thresholds
+    warn_conf = params.get("warn_min_mean_confidence", 0.45)
+    warn_median = params.get("warn_max_median", 0.50)
+    warn_rmse = params.get("warn_max_rmse", 0.75)
+    warn_p95 = params.get("warn_max_p95", 1.25)
+    
+    if (mean_conf >= warn_conf and median <= warn_median and 
+        rmse <= warn_rmse and p95 <= warn_p95 and n_inliers >= min_blocks):
+        return "warn"
+    
+    return "fail"
+

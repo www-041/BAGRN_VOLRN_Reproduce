@@ -795,7 +795,11 @@ class MultibandPipeline:
             }
 
         # ---- Step 1: 逐对匹配（用配准波段） ----
-        from src.coregistration import phase_correlation_from_overlap
+        from src.coregistration import (
+    phase_correlation_from_overlap,
+    robust_shift_estimate,
+    classify_registration_quality,
+)
 
         pair_measurements: List[dict] = []
         rejected_edges: List[dict] = []
@@ -974,6 +978,39 @@ class MultibandPipeline:
         )
         global_shifts = adj_result["global_shifts"]
         logger.info("网络平差完成, 闭环误差数: %d", len(adj_result.get("loop_errors", [])))
+
+        # ---- Step 2.5: Registration Quality Gate ----
+        reg_params = self.config.registration_params
+        # Collect all pairwise shifts for quality assessment
+        all_shifts_x = []
+        all_shifts_y = []
+        all_confs = []
+        for p in pair_measurements:
+            all_shifts_x.append(p["shift_dx"])
+            all_shifts_y.append(p["shift_dy"])
+            all_confs.append(p["confidence"])
+        
+        if all_shifts_x:
+            robust_result = robust_shift_estimate(
+                np.array(all_shifts_x), np.array(all_shifts_y), np.array(all_confs),
+                reg_params,
+            )
+            quality = classify_registration_quality(robust_result, reg_params)
+            required_quality = reg_params.get("required_quality", "pass")
+            
+            logger.info("配准质量: %s (要求: %s)", quality, required_quality)
+            logger.info("  置信度=%.3f, 中值残差=%.3f, RMSE=%.3f, P95=%.3f, 内点数=%d",
+                       robust_result["confidence"], robust_result["residual_median"],
+                       robust_result["residual_rmse"], robust_result["residual_p95"],
+                       robust_result["n_inliers"])
+            
+            quality_order = {"pass": 0, "warn": 1, "fail": 2}
+            if quality_order.get(quality, 2) > quality_order.get(required_quality, 0):
+                raise ValueError(
+                    f"配准质量 {quality} 不满足要求 {required_quality}。"
+                    f"RMSE={robust_result['residual_rmse']:.3f}, "
+                    f"P95={robust_result['residual_p95']:.3f}"
+                )
 
         # ---- Step 3: 对所有波段施加全局位移 ----
         registered_arrays: List[np.ndarray] = []
