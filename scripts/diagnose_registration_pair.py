@@ -67,7 +67,7 @@ def main():
         return 1
     
     # Run registration only
-    registration = pipeline.register_scenes(scene_data)
+    registration = pipeline.register_scenes(scene_data, overlaps)
     
     logger.info("=" * 60)
     logger.info("Registration Results:")
