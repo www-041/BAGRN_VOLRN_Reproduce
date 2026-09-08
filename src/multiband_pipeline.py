@@ -87,6 +87,12 @@ def _accept_local_rbf_candidate(controls, params, cv_result=None):
     if not cv_result:
         result["reason"] = "held-out CV unavailable"
         return result
+    if cv_result.get("available", True) is False:
+        result["reason"] = (
+            "held-out CV unavailable: "
+            + str(cv_result.get("failure_reason", "insufficient validation coverage"))
+        )
+        return result
 
     try:
         baseline_rmse = float(cv_result["baseline_rmse"])
@@ -124,13 +130,24 @@ def _local_holdout_cv(controls, params):
     residual_dx = np.asarray(controls.get("residual_dx", []), dtype=float)
     residual_dy = np.asarray(controls.get("residual_dy", []), dtype=float)
     if len(points) < 4:
-        return None
+        return {
+            "available": False, "n_folds": 0, "n_folds_attempted": 0,
+            "n_validation_controls": 0, "validation_coverage": 0.0,
+            "failure_reason": "too few controls for held-out CV",
+        }
 
     groups = _local_spatial_group_labels(points)
+    attempted_folds = int(len(np.unique(groups)))
+    min_folds = int(params.get("local_cv_min_folds", 3))
+    min_validation_controls = int(params.get(
+        "local_cv_min_validation_controls",
+        min(int(params.get("local_min_controls", 12)), len(points)),
+    ))
     smoothing_values = params.get("local_smoothing_candidates", [0.1])
     smoothing = float(smoothing_values[0]) if smoothing_values else 0.1
     baseline_errors = []
     candidate_errors = []
+    successful_folds = 0
     for group_id in np.unique(groups):
         test = groups == group_id
         train = ~test
@@ -147,24 +164,99 @@ def _local_holdout_cv(controls, params):
             predicted_dy = np.asarray(rbf_dy(np.column_stack([tx, ty])), dtype=float)
         except Exception:
             continue
+        successful_folds += 1
         baseline_errors.extend(np.hypot(residual_dx[test], residual_dy[test]).tolist())
+        max_component = float(params.get("local_max_component", 2.5))
+        predicted_dx = np.clip(predicted_dx, -max_component, max_component)
+        predicted_dy = np.clip(predicted_dy, -max_component, max_component)
         candidate_errors.extend(
             np.hypot(residual_dx[test] - predicted_dx, residual_dy[test] - predicted_dy).tolist()
         )
 
-    if not baseline_errors or len(baseline_errors) != len(candidate_errors):
-        return None
+    n_validation_controls = len(baseline_errors)
+    if (not baseline_errors
+            or len(baseline_errors) != len(candidate_errors)
+            or successful_folds < min_folds
+            or n_validation_controls < min_validation_controls):
+        reasons = []
+        if successful_folds < min_folds:
+            reasons.append(f"successful folds {successful_folds} < {min_folds}")
+        if n_validation_controls < min_validation_controls:
+            reasons.append(
+                f"validation controls {n_validation_controls} < {min_validation_controls}"
+            )
+        if not baseline_errors or len(baseline_errors) != len(candidate_errors):
+            reasons.append("no complete held-out predictions")
+        return {
+            "available": False,
+            "n_folds": successful_folds,
+            "n_folds_attempted": attempted_folds,
+            "n_validation_controls": int(n_validation_controls),
+            "validation_coverage": float(n_validation_controls / len(points)),
+            "failure_reason": "; ".join(reasons),
+        }
     baseline_errors = np.asarray(baseline_errors, dtype=float)
     candidate_errors = np.asarray(candidate_errors, dtype=float)
     return {
+        "available": True,
         "baseline_rmse": float(np.sqrt(np.mean(baseline_errors ** 2))),
         "candidate_rmse": float(np.sqrt(np.mean(candidate_errors ** 2))),
         "baseline_p95": float(np.percentile(baseline_errors, 95)),
         "candidate_p95": float(np.percentile(candidate_errors, 95)),
-        "n_folds": int(len(np.unique(groups))),
-        "n_validation_controls": int(len(baseline_errors)),
+        "n_folds": successful_folds,
+        "n_folds_attempted": attempted_folds,
+        "n_validation_controls": int(n_validation_controls),
+        "validation_coverage": float(n_validation_controls / len(points)),
         "smoothing": smoothing,
     }
+
+
+def _collect_post_global_residual_pairs(
+    global_only_arrays, registration_band_idx, transforms, nodata_values,
+    matching_edges, params, rematch_fn,
+):
+    """Rematch global-only arrays while converting failures to diagnostics."""
+    params = params or {}
+    pairs = []
+    failures = []
+    block_size = int(params.get("local_block_size", 256))
+    confidence = float(params.get("local_confidence_threshold", 0.60))
+    max_shift = float(params.get("local_max_residual_shift", 3.0))
+    for i, j in matching_edges:
+        try:
+            rematch = rematch_fn(
+                global_only_arrays[i][registration_band_idx],
+                global_only_arrays[j][registration_band_idx],
+                transforms[i], transforms[j], nodata_values[i], nodata_values[j],
+                max_residual_shift=max_shift,
+                block_size=block_size,
+                confidence_threshold=confidence,
+            )
+        except Exception as exc:
+            failures.append({
+                "idx_i": i, "idx_j": j,
+                "reason": f"post-global rematch failed: {exc}",
+            })
+            continue
+        if not rematch or not rematch.get("available", True):
+            failures.append({
+                "idx_i": i, "idx_j": j,
+                "reason": "post-global rematch unavailable",
+            })
+            continue
+        pairs.append({
+            "idx_i": i, "idx_j": j,
+            "shift_dx": float(rematch.get("shift_dx", 0.0)),
+            "shift_dy": float(rematch.get("shift_dy", 0.0)),
+            "confidence": float(rematch.get("confidence", 0.0)),
+            "n_blocks": int(rematch.get("n_blocks", 0)),
+            "rmse": float(rematch.get("rmse", 0.0)),
+            "p95": float(rematch.get("p95", rematch.get("rmse", 0.0))),
+            "matches": rematch.get("matches", []),
+            "available": True,
+            "is_post_global_residual": True,
+        })
+    return {"pairs": pairs, "failures": failures}
 
 
 def _local_field_stats(field):
@@ -973,13 +1065,29 @@ class MultibandPipeline:
         transforms = scene_data["transforms"]
         nodata_values = scene_data["nodata_values"]
         n_images = len(arrays)
+        config = getattr(self, "config", None)
+        reg_params = getattr(config, "registration_params", {}) if config is not None else {}
 
         if n_images <= 1:
+            local_refinement = {
+                "enabled": bool(reg_params.get("enable_local_refinement", True)),
+                "used_for_scenes": [],
+                "fallback_scenes": [],
+                "cv_results": {},
+                "rematch_failures": [],
+            }
             return {
                 "registered_arrays": [a.copy() for a in arrays],
                 "global_shifts": np.zeros((n_images, 2)),
+                "local_dx_fields": [np.zeros(a.shape[1:], dtype=np.float64) for a in arrays],
+                "local_dy_fields": [np.zeros(a.shape[1:], dtype=np.float64) for a in arrays],
+                "local_refinement": local_refinement,
                 "pair_matches": [],
-                "diagnostics": {"skipped": True, "reason": "单景无需配准"},
+                "diagnostics": {
+                    "skipped": True,
+                    "reason": "单景无需配准",
+                    "local_refinement": local_refinement,
+                },
             }
 
         # ---- Step 1: 逐对匹配（用配准波段） ----
@@ -987,8 +1095,6 @@ class MultibandPipeline:
 
         pair_measurements: List[dict] = []
         rejected_edges: List[dict] = []
-        reg_params = self.config.registration_params
-
         for ov in overlaps:
             i, j = ov["idx_i"], ov["idx_j"]
             arr_i_reg = arrays[i][registration_band_idx]
@@ -1203,6 +1309,7 @@ class MultibandPipeline:
             "fallback_scenes": [],
             "cv_results": {},
             "scenes": {},
+            "rematch_failures": [],
         }
 
         # Rematch only the global-only arrays generated from ORIGINAL inputs.
@@ -1218,33 +1325,16 @@ class MultibandPipeline:
             ))
 
         post_global_pairs = []
+        post_global_failures = []
         if local_enabled:
-            local_block_size = int(reg_params.get("local_block_size", 256))
             local_confidence = float(reg_params.get("local_confidence_threshold", 0.60))
-            local_max_shift = float(reg_params.get("local_max_residual_shift", 3.0))
-            for i, j in matching_edges:
-                rematch = rematch_pair_on_registered(
-                    global_only_arrays[i][registration_band_idx],
-                    global_only_arrays[j][registration_band_idx],
-                    transforms[i], transforms[j], nodata_values[i], nodata_values[j],
-                    max_residual_shift=local_max_shift,
-                    block_size=local_block_size,
-                    confidence_threshold=local_confidence,
-                )
-                if not rematch or not rematch.get("available", True):
-                    continue
-                post_global_pairs.append({
-                    "idx_i": i, "idx_j": j,
-                    "shift_dx": float(rematch.get("shift_dx", 0.0)),
-                    "shift_dy": float(rematch.get("shift_dy", 0.0)),
-                    "confidence": float(rematch.get("confidence", 0.0)),
-                    "n_blocks": int(rematch.get("n_blocks", 0)),
-                    "rmse": float(rematch.get("rmse", 0.0)),
-                    "p95": float(rematch.get("p95", rematch.get("rmse", 0.0))),
-                    "matches": rematch.get("matches", []),
-                    "available": True,
-                    "is_post_global_residual": True,
-                })
+            post_global_result = _collect_post_global_residual_pairs(
+                global_only_arrays, registration_band_idx, transforms, nodata_values,
+                matching_edges, reg_params, rematch_pair_on_registered,
+            )
+            post_global_pairs = post_global_result["pairs"]
+            post_global_failures = post_global_result["failures"]
+            local_refinement["rematch_failures"] = post_global_failures
 
         parent_map = {child: parent for parent, child in spanning_tree_edges}
         for idx in range(n_images):
@@ -1325,6 +1415,12 @@ class MultibandPipeline:
             cv_result = _local_holdout_cv(controls, reg_params)
             gate = _accept_local_rbf_candidate(controls, reg_params, cv_result)
             scene_result.update(gate)
+            scene_failures = [
+                failure for failure in post_global_failures
+                if idx in (failure["idx_i"], failure["idx_j"])
+            ]
+            if scene_failures:
+                scene_result["rematch_failures"] = scene_failures
             local_refinement["cv_results"][str(idx)] = cv_result or {}
             if gate["accepted"]:
                 try:
@@ -1338,6 +1434,8 @@ class MultibandPipeline:
                     scene_result["reason"] = f"local RBF fitting failed: {exc}"
                     local_refinement["fallback_scenes"].append(idx)
             else:
+                if scene_failures:
+                    scene_result["reason"] = scene_failures[0]["reason"]
                 local_refinement["fallback_scenes"].append(idx)
             local_refinement["scenes"][str(idx)] = scene_result
 

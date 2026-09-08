@@ -154,3 +154,119 @@ def test_local_rbf_rejected_when_cv_does_not_improve():
                    "baseline_p95": 1.2, "candidate_p95": 1.2},
     )
     assert result["accepted"] is False
+
+
+def _four_corner_local_controls():
+    points = np.array([
+        [1, 1], [2, 1], [1, 2],
+        [8, 1], [9, 1], [8, 2],
+        [1, 8], [2, 8], [1, 9],
+        [8, 8], [9, 8], [8, 9],
+    ], dtype=float)
+    return {
+        "points_xy": points,
+        "residual_dx": points[:, 0] / 20.0,
+        "residual_dy": points[:, 1] / 20.0,
+        "confidence": np.ones(len(points)),
+        "n_valid": len(points),
+    }
+
+
+def test_local_holdout_cv_reports_only_successful_folds(monkeypatch):
+    from src import coregistration, multiband_pipeline
+    original_fit = coregistration.fit_local_rbf
+    calls = {"count": 0}
+
+    def fail_first_fit(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ValueError("synthetic fold failure")
+        return original_fit(*args, **kwargs)
+
+    monkeypatch.setattr(coregistration, "fit_local_rbf", fail_first_fit)
+    result = multiband_pipeline._local_holdout_cv(
+        _four_corner_local_controls(),
+        {"local_smoothing_candidates": [0.1], "local_cv_min_validation_controls": 6},
+    )
+    assert result["available"] is True
+    assert result["n_folds_attempted"] == 4
+    assert result["n_folds"] == 3
+    assert result["n_validation_controls"] == 9
+    assert result["validation_coverage"] == pytest.approx(0.75)
+
+
+def test_local_holdout_cv_rejects_too_few_successful_folds(monkeypatch):
+    from src import coregistration, multiband_pipeline
+    original_fit = coregistration.fit_local_rbf
+    calls = {"count": 0}
+
+    def fail_first_two_fits(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] <= 2:
+            raise ValueError("synthetic fold failure")
+        return original_fit(*args, **kwargs)
+
+    monkeypatch.setattr(coregistration, "fit_local_rbf", fail_first_two_fits)
+    result = multiband_pipeline._local_holdout_cv(
+        _four_corner_local_controls(), {"local_smoothing_candidates": [0.1]}
+    )
+    assert result["available"] is False
+    assert result["n_folds"] == 2
+    assert result["n_folds_attempted"] == 4
+    assert result["validation_coverage"] == pytest.approx(0.5)
+
+
+def test_local_holdout_cv_scores_clipped_candidate_field(monkeypatch):
+    from src import coregistration, multiband_pipeline
+
+    class ConstantRBF:
+        def __call__(self, points):
+            return np.full(len(points), 10.0)
+
+    monkeypatch.setattr(
+        coregistration, "fit_local_rbf",
+        lambda *args, **kwargs: (ConstantRBF(), ConstantRBF(), (0.0, 0.0), (10.0, 10.0)),
+    )
+    controls = _four_corner_local_controls()
+    controls["residual_dx"] = np.zeros(12)
+    controls["residual_dy"] = np.zeros(12)
+    result = multiband_pipeline._local_holdout_cv(
+        controls, {"local_smoothing_candidates": [0.1], "local_max_component": 2.5}
+    )
+    assert result["candidate_rmse"] == pytest.approx(np.hypot(2.5, 2.5))
+
+
+def test_post_global_rematch_exception_is_recorded_as_fallback():
+    from src import multiband_pipeline
+
+    def fail_rematch(*args, **kwargs):
+        raise RuntimeError("synthetic rematch failure")
+
+    result = multiband_pipeline._collect_post_global_residual_pairs(
+        [np.zeros((1, 8, 8)), np.zeros((1, 8, 8))],
+        0,
+        [from_origin(0, 8, 1, 1), from_origin(0, 8, 1, 1)],
+        [None, None],
+        [(0, 1)],
+        {"local_block_size": 4, "local_confidence_threshold": 0.6,
+         "local_max_residual_shift": 3.0},
+        fail_rematch,
+    )
+    assert result["pairs"] == []
+    assert result["failures"][0]["idx_i"] == 0
+    assert "synthetic rematch failure" in result["failures"][0]["reason"]
+
+
+def test_single_scene_registration_has_local_refinement_diagnostics():
+    from src.multiband_pipeline import MultibandPipeline
+
+    pipeline = MultibandPipeline.__new__(MultibandPipeline)
+    pipeline.common_bands = ["B14"]
+    pipeline.registration_band_idx = 0
+    result = pipeline.register_scenes({
+        "arrays": [np.ones((1, 4, 4))],
+        "transforms": [from_origin(0, 4, 1, 1)],
+        "nodata_values": [None],
+    }, [])
+    diagnostics = result["diagnostics"]["local_refinement"]
+    assert set(("enabled", "used_for_scenes", "fallback_scenes", "cv_results")) <= set(diagnostics)

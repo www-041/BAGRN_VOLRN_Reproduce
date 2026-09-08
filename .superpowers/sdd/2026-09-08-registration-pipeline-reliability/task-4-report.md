@@ -52,3 +52,31 @@ Additional checks:
 - The repository’s managed Windows filesystem continues to deny pytest temp-directory scanning/cleanup, so the one `tmp_path`-based adjacent test cannot complete through pytest in this environment even though its underlying direct check passes.
 - Local rematching adds work after global refinement; this is intentional to ensure local controls are post-global residuals rather than initial pair measurements.
 - The local CV uses the configured first smoothing candidate; smoothing-model selection remains outside this Task 4 gate.
+
+## Task 4 review-fix report
+
+### Findings fixed
+
+- CV now distinguishes attempted spatial groups from successful folds, reports both counts plus held-out-control coverage, and returns an unavailable result when configured minimum fold/control coverage is not met.
+- Held-out RBF predictions are component-clipped with the configured `local_max_component` before RMSE/P95 scoring, matching the field applied during the final warp.
+- Post-global rematch exceptions and unavailable results are converted into per-edge diagnostics and global-only scene fallbacks instead of propagating.
+- The single-scene early return now includes `local_refinement` with `enabled`, `used_for_scenes`, `fallback_scenes`, and `cv_results`, plus zero local fields.
+
+### Review-fix tests
+
+- RED run: all five new regression tests failed for the expected pre-fix behaviors.
+- Focused fix run: `5 passed` with one pre-existing pytest-cache permission warning.
+- Full registration refinement file excluding the known temp-path case: `14 passed, 1 deselected`.
+- Adjacent registration suites: `12 passed` with one pre-existing pytest-cache permission warning.
+- Complete covering command: `26 passed, 1 error`; the error is the existing managed-Windows permission failure while pytest sets up `tmp_path` for `test_analyze_displacement_spikes_handles_distance_field`.
+- AST parsing of changed Python/test files: passed.
+- `git diff --check`: passed with only LF/CRLF conversion warnings.
+
+### Review-fix commit
+
+- `fix: harden gated local rbf review findings`
+
+### Review-fix concerns
+
+- The managed Windows environment still prevents pytest from scanning/cleaning its temp directory, so the one `tmp_path` test cannot complete through the normal fixture even though the underlying direct distance-field check passed previously.
+- The fix intentionally rejects local refinement when held-out coverage is insufficient; affected scenes remain on the global-only fallback path.
