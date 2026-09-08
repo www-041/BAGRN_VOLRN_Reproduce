@@ -65,3 +65,39 @@ def test_n2_pair_uses_block_samples_not_one_pair_sample():
     assert result["n_blocks_total"] == 5
     assert result["n_blocks_inlier"] == 5
     assert result["shift_dx"] != matches[0]["shift_dx"] or result["shift_dy"] != matches[0]["shift_dy"]
+
+
+def test_post_global_refinement_reduces_known_translation_residual(monkeypatch):
+    from src import coregistration
+    monkeypatch.setattr(coregistration, "rematch_pair_on_registered",
+        lambda *a, **k: {"shift_dx": 1.0, "shift_dy": -0.5, "confidence": 0.9,
+                         "n_blocks": 8, "rmse": 0.1, "p95": 0.2,
+                         "matches": [], "available": True})
+    arrays = [np.ones((8, 8)), np.ones((8, 8))]
+    shifts = np.array([[0.0, 0.0], [2.0, -1.0]])
+    result = coregistration.refine_global_residual_shifts_from_original(
+        arrays, shifts, [None, None], [None, None], [(0, 1)],
+        {"global_refine_max_iterations": 1, "global_refine_stop_magnitude": 0.15,
+         "global_refine_max_correction": 5.0})
+    assert result["global_shifts"][1, 0] == 3.0
+    assert result["global_shifts"][1, 1] == -1.5
+    assert result["history"]
+
+
+def test_global_refinement_rewarps_from_original_not_previous_warp(monkeypatch):
+    from src import coregistration
+    seen = []
+    def fake_warp(arr, *args):
+        seen.append(arr.copy())
+        return arr + len(seen)
+    monkeypatch.setattr(coregistration, "warp_multiband_with_displacement_field", fake_warp)
+    monkeypatch.setattr(coregistration, "rematch_pair_on_registered",
+        lambda *a, **k: {"shift_dx": 0.2, "shift_dy": 0.0, "confidence": 0.9,
+                         "n_blocks": 8, "rmse": 0.1, "p95": 0.2,
+                         "matches": [], "available": True})
+    original = [np.zeros((8, 8)), np.ones((8, 8))]
+    coregistration.refine_global_residual_shifts_from_original(
+        original, np.zeros((2, 2)), [None, None], [None, None], [(0, 1)],
+        {"global_refine_max_iterations": 2, "global_refine_stop_magnitude": 0.01,
+         "global_refine_max_correction": 5.0})
+    assert all(np.array_equal(arr, original[0]) or np.array_equal(arr, original[1]) for arr in seen)

@@ -770,6 +770,7 @@ class MultibandPipeline:
             multi_image_network_adjustment,
             warp_multiband_with_displacement_field,
             rematch_pair_on_registered,
+            refine_global_residual_shifts_from_original,
         )
 
         if registration_band_idx is None:
@@ -978,6 +979,22 @@ class MultibandPipeline:
         global_shifts = adj_result["global_shifts"]
         logger.info("网络平差完成, 闭环误差数: %d", len(adj_result.get("loop_errors", [])))
 
+        # ---- Step 2.5: 用全局配准后的残余重新精化全局位移 ----
+        refine_params = {**reg_params, "reference_idx": self.control_idx}
+        refine_result = refine_global_residual_shifts_from_original(
+            [a[registration_band_idx] for a in arrays],
+            global_shifts,
+            transforms,
+            nodata_values,
+            matching_edges,
+            refine_params,
+        )
+        global_shifts = refine_result["global_shifts"]
+        logger.info(
+            "全局残余精化完成, iterations=%d, warnings=%d",
+            len(refine_result["history"]), len(refine_result["warnings"]),
+        )
+
         # ---- Step 3: 对所有波段施加全局位移 ----
         registered_arrays: List[np.ndarray] = []
         for idx in range(n_images):
@@ -1021,6 +1038,8 @@ class MultibandPipeline:
                 "n_components": len(components),
                 "global_shifts": global_shifts.tolist(),
                 "loop_errors": adj_result.get("loop_errors", []),
+                "global_refinement_history": refine_result["history"],
+                "global_refinement_warnings": refine_result["warnings"],
                 "elapsed_sec": elapsed,
             },
         }

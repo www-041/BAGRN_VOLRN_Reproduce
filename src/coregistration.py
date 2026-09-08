@@ -975,6 +975,119 @@ def _build_rematch_result(matches, screening, used_confidence_threshold):
     }
 
 
+def refine_global_residual_shifts_from_original(original_arrays, global_shifts,
+                                                transforms, nodatas,
+                                                rematch_edges, params):
+    """Refine global shifts from post-warp residual measurements.
+
+    Each iteration warps the original arrays with the current global shifts,
+    rematches the configured edges, and solves those residual edge shifts as a
+    delta network. Temporary arrays are never used as inputs to later warps.
+    """
+    shifts = np.asarray(global_shifts, dtype=float).copy()
+    params = params or {}
+    max_iterations = int(params.get('global_refine_max_iterations', 2))
+    stop_magnitude = float(params.get('global_refine_stop_magnitude', 0.15))
+    max_correction = float(params.get('global_refine_max_correction', 5.0))
+    block_size = int(params.get('global_refine_block_size', 384))
+    confidence_threshold = float(params.get('global_confidence_threshold', 0.5))
+    max_residual_shift = float(params.get('global_refine_max_residual_shift', max_correction))
+    reference_idx = int(params.get('reference_idx', 0))
+
+    history = []
+    warnings = []
+
+    for iteration in range(max_iterations):
+        registered = []
+        for idx, original in enumerate(original_arrays):
+            dx, dy = shifts[idx]
+            if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+                registered.append(np.asarray(original, dtype=np.float64).copy())
+                continue
+            h, w = original.shape[-2:]
+            local_dx = np.zeros((h, w), dtype=np.float64)
+            local_dy = np.zeros((h, w), dtype=np.float64)
+            registered.append(warp_multiband_with_displacement_field(
+                original, dx, dy, local_dx, local_dy, nodatas[idx]))
+
+        delta_pairs = []
+        edge_history = []
+        for edge in rematch_edges:
+            if isinstance(edge, dict):
+                i, j = int(edge['idx_i']), int(edge['idx_j'])
+            else:
+                i, j = int(edge[0]), int(edge[1])
+            result = rematch_pair_on_registered(
+                registered[i], registered[j], transforms[i], transforms[j],
+                nodatas[i], nodatas[j],
+                max_residual_shift=max_residual_shift,
+                block_size=block_size,
+                confidence_threshold=confidence_threshold,
+            )
+            if not result or not result.get('available', True):
+                warning = f'rematch unavailable for edge ({i}, {j})'
+                warnings.append(warning)
+                edge_history.append({'idx_i': i, 'idx_j': j,
+                                     'available': False, 'warning': warning})
+                continue
+
+            delta_pairs.append({
+                'idx_i': i, 'idx_j': j,
+                'shift_dx': float(result['shift_dx']),
+                'shift_dy': float(result['shift_dy']),
+                'confidence': float(result.get('confidence', 0.0)),
+                'n_blocks': int(result.get('n_blocks', 0)),
+                'rmse': float(result.get('rmse', 1.0)),
+                'p95': float(result.get('p95', result.get('rmse', 1.0))),
+                'matches': result.get('matches', []),
+            })
+            edge_history.append({
+                'idx_i': i, 'idx_j': j, 'available': True,
+                'shift_dx': float(result['shift_dx']),
+                'shift_dy': float(result['shift_dy']),
+            })
+
+        iteration_record = {'iteration': iteration + 1, 'edges': edge_history}
+        if not delta_pairs:
+            warning = f'no usable residual edges in iteration {iteration + 1}'
+            warnings.append(warning)
+            iteration_record.update({'accepted': False, 'warning': warning})
+            history.append(iteration_record)
+            break
+
+        delta_result = multi_image_network_adjustment(
+            delta_pairs, len(original_arrays), reference_idx)
+        delta_shifts = np.asarray(delta_result['global_shifts'], dtype=float)
+        magnitudes = np.hypot(delta_shifts[:, 0], delta_shifts[:, 1])
+        non_reference = np.delete(magnitudes, reference_idx)
+        correction_magnitude = float(np.max(non_reference)) if len(non_reference) else 0.0
+        iteration_record.update({
+            'delta_shifts': delta_shifts.tolist(),
+            'correction_magnitude': correction_magnitude,
+        })
+
+        if correction_magnitude < stop_magnitude:
+            iteration_record.update({'accepted': False, 'stopped': True})
+            history.append(iteration_record)
+            break
+
+        if np.any(magnitudes > max_correction):
+            warning = (f'correction exceeds global_refine_max_correction '
+                       f'in iteration {iteration + 1}')
+            warnings.append(warning)
+            iteration_record.update({'accepted': False, 'warning': warning})
+            history.append(iteration_record)
+            break
+
+        shifts += delta_shifts
+        shifts[reference_idx, :] = 0.0
+        iteration_record['accepted'] = True
+        history.append(iteration_record)
+
+    shifts[reference_idx, :] = 0.0
+    return {'global_shifts': shifts, 'history': history, 'warnings': warnings}
+
+
 def refine_global_residual_shifts(global_registered, global_shifts, arrays,
                                    transforms, nodatas, parent_map,
                                    max_iterations=2):
@@ -2284,6 +2397,9 @@ def warp_multiband_with_displacement_field(
     assert local_dy_field.ndim == 2, f"local_dy_field must be 2D (rows, cols), got shape {local_dy_field.shape}"
     assert local_dx_field.shape == local_dy_field.shape, f"dx/dy shape mismatch: {local_dx_field.shape} vs {local_dy_field.shape}"
 
+    was_2d = arr_3d.ndim == 2
+    if was_2d:
+        arr_3d = arr_3d[np.newaxis, ...]
     n_bands, h, w = arr_3d.shape
     yy, xx = np.mgrid[0:h, 0:w]
 
@@ -2316,7 +2432,7 @@ def warp_multiband_with_displacement_field(
     ).reshape(h, w).astype(bool)
 
     warped[:, ~warped_mask] = cval
-    return warped
+    return warped[0] if was_2d else warped
 
 
 def compute_local_shift_field(arr_ref, tr_ref, arr_tgt, tr_tgt, nodata=0,
