@@ -8,6 +8,29 @@ Task 12 of reliability-fixes plan:
 import numpy as np
 
 
+def test_registration_diagnostic_uses_actual_registration_schema(tmp_path, monkeypatch):
+    from scripts import diagnose_registration_pair
+
+    registration = {
+        "connected": True,
+        "global_shifts": np.zeros((2, 2)).tolist(),
+        "pair_matches": [{"idx_i": 0, "idx_j": 1, "status": "pass"}],
+        "quality": {"quality": "pass", "rmse": 0.1, "p95": 0.2,
+                    "median": 0.1, "confidence": 0.8, "n_blocks": 8},
+        "local_refinement": {"enabled": False, "used_for_scenes": [],
+                              "fallback_scenes": [1], "cv_results": {}},
+        "final_validation": {"edges": [], "overall": {"quality": "pass"}},
+        "diagnostics": {"global_refinement": []},
+    }
+    payload = diagnose_registration_pair.build_diagnostic_payload(
+        registration, ["scene_a", "scene_b"], tmp_path
+    )
+
+    assert payload["scene_ids"] == ["scene_a", "scene_b"]
+    assert payload["quality"]["quality"] == "pass"
+    assert payload["final_validation"] == registration["final_validation"]
+
+
 def test_identity_gain_has_zero_rms():
     """When a=1 (identity gain), RMS should be 0, not 1."""
     # Identity transform: a=1, b=0
