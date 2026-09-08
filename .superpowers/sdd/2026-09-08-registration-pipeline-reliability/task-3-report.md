@@ -31,3 +31,21 @@ Unrelated untracked planning files and the existing `data/report_figures` tree w
 
 - The test environment has persistent permission failures for pytest/tempfile directories under the user temp location, so suites using those fixtures cannot complete cleanly there without environment cleanup or permission changes.
 - The refinement helper assumes the supplied edge indices and array/transform/nodata lists are aligned, matching the existing pipeline data contract.
+
+## Review fixes
+
+- Strengthened `test_global_refinement_rewarps_from_original_not_previous_warp` with a nonzero initial target shift, an explicit nonempty warp assertion, and an assertion that every warp input equals one of the original arrays.
+- Strengthened `test_post_global_refinement_reduces_known_translation_residual` with a deterministic pre/post Euclidean translation residual comparison against the known final shift.
+- Added `test_global_refinement_rejects_over_limit_before_stop` to cover an over-limit correction when the stop threshold is larger than the correction limit.
+- Reordered `refine_global_residual_shifts_from_original()` so maximum-correction rejection and warning occur before stop-magnitude convergence handling.
+
+## Review-fix verification
+
+- TDD RED covering run: 2 strengthened tests passed; the new threshold-edge test failed because the old ordering omitted the required warning.
+- TDD GREEN covering run: 3/3 passed.
+- Adjacent coregistration suites after the fix: 7/7 passed.
+- Commit: review-fix commit with the message `fix: enforce non-vacuous residual refinement checks`.
+
+## Review-fix concerns
+
+- The pre-existing pytest cache/temp-directory permission warnings remain environmental and unrelated to the review fix.

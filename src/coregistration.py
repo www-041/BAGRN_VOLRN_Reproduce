@@ -1066,16 +1066,16 @@ def refine_global_residual_shifts_from_original(original_arrays, global_shifts,
             'correction_magnitude': correction_magnitude,
         })
 
-        if correction_magnitude < stop_magnitude:
-            iteration_record.update({'accepted': False, 'stopped': True})
-            history.append(iteration_record)
-            break
-
         if np.any(magnitudes > max_correction):
             warning = (f'correction exceeds global_refine_max_correction '
                        f'in iteration {iteration + 1}')
             warnings.append(warning)
             iteration_record.update({'accepted': False, 'warning': warning})
+            history.append(iteration_record)
+            break
+
+        if correction_magnitude < stop_magnitude:
+            iteration_record.update({'accepted': False, 'stopped': True})
             history.append(iteration_record)
             break
 

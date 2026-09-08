@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from rasterio.transform import from_origin
 
 from src.coregistration import (
@@ -75,12 +76,15 @@ def test_post_global_refinement_reduces_known_translation_residual(monkeypatch):
                          "matches": [], "available": True})
     arrays = [np.ones((8, 8)), np.ones((8, 8))]
     shifts = np.array([[0.0, 0.0], [2.0, -1.0]])
+    known_global_shifts = np.array([[0.0, 0.0], [3.0, -1.5]])
+    pre_residual = np.linalg.norm(shifts[1] - known_global_shifts[1])
     result = coregistration.refine_global_residual_shifts_from_original(
         arrays, shifts, [None, None], [None, None], [(0, 1)],
         {"global_refine_max_iterations": 1, "global_refine_stop_magnitude": 0.15,
          "global_refine_max_correction": 5.0})
-    assert result["global_shifts"][1, 0] == 3.0
-    assert result["global_shifts"][1, 1] == -1.5
+    post_residual = np.linalg.norm(result["global_shifts"][1] - known_global_shifts[1])
+    assert post_residual < pre_residual
+    assert result["global_shifts"][1] == pytest.approx(known_global_shifts[1])
     assert result["history"]
 
 
@@ -97,7 +101,24 @@ def test_global_refinement_rewarps_from_original_not_previous_warp(monkeypatch):
                          "matches": [], "available": True})
     original = [np.zeros((8, 8)), np.ones((8, 8))]
     coregistration.refine_global_residual_shifts_from_original(
-        original, np.zeros((2, 2)), [None, None], [None, None], [(0, 1)],
+        original, np.array([[0.0, 0.0], [0.3, -0.2]]), [None, None], [None, None], [(0, 1)],
         {"global_refine_max_iterations": 2, "global_refine_stop_magnitude": 0.01,
          "global_refine_max_correction": 5.0})
+    assert seen
     assert all(np.array_equal(arr, original[0]) or np.array_equal(arr, original[1]) for arr in seen)
+
+
+def test_global_refinement_rejects_over_limit_before_stop(monkeypatch):
+    from src import coregistration
+    monkeypatch.setattr(coregistration, "rematch_pair_on_registered",
+        lambda *a, **k: {"shift_dx": 1.0, "shift_dy": 0.0, "confidence": 0.9,
+                         "n_blocks": 8, "rmse": 0.1, "p95": 0.2,
+                         "matches": [], "available": True})
+    original = [np.zeros((8, 8)), np.ones((8, 8))]
+    result = coregistration.refine_global_residual_shifts_from_original(
+        original, np.zeros((2, 2)), [None, None], [None, None], [(0, 1)],
+        {"global_refine_max_iterations": 1, "global_refine_stop_magnitude": 5.0,
+         "global_refine_max_correction": 0.5})
+    assert np.array_equal(result["global_shifts"], np.zeros((2, 2)))
+    assert any("max_correction" in warning for warning in result["warnings"])
+    assert result["history"][0]["accepted"] is False
