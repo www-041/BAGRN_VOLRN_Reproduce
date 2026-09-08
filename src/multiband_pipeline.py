@@ -1008,11 +1008,24 @@ class MultibandPipeline:
             
             quality_order = {"pass": 0, "warn": 1, "fail": 2}
             if quality_order.get(quality, 2) > quality_order.get(required_quality, 0):
-                raise ValueError(
-                    f"配准质量 {quality} 不满足要求 {required_quality}。"
-                    f"RMSE={robust_result.get('residual_rmse', 999.0):.3f}, "
-                    f"P95={robust_result.get('residual_p95', 999.0):.3f}"
-                )
+                # Build informative error message
+                rmse = robust_result.get("residual_rmse")
+                p95 = robust_result.get("residual_p95")
+                n_inliers = robust_result.get("n_inliers", 0)
+                inlier_ratio = robust_result.get("inlier_ratio", 0.0)
+                
+                if rmse is None or rmse > 900:
+                    # Robust estimation failed - show initial stats
+                    initial_rmse = np.sqrt(np.mean([(p["rmse"]**2) for p in pair_measurements]))
+                    initial_p95 = max([p.get("p95", 0) for p in pair_measurements])
+                    msg = (f"配准质量 {quality} 不满足要求 {required_quality}。"
+                           f"稳健估计失败 (内点数={n_inliers}, 内点率={inlier_ratio:.2f})。"
+                           f"初始匹配 RMSE={initial_rmse:.3f}, P95={initial_p95:.3f}")
+                else:
+                    msg = (f"配准质量 {quality} 不满足要求 {required_quality}。"
+                           f"RMSE={rmse:.3f}, P95={p95:.3f}, 内点数={n_inliers}")
+                
+                raise ValueError(msg)
 
         # ---- Step 3: 对所有波段施加全局位移 ----
         registered_arrays: List[np.ndarray] = []
