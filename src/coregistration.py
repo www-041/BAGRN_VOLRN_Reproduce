@@ -1951,7 +1951,8 @@ def analyze_displacement_spikes(
     edge_mask[:, 0] = True; edge_mask[:, -1] = True
     dist_to_edge = distance_transform_edt(~edge_mask)
 
-    hull_boundary = control_hull_mask & ~distance_transform_edt(control_hull_mask) > 8
+    hull_dist = distance_transform_edt(control_hull_mask)
+    hull_boundary = control_hull_mask & (hull_dist <= 8)
     dist_to_hull_bnd = distance_transform_edt(~hull_boundary)
 
     nodata_bnd = nodata_boundary_mask
@@ -2236,21 +2237,24 @@ def warp_with_displacement_field(arr, global_dx, global_dy,
 
     # 不裁剪，让 map_coordinates mode="constant" cval=nodata 处理越界
 
+    cval = nodata if nodata is not None else 0.0
     warped = map_coordinates(
         arr.astype(np.float64),
         [src_y.ravel(), src_x.ravel()],
-        order=1, mode='constant', cval=nodata
+        order=1, mode='constant', cval=cval
     ).reshape(h, w)
 
     # 有效掩膜
-    valid_mask = np.isfinite(arr) & (arr != nodata)
+    valid_mask = np.isfinite(arr)
+    if nodata is not None:
+        valid_mask &= (arr != nodata)
     warped_mask = map_coordinates(
         valid_mask.astype(np.uint8),
         [src_y.ravel(), src_x.ravel()],
         order=0, mode='constant', cval=0
     ).reshape(h, w).astype(bool)
 
-    warped[~warped_mask] = nodata
+    warped[~warped_mask] = cval
     return warped
 
 
@@ -2291,29 +2295,32 @@ def warp_multiband_with_displacement_field(
 
     order = 1 if interpolation == 'bilinear' else 0
 
-    warped = np.full_like(arr_3d, nodata, dtype=np.float64)
+    cval = nodata if nodata is not None else 0.0
+    warped = np.full_like(arr_3d, cval, dtype=np.float64)
 
     for b in range(n_bands):
         band = arr_3d[b].astype(np.float64)
         warped[b] = map_coordinates(
             band, [src_y.ravel(), src_x.ravel()],
-            order=order, mode='constant', cval=nodata
+            order=order, mode='constant', cval=cval
         ).reshape(h, w)
 
     # 有效掩膜（所有波段均有效）
-    valid_mask = np.all(np.isfinite(arr_3d) & (arr_3d != nodata), axis=0)
+    valid_mask = np.all(np.isfinite(arr_3d), axis=0)
+    if nodata is not None:
+        valid_mask &= np.all(arr_3d != nodata, axis=0)
     warped_mask = map_coordinates(
         valid_mask.astype(np.uint8),
         [src_y.ravel(), src_x.ravel()],
         order=0, mode='constant', cval=0
     ).reshape(h, w).astype(bool)
 
-    warped[:, ~warped_mask] = nodata
+    warped[:, ~warped_mask] = cval
     return warped
 
 
 def compute_local_shift_field(arr_ref, tr_ref, arr_tgt, tr_tgt, nodata=0,
-                               block_size=512):
+                               block_size=512, confidence_threshold=0.5):
     """Compute spatially varying (local) shift field between two images.
 
     Divides the overlap into blocks and estimates a shift for each block
@@ -2326,6 +2333,7 @@ def compute_local_shift_field(arr_ref, tr_ref, arr_tgt, tr_tgt, nodata=0,
     tr_ref, tr_tgt : Affine transform
     nodata : float
     block_size : int, size of each block for shift estimation
+    confidence_threshold : float, minimum confidence for an accepted control
 
     Returns
     -------
@@ -2389,7 +2397,7 @@ def compute_local_shift_field(arr_ref, tr_ref, arr_tgt, tr_tgt, nodata=0,
             blk_tgt = patch_tgt[br:br2, bc:bc2]
 
             sy, sx, conf = phase_correlation(blk_ref, blk_tgt)
-            if conf > 1.0 and abs(sy) < 10 and abs(sx) < 10:
+            if conf >= confidence_threshold and abs(sy) < 10 and abs(sx) < 10:
                 # Grid point = center of block in target image coords
                 gy = r2_start + br + block_size // 2
                 gx = c2_start + bc + block_size // 2

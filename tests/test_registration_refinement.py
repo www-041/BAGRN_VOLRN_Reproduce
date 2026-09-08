@@ -1,6 +1,42 @@
 import numpy as np
+from rasterio.transform import from_origin
 
-from src.coregistration import build_robust_pair_measurement
+from src.coregistration import (
+    analyze_displacement_spikes,
+    build_robust_pair_measurement,
+    compute_local_shift_field,
+    warp_multiband_with_displacement_field,
+)
+
+
+def test_analyze_displacement_spikes_handles_distance_field(tmp_path):
+    field = np.zeros((12, 12), dtype=float)
+    overlap = np.ones_like(field, dtype=bool)
+    hull = np.ones_like(field, dtype=bool)
+    nodata_boundary = np.zeros_like(field, dtype=bool)
+    result = analyze_displacement_spikes(field, field, overlap, hull, nodata_boundary, str(tmp_path))
+    assert result["quality_warning"] is False
+    assert result["n_spike_pixels"] == 0
+
+
+def test_compute_local_shift_field_accepts_valid_confidence(monkeypatch):
+    from src import coregistration
+    arr = np.arange(64, dtype=float).reshape(8, 8)
+    monkeypatch.setattr(coregistration, "phase_correlation", lambda *a, **k: (0.0, 0.0, 0.5))
+    result = compute_local_shift_field(
+        arr, from_origin(0, 8, 1, 1), arr, from_origin(0, 8, 1, 1),
+        nodata=None, block_size=4, confidence_threshold=0.5,
+    )
+    assert result[0] is not None
+    assert len(result[0]) >= 4
+
+
+def test_warp_with_nodata_none_preserves_valid_zero_pixels():
+    arr = np.zeros((1, 4, 4), dtype=float)
+    arr[0, 1, 1] = 5.0
+    local = np.zeros((4, 4), dtype=float)
+    result = warp_multiband_with_displacement_field(arr, 0.0, 0.0, local, local, None)
+    assert np.array_equal(result, arr)
 
 
 def test_robust_pair_measurement_rejects_joint_xy_outliers():
