@@ -61,3 +61,38 @@ The registration-only diagnostic now consumes the actual `register_scenes()` res
 ## Concerns
 
 The focused pytest regression cannot complete in this managed environment because pytest’s temporary-directory fixture is denied access before the test body runs. The equivalent schema assertion and JSON output were executed directly with the project’s rasterio-enabled Python runtime, and the adjacent diagnostics tests passed.
+
+## Task 7 review-fix report
+
+### Findings addressed
+
+1. `register_scenes()` now keeps the raw `collect_block_matches()` result in `raw_matches` on each pair record and in `diagnostics.raw_block_matches`. The existing `matches` field remains the robust estimator’s retained inliers. Rejected and phase-correlation fallback edges also retain the raw block list where applicable. The diagnostic payload reads `raw_matches` for `raw_block_matches` and reads `matches` for `robust_pair_measurements`, so the two views are truthful and distinct.
+2. The no-overlap CLI path now emits a structured failure registration record and writes `registration_diagnostics.json` with `status=fail`, `failure.code=no_overlap`, final-validation, quality classification, and no image artifacts. TIFF artifacts remain omitted because registration has no registered arrays.
+
+### Files changed for the review fixes
+
+- `src/multiband_pipeline.py`
+- `scripts/diagnose_registration_pair.py`
+- `tests/test_diagnostics_regressions.py`
+- This report (appended)
+
+### Tests, commands, and outputs
+
+- `pytest tests/test_diagnostics_regressions.py::test_register_scenes_preserves_raw_matches_separately -v`
+  - `1 passed`.
+- `pytest tests/test_diagnostics_regressions.py -v`
+  - `4 passed, 3 errors`; the three errors are pytest `tmp_path` fixture setup failures caused by `WinError 5` on `C:\Users\wang\AppData\Local\Temp\pytest-of-wang`. The four non-`tmp_path` tests passed.
+- `pytest tests/test_script_contracts.py -q`
+  - `1 passed`.
+- Direct invocation of all four new/affected regression functions with writable output paths
+  - `direct Task 7 review regressions passed: 4`.
+- Direct compile checks using `compile()` for `scripts/diagnose_registration_pair.py` and `src/multiband_pipeline.py`
+  - `compile checks passed`.
+- `git diff --check`
+  - Passed; only normal LF-to-CRLF conversion warnings were reported.
+
+### Self-review and concerns
+
+- Existing default weighted diagnostic mosaic behavior and explicit `source_selection` behavior were not changed.
+- No-overlap failure JSON is written before returning exit code `1`; registered-image, overlay, and mosaic creation is not attempted on that path.
+- The full diagnostics file still cannot be fully green under pytest because the managed temporary-directory permissions fail before three `tmp_path` tests execute. Direct equivalents for both review regressions passed.

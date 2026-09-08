@@ -91,7 +91,7 @@ def _raw_block_matches(registration):
         {
             "idx_i": pair.get("idx_i"),
             "idx_j": pair.get("idx_j"),
-            "matches": pair.get("matches", []),
+            "matches": pair.get("raw_matches", []),
         }
         for pair in registration.get("pair_matches", []) or []
     ]
@@ -123,6 +123,8 @@ def build_diagnostic_payload(registration, scene_ids, output_dir):
     payload = {
         "scene_ids": list(scene_ids),
         "output_dir": str(output_dir),
+        "status": registration.get("status"),
+        "failure": registration.get("failure", {}),
         "connected": registration.get("connected", False),
         "diagnostics": diagnostics,
         "pair_matches": registration.get("pair_matches", []),
@@ -153,6 +155,50 @@ def build_diagnostic_payload(registration, scene_ids, output_dir):
             _json_safe(payload), handle, indent=2, ensure_ascii=False, allow_nan=False
         )
     return payload
+
+
+def _build_no_overlap_registration(scene_ids, reason, local_enabled=True):
+    """Build a JSON-safe registration failure record when no overlap exists."""
+    quality = {
+        "quality": "fail",
+        "rmse": float("inf"),
+        "p95": float("inf"),
+        "median": float("inf"),
+        "confidence": 0.0,
+        "n_blocks": 0,
+    }
+    final_validation = {"edges": [], "overall": quality}
+    failure = {"code": "no_overlap", "reason": reason}
+    return {
+        "status": "fail",
+        "failure": failure,
+        "registered_arrays": [],
+        "global_shifts": np.zeros((len(scene_ids), 2), dtype=float),
+        "pair_matches": [],
+        "connected": False,
+        "spanning_tree": [],
+        "geometric_edges": [],
+        "matching_edges": [],
+        "rejected_edges": [],
+        "connected_components": [[index] for index in range(len(scene_ids))],
+        "unreachable_scenes": list(scene_ids[1:]),
+        "quality": quality,
+        "final_validation": final_validation,
+        "local_refinement": {
+            "enabled": bool(local_enabled),
+            "used_for_scenes": [],
+            "fallback_scenes": [],
+            "cv_results": {},
+        },
+        "diagnostics": {
+            "registration_blocked": True,
+            "no_overlap": True,
+            "reason": reason,
+            "final_validation": final_validation,
+            "quality": quality,
+            "raw_block_matches": [],
+        },
+    }
 
 
 def _valid_pixels(array, nodata):
@@ -316,7 +362,16 @@ def main(argv=None):
     overlaps = pipeline.detect_overlaps(scene_data)
     logger.info("Detected %d overlap pair(s)", len(overlaps))
     if not overlaps:
-        logger.error("No overlap detected between scenes")
+        reason = "no geographic overlap detected between selected scenes"
+        logger.error("%s", reason)
+        registration = _build_no_overlap_registration(
+            scene_ids,
+            reason,
+            local_enabled=(getattr(config, "registration_params", {}) or {}).get(
+                "enable_local_refinement", True
+            ),
+        )
+        build_diagnostic_payload(registration, scene_ids, output_dir)
         return 1
 
     registration = pipeline.register_scenes(scene_data, overlaps)

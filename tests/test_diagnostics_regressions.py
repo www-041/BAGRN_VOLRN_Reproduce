@@ -5,7 +5,155 @@ Task 12 of reliability-fixes plan:
 - dynamic range should use data range, not coefficient range
 """
 
+import json
+from types import SimpleNamespace
+
 import numpy as np
+
+
+def test_registration_diagnostic_distinguishes_raw_and_robust_pair_matches(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    raw_matches = [
+        {"ref_x": 1.0, "ref_y": 1.0, "shift_dx": 3.0, "shift_dy": -2.0,
+         "confidence": 0.9},
+        {"ref_x": 2.0, "ref_y": 2.0, "shift_dx": 18.0, "shift_dy": 15.0,
+         "confidence": 0.8},
+    ]
+    robust_matches = [raw_matches[0]]
+    registration = {
+        "global_shifts": [[0.0, 0.0], [0.0, 0.0]],
+        "pair_matches": [{"idx_i": 0, "idx_j": 1,
+                          "raw_matches": raw_matches,
+                          "matches": robust_matches}],
+        "quality": {"quality": "pass"},
+        "final_validation": {"edges": [], "overall": {"quality": "pass"}},
+        "local_refinement": {},
+        "diagnostics": {},
+    }
+
+    payload = diagnose_registration_pair.build_diagnostic_payload(
+        registration, ["scene_a", "scene_b"], tmp_path
+    )
+
+    assert payload["raw_block_matches"][0]["matches"] == raw_matches
+    assert payload["robust_pair_measurements"][0]["matches"] == robust_matches
+    assert payload["raw_block_matches"][0]["matches"] != payload[
+        "robust_pair_measurements"
+    ][0]["matches"]
+
+
+def test_register_scenes_preserves_raw_matches_separately(monkeypatch):
+    from src import coregistration, multiband_pipeline
+
+    raw_matches = [
+        {"shift_dx": 3.0, "shift_dy": -2.0, "confidence": 0.9},
+        {"shift_dx": 18.0, "shift_dy": 15.0, "confidence": 0.8},
+    ]
+    robust_matches = [raw_matches[0]]
+    monkeypatch.setattr(
+        coregistration,
+        "collect_block_matches",
+        lambda *args, **kwargs: (raw_matches, {"total": 2, "accepted": 2}),
+    )
+    monkeypatch.setattr(
+        coregistration,
+        "build_robust_pair_measurement",
+        lambda matches, params: {
+            "status": "pass", "shift_dx": 3.0, "shift_dy": -2.0,
+            "confidence": 0.9, "n_blocks_inlier": 1, "n_blocks_total": 2,
+            "rmse": 0.0, "p95": 0.0, "matches": robust_matches,
+            "screening": params["screening"],
+        },
+    )
+    monkeypatch.setattr(
+        coregistration,
+        "multi_image_network_adjustment",
+        lambda pairs, n_images, control_idx: {
+            "global_shifts": np.zeros((n_images, 2)), "loop_errors": [],
+        },
+    )
+    monkeypatch.setattr(
+        coregistration,
+        "refine_global_residual_shifts_from_original",
+        lambda *args, **kwargs: {
+            "global_shifts": np.zeros((2, 2)), "history": [], "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        multiband_pipeline,
+        "_validate_final_registration_arrays",
+        lambda *args, **kwargs: (
+            {"quality": "pass"}, {"edges": [], "overall": {"quality": "pass"}}
+        ),
+    )
+
+    pipeline = object.__new__(multiband_pipeline.MultibandPipeline)
+    pipeline.registration_band_idx = 0
+    pipeline.common_bands = ["B14"]
+    pipeline.control_idx = 0
+    pipeline.smoke = False
+    pipeline.config = SimpleNamespace(
+        registration_params={"enable_local_refinement": False}
+    )
+    arrays = [np.ones((1, 8, 8)), np.ones((1, 8, 8))]
+    scene_data = {
+        "arrays": arrays,
+        "transforms": [None, None],
+        "nodata_values": [None, None],
+        "scene_ids": ["scene_a", "scene_b"],
+    }
+
+    result = pipeline.register_scenes(scene_data, [{"idx_i": 0, "idx_j": 1}])
+
+    assert result["pair_matches"][0]["matches"] == robust_matches
+    assert result["pair_matches"][0]["raw_matches"] == raw_matches
+    assert result["diagnostics"]["raw_block_matches"][0]["matches"] == raw_matches
+
+
+def test_no_overlap_writes_structured_failure_payload(tmp_path, monkeypatch):
+    from scripts import diagnose_registration_pair
+
+    config = SimpleNamespace(
+        scenes=[{"id": "scene_a"}, {"id": "scene_b"}],
+        control_scene="original_control",
+        output_root=str(tmp_path / "default-output"),
+    )
+    captured = {}
+
+    class FakePipeline:
+        registration_band_idx = 0
+
+        def __init__(self, pipeline_config):
+            captured["control_scene"] = pipeline_config.control_scene
+
+        def load_scenes(self):
+            return {
+                "arrays": [], "transforms": [], "nodata_values": [],
+                "crs": "EPSG:4326", "scene_ids": ["scene_a", "scene_b"],
+            }
+
+        def detect_overlaps(self, scene_data):
+            return []
+
+    monkeypatch.setattr(diagnose_registration_pair, "load_config", lambda _: config)
+    monkeypatch.setattr(diagnose_registration_pair, "MultibandPipeline", FakePipeline)
+    output_dir = tmp_path / "diagnostic"
+
+    result = diagnose_registration_pair.main([
+        "--config", "ignored.yaml", "--scene-i", "0", "--scene-j", "1",
+        "--output-dir", str(output_dir),
+    ])
+
+    assert result == 1
+    assert captured["control_scene"] == "scene_a"
+    payload = json.loads(
+        (output_dir / "registration_diagnostics.json").read_text(encoding="utf-8")
+    )
+    assert payload["status"] == "fail"
+    assert payload["failure"]["code"] == "no_overlap"
+    assert payload["quality"]["quality"] == "fail"
+    assert not list(output_dir.glob("*.tif"))
 
 
 def test_registration_diagnostic_uses_actual_registration_schema(tmp_path, monkeypatch):

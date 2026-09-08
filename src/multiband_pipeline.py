@@ -1319,6 +1319,7 @@ class MultibandPipeline:
         from src.coregistration import phase_correlation_from_overlap
 
         pair_measurements: List[dict] = []
+        raw_block_matches: List[dict] = []
         rejected_edges: List[dict] = []
         for ov in overlaps:
             i, j = ov["idx_i"], ov["idx_j"]
@@ -1336,6 +1337,12 @@ class MultibandPipeline:
                 max_global_shift=40,
                 confidence_threshold=0.5,
             )
+            raw_matches = [dict(match) for match in matches]
+            raw_block_matches.append({
+                "idx_i": i, "idx_j": j,
+                "matches": raw_matches,
+                "screening": dict(screening),
+            })
 
             if matches:
                 robust_pair = build_robust_pair_measurement(
@@ -1350,6 +1357,7 @@ class MultibandPipeline:
                         "n_blocks_total": robust_pair["n_blocks_total"],
                         "rmse": robust_pair["rmse"], "p95": robust_pair["p95"],
                         "matches": robust_pair["matches"],
+                        "raw_matches": raw_matches,
                         "screening": robust_pair["screening"],
                         "method": "block_match",
                     })
@@ -1384,7 +1392,8 @@ class MultibandPipeline:
                     "confidence": float(conf_pc),
                     "n_blocks": 1,
                     "rmse": 0.0, "p95": 0.0,
-                    "matches": [], "screening": screening,
+                    "matches": [], "raw_matches": raw_matches,
+                    "screening": screening,
                     "method": "overlap_phase_correlation",
                 })
                 logger.info(
@@ -1404,6 +1413,7 @@ class MultibandPipeline:
             rejected_edges.append({
                 "idx_i": i, "idx_j": j,
                 "reason": reason, "screening": screening,
+                "raw_matches": raw_matches,
             })
             logger.warning("  [%d]-[%d] 拒绝: %s", i, j, reason)
 
@@ -1419,7 +1429,7 @@ class MultibandPipeline:
             unreachable_ids = [
                 scene_ids[idx] for idx in range(n_images) if idx != self.control_idx
             ]
-            return _registration_failure_result(
+            failure_result = _registration_failure_result(
                 arrays,
                 reg_params.get("enable_local_refinement", True),
                 [], [], geometric_edges, [], rejected_list,
@@ -1427,6 +1437,8 @@ class MultibandPipeline:
                 unreachable_ids,
                 "没有可用的匹配对，无法进行配准",
             )
+            failure_result["diagnostics"]["raw_block_matches"] = raw_block_matches
+            return failure_result
 
         # ---- Step 1.5: 连通性分析 ----
         # 几何重叠边（所有 detect_overlaps 发现的对）
@@ -1484,7 +1496,7 @@ class MultibandPipeline:
                     f"smoke 五景验收失败: 场景 {unreachable_ids} 不可达，"
                     f"要求所有 {n_images} 景连通"
                 )
-            return _registration_failure_result(
+            failure_result = _registration_failure_result(
                 arrays,
                 reg_params.get("enable_local_refinement", True),
                 pair_measurements,
@@ -1496,6 +1508,8 @@ class MultibandPipeline:
                 unreachable_ids,
                 reason,
             )
+            failure_result["diagnostics"]["raw_block_matches"] = raw_block_matches
+            return failure_result
 
         # ---- Step 2: 网络平差 ----
         # 用所有实测边做网络平差
@@ -1730,6 +1744,7 @@ class MultibandPipeline:
                 "n_rejected": len(rejected_edges),
                 "n_geometric": len(geometric_edges),
                 "n_components": len(components),
+                "raw_block_matches": raw_block_matches,
                 "global_shifts": global_shifts.tolist(),
                 "loop_errors": adj_result.get("loop_errors", []),
                 "global_refinement_history": refine_result["history"],
