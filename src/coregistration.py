@@ -3018,13 +3018,22 @@ def aggregate_final_validation_quality(validation_results, params=None):
     elif summary_stats:
         counts = np.asarray([item[0] for item in summary_stats], dtype=float)
         total = int(counts.sum())
+        if len(summary_stats) == 1:
+            _, median, rmse, p95, mean_confidence = summary_stats[0]
+        else:
+            # Per-edge summaries cannot recover pooled quantiles. Use the
+            # maximum edge quantile as a conservative upper bound instead.
+            median = max(item[1] for item in summary_stats)
+            rmse = float(np.sqrt(np.average(
+                [item[2] ** 2 for item in summary_stats], weights=counts)))
+            p95 = max(item[3] for item in summary_stats)
+            mean_confidence = float(np.average(
+                [item[4] for item in summary_stats], weights=counts))
         stats = {
-            'median': float(np.average([item[1] for item in summary_stats], weights=counts)),
-            'rmse': float(np.sqrt(np.average(
-                [item[2] ** 2 for item in summary_stats], weights=counts))),
-            'p95': float(np.average([item[3] for item in summary_stats], weights=counts)),
-            'mean_confidence': float(np.average(
-                [item[4] for item in summary_stats], weights=counts)),
+            'median': float(median),
+            'rmse': float(rmse),
+            'p95': float(p95),
+            'mean_confidence': float(mean_confidence),
             'n_accepted': total,
         }
     else:

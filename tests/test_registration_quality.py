@@ -35,6 +35,43 @@ def test_final_quality_gate_rejects_bad_rmse_or_p95():
          "residual_rmse": 0.8, "residual_p95": 0.9, "n_inliers": 8}, params) == "fail"
 
 
+def test_final_quality_summary_fallback_is_conservative_for_quantiles():
+    from src.coregistration import aggregate_final_validation_quality
+    result = aggregate_final_validation_quality(
+        [{"stats": {"median": 0.1, "rmse": 0.2, "p95": 0.3,
+                     "mean_confidence": 0.8, "n_accepted": 5}},
+         {"stats": {"median": 0.1, "rmse": 0.2, "p95": 1.1,
+                     "mean_confidence": 0.8, "n_accepted": 5}}],
+        {"pass_min_mean_confidence": 0.50, "pass_max_median": 0.35,
+         "pass_max_rmse": 0.60, "pass_max_p95": 1.00, "final_min_blocks": 5,
+         "warn_min_mean_confidence": 0.45, "warn_max_median": 0.50,
+         "warn_max_rmse": 0.75, "warn_max_p95": 1.25})
+    assert result["quality"] == "warn"
+    assert result["p95"] == pytest.approx(1.1)
+
+
+def test_validation_grid_params_are_schema_backed_and_preserved():
+    cfg = _dict_to_config({
+        "experiment_name": "registration-test",
+        "selected_bands": ["B14"],
+        "registration_band": "B14",
+        "scenes": [
+            {"id": "a", "bands": {"B14": "a.tif"}},
+            {"id": "b", "bands": {"B14": "b.tif"}},
+        ],
+        "registration_params": {
+            "validation_step": 64,
+            "validation_offset_row": 32,
+            "validation_offset_col": 16,
+            "validation_min_distance_from_training": 48,
+        },
+    })
+    assert cfg.registration_params["validation_step"] == 64
+    assert cfg.registration_params["validation_offset_row"] == 32
+    assert cfg.registration_params["validation_offset_col"] == 16
+    assert cfg.registration_params["validation_min_distance_from_training"] == 48
+
+
 def test_registration_params_load_and_preserve_strict_quality():
     """registration_params should load from YAML/dict and preserve values."""
     cfg = _dict_to_config({

@@ -23,6 +23,136 @@ def test_independent_validation_uses_configured_thresholds(monkeypatch):
     assert result["stats"] is not None or result["failure_reason"] is not None
 
 
+def test_register_scenes_validates_final_arrays_and_all_training_controls(monkeypatch):
+    from src import coregistration, multiband_pipeline
+    from src.multiband_pipeline import MultibandPipeline
+
+    params = {
+        "enable_local_refinement": True,
+        "local_min_controls": 1,
+        "local_min_spatial_groups": 1,
+        "local_cv_min_rmse_improvement": 0.01,
+        "local_cv_min_p95_improvement": 0.01,
+        "local_max_controls": 10,
+        "local_block_size": 4,
+        "local_confidence_threshold": 0.6,
+        "validation_block_size": 4,
+        "validation_step": 4,
+        "validation_offset_row": 0,
+        "validation_offset_col": 0,
+        "validation_min_distance_from_training": 0,
+        "validation_confidence_threshold": 0.6,
+        "validation_max_residual_shift": 1.0,
+        "final_min_blocks": 5,
+        "pass_min_mean_confidence": 0.5,
+        "pass_max_median": 0.35,
+        "pass_max_rmse": 0.6,
+        "pass_max_p95": 1.0,
+        "warn_min_mean_confidence": 0.45,
+        "warn_max_median": 0.5,
+        "warn_max_rmse": 0.75,
+        "warn_max_p95": 1.25,
+    }
+    original_match = {
+        "ref_x": 2.0, "ref_y": 2.0, "tgt_x": 2.0, "tgt_y": 2.0,
+        "shift_dx": 1.0, "shift_dy": 0.0, "confidence": 0.9,
+    }
+    post_global_match = {
+        "ref_x": 10.0, "ref_y": 10.0, "tgt_x": 11.0, "tgt_y": 10.0,
+        "shift_dx": 0.0, "shift_dy": 0.0, "confidence": 0.9,
+    }
+    monkeypatch.setattr(coregistration, "collect_block_matches",
+                        lambda *a, **k: ([original_match], {}))
+    monkeypatch.setattr(coregistration, "build_robust_pair_measurement",
+                        lambda *a, **k: {
+                            "status": "pass", "shift_dx": 1.0, "shift_dy": 0.0,
+                            "confidence": 0.9, "n_blocks_inlier": 1,
+                            "n_blocks_total": 1, "rmse": 0.0, "p95": 0.0,
+                            "matches": [original_match], "screening": {},
+                        })
+    monkeypatch.setattr(coregistration, "multi_image_network_adjustment",
+                        lambda *a, **k: {
+                            "global_shifts": np.array([[0.0, 0.0], [1.0, 0.0]]),
+                            "loop_errors": [],
+                        })
+    monkeypatch.setattr(coregistration, "refine_global_residual_shifts_from_original",
+                        lambda *a, **k: {
+                            "global_shifts": np.array([[0.0, 0.0], [1.0, 0.0]]),
+                            "history": [], "warnings": [],
+                        })
+    warp_calls = []
+    def fake_warp(array, *args, **kwargs):
+        warp_calls.append(array.copy())
+        return array.astype(float) + len(warp_calls)
+    monkeypatch.setattr(coregistration, "warp_multiband_with_displacement_field", fake_warp)
+    monkeypatch.setattr(coregistration, "rematch_pair_on_registered",
+                        lambda *a, **k: {
+                            "available": True, "shift_dx": 0.0, "shift_dy": 0.0,
+                            "confidence": 0.9, "n_blocks": 1, "rmse": 0.0,
+                            "p95": 0.0, "matches": [post_global_match],
+                        })
+    monkeypatch.setattr(coregistration, "build_parent_based_local_controls",
+                        lambda *a, **k: {
+                            "points_xy": np.array([[11.0, 10.0]]),
+                            "residual_dx": np.array([0.0]),
+                            "residual_dy": np.array([0.0]),
+                            "confidence": np.array([0.9]), "n_valid": 1,
+                        })
+    monkeypatch.setattr(coregistration, "balance_edge_controls",
+                        lambda controls, **kwargs: controls)
+    monkeypatch.setattr(multiband_pipeline, "_local_holdout_cv",
+                        lambda *a, **k: {
+                            "available": True, "baseline_rmse": 1.0,
+                            "candidate_rmse": 0.5, "baseline_p95": 1.2,
+                            "candidate_p95": 0.8,
+                        })
+    monkeypatch.setattr(multiband_pipeline, "_fit_local_rbf_field",
+                        lambda controls, shape, params: (
+                            np.zeros(shape), np.zeros(shape), {},
+                        ))
+    validation_calls = []
+    def fake_validate(arr_ref, tr_ref, arr_registered, tr_registered,
+                      nodata_ref, nodata_tgt, training_points, **kwargs):
+        validation_calls.append((arr_ref.copy(), arr_registered.copy(),
+                                 nodata_ref, nodata_tgt,
+                                 np.asarray(training_points).copy(), kwargs))
+        return {
+            "blocks": [],
+            "stats": {"median": 0.1, "rmse": 0.2, "p95": 0.3,
+                      "mean_confidence": 0.8, "n_accepted": 5},
+            "coverage": {}, "failure_reason": None,
+        }
+    monkeypatch.setattr(coregistration,
+                        "validate_registration_independent_grid", fake_validate)
+
+    pipeline = MultibandPipeline.__new__(MultibandPipeline)
+    pipeline.common_bands = ["B14"]
+    pipeline.registration_band_idx = 0
+    pipeline.control_idx = 0
+    pipeline.smoke = False
+    pipeline.config = type("Config", (), {"registration_params": params})()
+    arrays = [np.ones((1, 8, 8)), np.ones((1, 8, 8)) * 2]
+    transforms = [from_origin(0, 8, 1, 1), from_origin(0, 8, 1, 1)]
+    result = pipeline.register_scenes(
+        {"arrays": arrays, "transforms": transforms,
+         "nodata_values": [None, None]},
+        [{"idx_i": 0, "idx_j": 1}],
+    )
+
+    assert result["spanning_tree"] == [(0, 1)]
+    assert len(validation_calls) == 1
+    arr_ref, arr_registered, nd_ref, nd_tgt, training_points, kwargs = validation_calls[0]
+    assert np.array_equal(arr_ref, result["registered_arrays"][0][0])
+    assert np.array_equal(arr_registered, result["registered_arrays"][1][0])
+    assert not np.array_equal(arr_registered, arrays[1][0])
+    assert nd_ref is None and nd_tgt is None
+    assert {tuple(point) for point in training_points} == {(2.0, 2.0), (10.0, 10.0)}
+    assert kwargs["confidence_threshold"] == 0.6
+    assert kwargs["max_residual_shift"] == 1.0
+    assert kwargs["min_accepted"] == 5
+    assert result["quality"]["quality"] == "pass"
+
+
 def test_analyze_displacement_spikes_handles_distance_field(tmp_path):
     field = np.zeros((12, 12), dtype=float)
     overlap = np.ones_like(field, dtype=bool)

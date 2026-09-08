@@ -265,17 +265,19 @@ def _collect_post_global_residual_pairs(
 
 def _training_points_for_edge(pair_measurements, idx_i, idx_j):
     """Return training block centers in the reference coordinates of an edge."""
+    points = []
     for pair in pair_measurements:
         if {pair.get("idx_i"), pair.get("idx_j")} != {idx_i, idx_j}:
             continue
         matches = pair.get("matches") or []
         if pair.get("idx_i") == idx_i and pair.get("idx_j") == idx_j:
-            points = [(m.get("ref_x"), m.get("ref_y")) for m in matches]
+            pair_points = [(m.get("ref_x"), m.get("ref_y")) for m in matches]
         else:
-            points = [(m.get("tgt_x"), m.get("tgt_y")) for m in matches]
-        points = [point for point in points if None not in point]
-        return np.asarray(points, dtype=float).reshape((-1, 2))
-    return np.empty((0, 2), dtype=float)
+            pair_points = [(m.get("tgt_x"), m.get("tgt_y")) for m in matches]
+        points.extend(point for point in pair_points if None not in point)
+    if not points:
+        return np.empty((0, 2), dtype=float)
+    return np.unique(np.asarray(points, dtype=float).reshape((-1, 2)), axis=0)
 
 
 def _local_field_stats(field):
@@ -1501,7 +1503,7 @@ class MultibandPipeline:
 
         for idx_i, idx_j in spanning_tree_edges:
             training_points = _training_points_for_edge(
-                pair_measurements, idx_i, idx_j,
+                [*pair_measurements, *post_global_pairs], idx_i, idx_j,
             )
             try:
                 validation = validate_registration_independent_grid(

@@ -36,3 +36,21 @@ The first focused red run failed for the intended missing behavior: the aggregat
 
 - The host pytest environment cannot access/clean its temporary-directory roots, so the single `tmp_path`-based adjacent test could not complete in this session.
 - A broad `compileall` check was also blocked by permission errors writing existing `__pycache__` files; the focused and adjacent tests imported the modified modules successfully.
+
+## Review fix round
+
+Addressed all four review findings:
+
+1. Final validation exclusion points now combine matching controls from both the original global pair measurements and post-global residual pairs. Duplicate points are removed before passing them to the independent validator.
+2. Added schema-backed defaults for `validation_step`, `validation_offset_row`, `validation_offset_col`, and `validation_min_distance_from_training` in `_DEFAULT_REGISTRATION_PARAMS`, so `_merge_registration_params()` preserves normal YAML values.
+3. Added deterministic `register_scenes()` regression coverage proving that final registered arrays are validated on spanning-tree edges, original and post-global controls are excluded, configured thresholds are forwarded, and `nodata=None` is preserved.
+4. Summary-only aggregation now uses the supplied metrics for a single edge and conservative maximum median/P95 bounds for multiple edges; it no longer averages median/P95 values across edge summaries. RMSE remains count-weighted because it is aggregable from per-edge sums of squares.
+
+### Fix-round TDD and verification
+
+- New review regressions were run before the fixes: `3 failed`, covering the summary-quantile fallback, discarded validation-grid config keys, and missing post-global exclusion.
+- After implementation: review regressions `3 passed`.
+- `tests/test_registration_quality.py`: `7 passed`.
+- `tests/test_registration_refinement.py` excluding the pre-existing temporary-path case: `18 passed, 1 deselected`.
+- Both adjacent files together: `25 passed, 1 error`; the remaining error is the host pytest `tmp_path` setup `PermissionError: [WinError 5]` while scanning `C:\Users\wang\AppData\Local\Temp\pytest-of-wang`.
+- `git diff --check`: passed.
