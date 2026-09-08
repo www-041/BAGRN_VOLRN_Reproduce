@@ -1679,17 +1679,20 @@ class MultibandPipeline:
 
         # 7. 计算光谱保持指标（SAM, spectral RMSE, correlation）
         spectral = {}
-        spectral_dir = os.path.join(output_dir, "spectral")
-        original_arrays = normalized.get("original", None)
-        if original_arrays is not None:
-            spectral = self.evaluate_spectral(
-                normalized,
-                original_arrays,
-                scene_data["nodata_values"],
-                scene_data["band_names"],
-                overlaps,
-                output_dir=spectral_dir,
-            )
+        if self.config.enable_spectral_metrics:
+            spectral_dir = os.path.join(output_dir, "spectral")
+            original_arrays = normalized.get("original", None)
+            if original_arrays is not None:
+                spectral = self.evaluate_spectral(
+                    normalized,
+                    original_arrays,
+                    scene_data["nodata_values"],
+                    scene_data["band_names"],
+                    overlaps,
+                    output_dir=spectral_dir,
+                )
+        else:
+            logger.info("光谱指标已禁用 (enable_spectral_metrics=False)")
 
         # 8. 数据质量检查
         quality = self.check_data_quality(normalized, scene_data)
