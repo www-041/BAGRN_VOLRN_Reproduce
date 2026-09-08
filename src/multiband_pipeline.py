@@ -293,6 +293,174 @@ def _training_points_for_edge(pair_measurements, idx_i, idx_j):
     return np.unique(np.asarray(points, dtype=float).reshape((-1, 2)), axis=0)
 
 
+def _validate_final_registration_arrays(
+    registered_arrays,
+    registration_band_idx,
+    transforms,
+    nodata_values,
+    validation_edges,
+    training_measurements,
+    params,
+):
+    """Validate the exact arrays that will be used by the quality gate."""
+    from src.coregistration import (
+        aggregate_final_validation_quality,
+        validate_registration_independent_grid,
+    )
+
+    params = params or {}
+    validation_results = []
+    validation_block_size = int(params.get("validation_block_size", 384))
+    validation_step = int(params.get("validation_step", 256))
+    validation_offset_row = int(params.get("validation_offset_row", 128))
+    validation_offset_col = int(params.get("validation_offset_col", 128))
+    validation_min_distance = float(
+        params.get("validation_min_distance_from_training", 256)
+    )
+    validation_confidence = float(
+        params.get("validation_confidence_threshold", 0.45)
+    )
+    validation_max_shift = float(
+        params.get("validation_max_residual_shift", 3.0)
+    )
+    validation_min_blocks = int(params.get("final_min_blocks", 5))
+
+    for idx_i, idx_j in validation_edges:
+        training_points = _training_points_for_edge(
+            training_measurements, idx_i, idx_j,
+        )
+        try:
+            validation = validate_registration_independent_grid(
+                registered_arrays[idx_i][registration_band_idx], transforms[idx_i],
+                registered_arrays[idx_j][registration_band_idx], transforms[idx_j],
+                nodata_values[idx_i], nodata_values[idx_j], training_points,
+                block_size=validation_block_size,
+                step=validation_step,
+                offset_row=validation_offset_row,
+                offset_col=validation_offset_col,
+                min_distance_from_training=validation_min_distance,
+                confidence_threshold=validation_confidence,
+                max_residual_shift=validation_max_shift,
+                min_accepted=validation_min_blocks,
+            )
+        except Exception as exc:
+            logger.warning(
+                "最终独立验证边 (%d, %d) 异常: %s", idx_i, idx_j, exc,
+            )
+            validation = {
+                "blocks": [], "stats": None, "coverage": None,
+                "failure_reason": f"validation failed: {exc}",
+            }
+        validation["idx_i"] = idx_i
+        validation["idx_j"] = idx_j
+        validation_results.append(validation)
+
+    aggregate_quality = aggregate_final_validation_quality(
+        validation_results, params, required_edges=validation_edges,
+    )
+    final_quality = {
+        "quality": aggregate_quality.get("quality", "fail"),
+        "rmse": float(aggregate_quality.get("rmse", float("inf"))),
+        "p95": float(aggregate_quality.get("p95", float("inf"))),
+        "median": float(aggregate_quality.get("median", float("inf"))),
+        "confidence": float(aggregate_quality.get(
+            "mean_confidence", aggregate_quality.get("confidence", 0.0)
+        )),
+        "n_blocks": int(aggregate_quality.get(
+            "n_blocks", aggregate_quality.get("n_accepted", 0)
+        )),
+    }
+    if aggregate_quality.get("unavailable_edges"):
+        final_quality["quality"] = "fail"
+    return final_quality, {
+        "edges": validation_results,
+        "overall": final_quality,
+    }
+
+
+def _graph_components(n_images, edges):
+    """Return geometric graph components in stable scene-index order."""
+    adjacency = defaultdict(set)
+    for idx_i, idx_j in edges:
+        adjacency[idx_i].add(idx_j)
+        adjacency[idx_j].add(idx_i)
+    visited = set()
+    components = []
+    for node in range(n_images):
+        if node in visited:
+            continue
+        component = set()
+        queue = deque([node])
+        while queue:
+            current = queue.popleft()
+            if current in component:
+                continue
+            component.add(current)
+            visited.add(current)
+            queue.extend(nb for nb in adjacency[current] if nb not in component)
+        components.append(sorted(component))
+    return components
+
+
+def _registration_failure_result(
+    arrays,
+    local_refinement_enabled,
+    pair_matches,
+    spanning_tree,
+    geometric_edges,
+    matching_edges,
+    rejected_edges,
+    connected_components,
+    unreachable_scenes,
+    reason,
+):
+    """Build the stable registration schema for a blocked registration."""
+    n_images = len(arrays)
+    quality = {
+        "quality": "fail",
+        "rmse": float("inf"),
+        "p95": float("inf"),
+        "median": float("inf"),
+        "confidence": 0.0,
+        "n_blocks": 0,
+    }
+    final_validation = {"edges": [], "overall": quality}
+    local_refinement = {
+        "enabled": bool(local_refinement_enabled),
+        "used_for_scenes": [],
+        "fallback_scenes": [],
+        "cv_results": {},
+    }
+    return {
+        "registered_arrays": [np.asarray(array).copy() for array in arrays],
+        "global_shifts": np.zeros((n_images, 2), dtype=float),
+        "local_dx_fields": [
+            np.zeros(array.shape[1:], dtype=np.float64) for array in arrays
+        ],
+        "local_dy_fields": [
+            np.zeros(array.shape[1:], dtype=np.float64) for array in arrays
+        ],
+        "local_refinement": local_refinement,
+        "pair_matches": list(pair_matches),
+        "connected": False,
+        "spanning_tree": list(spanning_tree),
+        "geometric_edges": list(geometric_edges),
+        "matching_edges": list(matching_edges),
+        "rejected_edges": list(rejected_edges),
+        "connected_components": list(connected_components),
+        "unreachable_scenes": list(unreachable_scenes),
+        "quality": quality,
+        "final_validation": final_validation,
+        "diagnostics": {
+            "registration_blocked": True,
+            "reason": reason,
+            "local_refinement": local_refinement,
+            "final_validation": final_validation,
+            "quality": quality,
+        },
+    }
+
+
 def _local_field_stats(field):
     """Return compact finite-field statistics for registration diagnostics."""
     values = np.asarray(field, dtype=float)
@@ -1087,8 +1255,6 @@ class MultibandPipeline:
             warp_multiband_with_displacement_field,
             rematch_pair_on_registered,
             refine_global_residual_shifts_from_original,
-            validate_registration_independent_grid,
-            aggregate_final_validation_quality,
         )
 
         if registration_band_idx is None:
@@ -1242,7 +1408,25 @@ class MultibandPipeline:
             logger.warning("  [%d]-[%d] 拒绝: %s", i, j, reason)
 
         if not pair_measurements:
-            raise ValueError("没有可用的匹配对，无法进行配准")
+            geometric_edges = [(ov["idx_i"], ov["idx_j"]) for ov in overlaps]
+            rejected_list = [
+                (item["idx_i"], item["idx_j"], item["reason"])
+                for item in rejected_edges
+            ]
+            scene_ids = scene_data.get(
+                "scene_ids", [str(i) for i in range(n_images)]
+            )
+            unreachable_ids = [
+                scene_ids[idx] for idx in range(n_images) if idx != self.control_idx
+            ]
+            return _registration_failure_result(
+                arrays,
+                reg_params.get("enable_local_refinement", True),
+                [], [], geometric_edges, [], rejected_list,
+                _graph_components(n_images, geometric_edges),
+                unreachable_ids,
+                "没有可用的匹配对，无法进行配准",
+            )
 
         # ---- Step 1.5: 连通性分析 ----
         # 几何重叠边（所有 detect_overlaps 发现的对）
@@ -1260,27 +1444,9 @@ class MultibandPipeline:
                 logger.info("  [%d]-[%d] 原因: %s", ri, rj, reason)
 
         # 计算连通分量（BFS）
-        adj_all = defaultdict(set)
-        for i, j in geometric_edges:
-            adj_all[i].add(j)
-            adj_all[j].add(i)
-        visited_global = set()
-        components: List[set] = []
-        for node in range(n_images):
-            if node in visited_global:
-                continue
-            comp = set()
-            queue = deque([node])
-            while queue:
-                n = queue.popleft()
-                if n in comp:
-                    continue
-                comp.add(n)
-                visited_global.add(n)
-                for nb in adj_all[n]:
-                    if nb not in comp:
-                        queue.append(nb)
-            components.append(comp)
+        components = [set(component) for component in _graph_components(
+            n_images, geometric_edges,
+        )]
         logger.info("连通分量: %d 个 %s", len(components),
                      [sorted(c) for c in components])
 
@@ -1310,17 +1476,26 @@ class MultibandPipeline:
         if unreachable:
             logger.warning("不可达场景: %s", unreachable_ids)
 
-        # smoke 模式：不可达则报错（不允许继续）
+        # 不可达时返回稳定失败结果，让 run() 使用统一质量门控。
         if unreachable:
+            reason = f"网络不连通: 场景 {unreachable_ids} 无法从控制景到达"
             if self.smoke:
-                raise ValueError(
+                reason = (
                     f"smoke 五景验收失败: 场景 {unreachable_ids} 不可达，"
                     f"要求所有 {n_images} 景连通"
                 )
-            else:
-                raise ValueError(
-                    f"网络不连通: 场景 {unreachable_ids} 无法从控制景到达"
-                )
+            return _registration_failure_result(
+                arrays,
+                reg_params.get("enable_local_refinement", True),
+                pair_measurements,
+                spanning_tree_edges,
+                geometric_edges,
+                matching_edges,
+                rejected_list,
+                [sorted(component) for component in components],
+                unreachable_ids,
+                reason,
+            )
 
         # ---- Step 2: 网络平差 ----
         # 用所有实测边做网络平差
@@ -1520,71 +1695,15 @@ class MultibandPipeline:
             logger.info("  [%d] 全局位移: dx=%.4f, dy=%.4f", idx, gdx, gdy)
 
         # ---- Step 5: 在最终注册数组上执行独立验证 ----
-        validation_results = []
-        validation_block_size = int(reg_params.get("validation_block_size", 384))
-        validation_step = int(reg_params.get("validation_step", 256))
-        validation_offset_row = int(reg_params.get("validation_offset_row", 128))
-        validation_offset_col = int(reg_params.get("validation_offset_col", 128))
-        validation_min_distance = float(reg_params.get(
-            "validation_min_distance_from_training", 256,
-        ))
-        validation_confidence = float(reg_params.get(
-            "validation_confidence_threshold", 0.45,
-        ))
-        validation_max_shift = float(reg_params.get(
-            "validation_max_residual_shift", 3.0,
-        ))
-        validation_min_blocks = int(reg_params.get("final_min_blocks", 5))
-
-        for idx_i, idx_j in spanning_tree_edges:
-            training_points = _training_points_for_edge(
-                [*pair_measurements, *post_global_pairs], idx_i, idx_j,
-            )
-            try:
-                validation = validate_registration_independent_grid(
-                    registered_arrays[idx_i][registration_band_idx], transforms[idx_i],
-                    registered_arrays[idx_j][registration_band_idx], transforms[idx_j],
-                    nodata_values[idx_i], nodata_values[idx_j], training_points,
-                    block_size=validation_block_size,
-                    step=validation_step,
-                    offset_row=validation_offset_row,
-                    offset_col=validation_offset_col,
-                    min_distance_from_training=validation_min_distance,
-                    confidence_threshold=validation_confidence,
-                    max_residual_shift=validation_max_shift,
-                    min_accepted=validation_min_blocks,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "最终独立验证边 (%d, %d) 异常: %s", idx_i, idx_j, exc,
-                )
-                validation = {
-                    "blocks": [], "stats": None, "coverage": None,
-                    "failure_reason": f"validation failed: {exc}",
-                }
-            validation["idx_i"] = idx_i
-            validation["idx_j"] = idx_j
-            validation_results.append(validation)
-
-        aggregate_quality = aggregate_final_validation_quality(
-            validation_results, reg_params,
+        final_quality, final_validation = _validate_final_registration_arrays(
+            registered_arrays,
+            registration_band_idx,
+            transforms,
+            nodata_values,
+            spanning_tree_edges,
+            [*pair_measurements, *post_global_pairs],
+            reg_params,
         )
-        final_quality = {
-            "quality": aggregate_quality.get("quality", "fail"),
-            "rmse": float(aggregate_quality.get("rmse", float("inf"))),
-            "p95": float(aggregate_quality.get("p95", float("inf"))),
-            "median": float(aggregate_quality.get("median", float("inf"))),
-            "confidence": float(aggregate_quality.get(
-                "mean_confidence", aggregate_quality.get("confidence", 0.0)
-            )),
-            "n_blocks": int(aggregate_quality.get(
-                "n_blocks", aggregate_quality.get("n_accepted", 0)
-            )),
-        }
-        final_validation = {
-            "edges": validation_results,
-            "overall": final_quality,
-        }
         connected = not bool(unreachable)
 
         elapsed = time.time() - t0
@@ -2230,6 +2349,20 @@ class MultibandPipeline:
                         registered_arrays.append(warped)
                     logger.info("  [%d] 全局位移: dx=%.4f, dy=%.4f (复用全幅配准)", idx, gdx, gdy)
 
+                cropped_quality, cropped_final_validation = _validate_final_registration_arrays(
+                    registered_arrays,
+                    self.registration_band_idx,
+                    scene_data["transforms"],
+                    scene_data["nodata_values"],
+                    full_registration["spanning_tree"],
+                    full_registration["pair_matches"],
+                    self.config.registration_params,
+                )
+                smoke_diagnostics = dict(full_registration.get("diagnostics", {}))
+                smoke_diagnostics["quality"] = cropped_quality
+                smoke_diagnostics["final_validation"] = cropped_final_validation
+                smoke_diagnostics["smoke_recropped_validation"] = True
+
                 # 构建 registration dict，复用全幅配准的连通性信息
                 registration = {
                     "registered_arrays": registered_arrays,
@@ -2245,9 +2378,9 @@ class MultibandPipeline:
                     "rejected_edges": full_registration["rejected_edges"],
                     "connected_components": full_registration["connected_components"],
                     "unreachable_scenes": full_registration["unreachable_scenes"],
-                    "quality": full_registration["quality"],
-                    "final_validation": full_registration["final_validation"],
-                    "diagnostics": full_registration["diagnostics"],
+                    "quality": cropped_quality,
+                    "final_validation": cropped_final_validation,
+                    "diagnostics": smoke_diagnostics,
                 }
             else:
                 registration = self.register_scenes(scene_data, overlaps)

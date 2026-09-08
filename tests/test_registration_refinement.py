@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from types import SimpleNamespace
 from rasterio.transform import from_origin
 
 from src.coregistration import (
@@ -729,3 +730,222 @@ def test_registration_quality_meets_requirement_uses_final_quality_order():
     assert registration_quality_meets_requirement("pass", "pass") is True
     assert registration_quality_meets_requirement("pass", "warn") is True
     assert registration_quality_meets_requirement("warn", "warn") is True
+
+
+def test_final_quality_fails_when_required_validation_edge_is_unavailable():
+    from src.coregistration import aggregate_final_validation_quality
+
+    params = {
+        "final_min_blocks": 1,
+        "pass_min_mean_confidence": 0.5,
+        "pass_max_median": 0.35,
+        "pass_max_rmse": 0.6,
+        "pass_max_p95": 1.0,
+        "warn_min_mean_confidence": 0.45,
+        "warn_max_median": 0.5,
+        "warn_max_rmse": 0.75,
+        "warn_max_p95": 1.25,
+    }
+    result = aggregate_final_validation_quality(
+        [
+            {"idx_i": 0, "idx_j": 1,
+             "stats": {"median": 0.1, "rmse": 0.2, "p95": 0.3,
+                       "mean_confidence": 0.9, "n_accepted": 1}},
+            {"idx_i": 1, "idx_j": 2, "stats": None,
+             "failure_reason": "no independent blocks"},
+        ],
+        params,
+        required_edges=[(0, 1), (1, 2)],
+    )
+
+    assert result["quality"] == "fail"
+    assert result["unavailable_edges"] == [(1, 2)]
+
+
+def test_register_scenes_returns_stable_failure_schema_when_no_pair_is_usable(monkeypatch):
+    from src import coregistration
+    from src.multiband_pipeline import MultibandPipeline
+
+    monkeypatch.setattr(
+        coregistration, "collect_block_matches",
+        lambda *args, **kwargs: ([], {"low_valid": 1}),
+    )
+    monkeypatch.setattr(
+        coregistration, "phase_correlation_from_overlap",
+        lambda *args, **kwargs: (0.0, 0.0, 0.0),
+    )
+    pipeline = MultibandPipeline.__new__(MultibandPipeline)
+    pipeline.registration_band_idx = 0
+    pipeline.control_idx = 0
+    pipeline.common_bands = ["B14"]
+    pipeline.smoke = False
+    pipeline.config = SimpleNamespace(registration_params={"required_quality": "pass"})
+    scene_data = {
+        "arrays": [np.ones((1, 8, 8)), np.ones((1, 8, 8))],
+        "transforms": [from_origin(0, 8, 1, 1)] * 2,
+        "nodata_values": [None, None],
+        "scene_ids": ["a", "b"],
+    }
+
+    result = pipeline.register_scenes(
+        scene_data, [{"idx_i": 0, "idx_j": 1}],
+    )
+
+    assert result["connected"] is False
+    assert result["quality"]["quality"] == "fail"
+    assert result["registered_arrays"]
+    assert result["pair_matches"] == []
+    assert result["rejected_edges"]
+    assert result["final_validation"]["overall"]["quality"] == "fail"
+
+
+def test_register_scenes_returns_stable_failure_schema_when_graph_is_disconnected(monkeypatch):
+    from src import coregistration
+    from src.multiband_pipeline import MultibandPipeline
+
+    match = {"shift_dx": 0.0, "shift_dy": 0.0, "confidence": 0.9,
+             "ref_x": 2.0, "ref_y": 2.0, "tgt_x": 2.0, "tgt_y": 2.0}
+    monkeypatch.setattr(
+        coregistration, "collect_block_matches",
+        lambda *args, **kwargs: ([match], {}),
+    )
+    monkeypatch.setattr(
+        coregistration, "build_robust_pair_measurement",
+        lambda *args, **kwargs: {
+            "status": "pass", "shift_dx": 0.0, "shift_dy": 0.0,
+            "confidence": 0.9, "n_blocks_inlier": 1,
+            "n_blocks_total": 1, "rmse": 0.0, "p95": 0.0,
+            "matches": [match], "screening": {},
+        },
+    )
+    pipeline = MultibandPipeline.__new__(MultibandPipeline)
+    pipeline.registration_band_idx = 0
+    pipeline.control_idx = 0
+    pipeline.common_bands = ["B14"]
+    pipeline.smoke = False
+    pipeline.config = SimpleNamespace(registration_params={"required_quality": "pass"})
+    scene_data = {
+        "arrays": [np.ones((1, 8, 8)) for _ in range(3)],
+        "transforms": [from_origin(0, 8, 1, 1)] * 3,
+        "nodata_values": [None] * 3,
+        "scene_ids": ["a", "b", "c"],
+    }
+
+    result = pipeline.register_scenes(
+        scene_data, [{"idx_i": 0, "idx_j": 1}],
+    )
+
+    assert result["connected"] is False
+    assert result["unreachable_scenes"] == ["c"]
+    assert result["quality"]["quality"] == "fail"
+    assert result["spanning_tree"] == [(0, 1)]
+    assert result["final_validation"]["overall"]["quality"] == "fail"
+
+
+def test_smoke_registration_quality_is_recomputed_for_recropped_arrays(monkeypatch):
+    from src import coregistration, multiband_pipeline
+    from src.multiband_pipeline import MultibandPipeline
+
+    params = {
+        "required_quality": "pass",
+        "final_min_blocks": 1,
+        "validation_block_size": 2,
+        "validation_step": 2,
+        "validation_offset_row": 0,
+        "validation_offset_col": 0,
+        "validation_min_distance_from_training": 0,
+        "validation_confidence_threshold": 0.5,
+        "validation_max_residual_shift": 1.0,
+        "pass_min_mean_confidence": 0.5,
+        "pass_max_median": 0.35,
+        "pass_max_rmse": 0.6,
+        "pass_max_p95": 1.0,
+        "warn_min_mean_confidence": 0.45,
+        "warn_max_median": 0.5,
+        "warn_max_rmse": 0.75,
+        "warn_max_p95": 1.25,
+    }
+    config = SimpleNamespace(
+        experiment_name="smoke-quality-test",
+        scenes=[{"id": "a"}, {"id": "b"}],
+        selected_bands=["B14"], registration_band="B14",
+        registration_params=params, ablation_methods=[],
+        mosaic_modes=[], feather_widths=[], enable_spectral_metrics=False,
+        output_root="data/test-output",
+    )
+    full_arrays = [np.ones((1, 4, 4)), np.ones((1, 4, 4))]
+    cropped_arrays = [np.ones((1, 2, 2)), np.ones((1, 2, 2))]
+    transform = from_origin(0, 4, 1, 1)
+    full_scene_data = {
+        "arrays": full_arrays,
+        "transforms": [transform, transform],
+        "nodata_values": [None, None],
+        "bounds": [(0, 0, 4, 4), (0, 0, 4, 4)],
+        "crs": None, "scene_ids": ["a", "b"],
+    }
+    cropped_scene_data = {
+        **full_scene_data,
+        "arrays": cropped_arrays,
+        "transforms": [from_origin(0, 2, 1, 1)] * 2,
+        "bounds": [(0, 0, 2, 2), (0, 0, 2, 2)],
+    }
+    full_quality = {
+        "quality": "pass", "rmse": 0.1, "p95": 0.2,
+        "median": 0.1, "confidence": 0.9, "n_blocks": 5,
+    }
+    full_registration = {
+        "registered_arrays": full_arrays,
+        "global_shifts": np.zeros((2, 2)),
+        "local_dx_fields": [np.zeros((4, 4)) for _ in range(2)],
+        "local_dy_fields": [np.zeros((4, 4)) for _ in range(2)],
+        "local_refinement": {"enabled": False, "used_for_scenes": [],
+                              "fallback_scenes": [], "cv_results": {}},
+        "pair_matches": [{"idx_i": 0, "idx_j": 1, "matches": []}],
+        "connected": True, "spanning_tree": [(0, 1)],
+        "geometric_edges": [(0, 1)], "matching_edges": [(0, 1)],
+        "rejected_edges": [], "connected_components": [[0, 1]],
+        "unreachable_scenes": [], "quality": full_quality,
+        "final_validation": {"edges": [], "overall": full_quality},
+        "diagnostics": {},
+    }
+    pipeline = MultibandPipeline.__new__(MultibandPipeline)
+    pipeline.config = config
+    pipeline.dry_run = False
+    pipeline.smoke = True
+    pipeline.smoke_crop_size = 2
+    pipeline.output_root = config.output_root
+    pipeline.control_idx = 0
+    pipeline.registration_band_idx = 0
+    pipeline.common_bands = ["B14"]
+    pipeline.load_scenes = lambda: full_scene_data
+    overlap = [{"idx_i": 0, "idx_j": 1}]
+    pipeline.detect_overlaps = lambda scene_data: overlap
+    pipeline.register_scenes = lambda scene_data, overlaps: full_registration
+    pipeline._smoke_recrop_by_spanning_tree = lambda scene_data, tree: cropped_scene_data
+    normalization_calls = []
+    pipeline.apply_radiometric_normalization = lambda *args, **kwargs: (
+        normalization_calls.append(True) or {}
+    )
+    pipeline.compute_mosaics = lambda *args, **kwargs: {}
+    pipeline.evaluate_metrics = lambda *args, **kwargs: {}
+    pipeline.check_data_quality = lambda *args, **kwargs: {}
+    monkeypatch.setattr(multiband_pipeline, "validate_config", lambda config: [])
+    monkeypatch.setattr(multiband_pipeline, "validate_band_consistency", lambda *args, **kwargs: [])
+    validation_calls = []
+
+    def validate_cropped_only(arr_ref, tr_ref, arr_tgt, tr_tgt, *args, **kwargs):
+        validation_calls.append((arr_ref.shape, arr_tgt.shape))
+        return {"blocks": [], "stats": None, "coverage": {},
+                "failure_reason": "cropped validation unavailable"}
+
+    monkeypatch.setattr(
+        coregistration, "validate_registration_independent_grid",
+        validate_cropped_only,
+    )
+
+    result = pipeline.run()
+
+    assert validation_calls == [((2, 2), (2, 2))]
+    assert result["registration"]["quality"]["quality"] == "fail"
+    assert normalization_calls == []
+    assert result["pipeline_status"] == "failed"

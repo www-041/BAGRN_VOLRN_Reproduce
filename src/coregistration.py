@@ -2959,13 +2959,53 @@ def validate_registration_independent_grid(
     }
 
 
-def aggregate_final_validation_quality(validation_results, params=None):
+def aggregate_final_validation_quality(
+    validation_results, params=None, required_edges=None,
+):
     """Aggregate residuals from independent validation on final arrays."""
     params = params or {}
     validation_results = list(validation_results or [])
+    required_edges = list(required_edges or [])
     residuals = []
     confidences = []
     summary_stats = []
+    unavailable_edges = []
+
+    if required_edges:
+        validation_by_edge = {}
+        for validation in validation_results:
+            if not isinstance(validation, dict):
+                continue
+            idx_i = validation.get("idx_i")
+            idx_j = validation.get("idx_j")
+            if idx_i is None or idx_j is None:
+                continue
+            validation_by_edge[tuple(sorted((idx_i, idx_j)))] = validation
+
+        for idx_i, idx_j in required_edges:
+            validation = validation_by_edge.get(tuple(sorted((idx_i, idx_j))))
+            if validation is None:
+                unavailable_edges.append((idx_i, idx_j))
+                continue
+            has_accepted_block = any(
+                block.get("accepted")
+                and block.get("residual_magnitude") is not None
+                and block.get("confidence") is not None
+                for block in (validation.get("blocks") or [])
+                if isinstance(block, dict)
+            )
+            stats = validation.get("stats") or {}
+            try:
+                has_usable_stats = (
+                    int(stats.get("n_accepted", 0)) > 0
+                    and all(np.isfinite(float(stats[name])) for name in (
+                        "median", "rmse", "p95", "mean_confidence",
+                    ))
+                )
+            except (TypeError, ValueError):
+                has_usable_stats = False
+            if not (has_accepted_block or has_usable_stats):
+                unavailable_edges.append((idx_i, idx_j))
 
     for validation in validation_results:
         if not isinstance(validation, dict):
@@ -3046,6 +3086,7 @@ def aggregate_final_validation_quality(validation_results, params=None):
             'p95': float('inf'),
             'failure_reason': 'No accepted independent validation blocks',
             'n_validation_results': len(validation_results),
+            'unavailable_edges': unavailable_edges,
         }
 
     quality = classify_registration_quality({
@@ -3056,7 +3097,7 @@ def aggregate_final_validation_quality(validation_results, params=None):
         'residual_p95': stats['p95'],
         'n_inliers': stats['n_accepted'],
     }, params)
-    return {
+    result = {
         'quality': quality,
         'n_blocks': stats['n_accepted'],
         'mean_confidence': stats['mean_confidence'],
@@ -3065,6 +3106,11 @@ def aggregate_final_validation_quality(validation_results, params=None):
         'p95': stats['p95'],
         'n_validation_results': len(validation_results),
     }
+    if unavailable_edges:
+        result['quality'] = 'fail'
+        result['unavailable_edges'] = unavailable_edges
+        result['failure_reason'] = 'Unavailable required validation edges'
+    return result
 
 
 def compute_displacement_field_stats(dx_field, dy_field):
