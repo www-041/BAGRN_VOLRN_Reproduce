@@ -2726,6 +2726,9 @@ def validate_registration_independent_grid(
     block_size=256, step=256,
     offset_row=128, offset_col=128,
     min_distance_from_training=256,
+    confidence_threshold=0.5,
+    max_residual_shift=10,
+    min_accepted=20,
 ):
     """严格独立偏移网格验证。
 
@@ -2746,6 +2749,9 @@ def validate_registration_independent_grid(
     offset_row : int, 验证网格行偏移
     offset_col : int, 验证网格列偏移
     min_distance_from_training : float, 最小训练距离（px）
+    confidence_threshold : float, 验证块最小置信度
+    max_residual_shift : float, 验证块最大允许残余位移（px）
+    min_accepted : int, 最少接受验证块数
 
     Returns
     -------
@@ -2787,7 +2793,6 @@ def validate_registration_independent_grid(
     train_xy = np.array(training_points_xy) if len(training_points_xy) > 0 else np.empty((0, 2))
 
     actual_min_dist = min_distance_from_training
-    min_accepted = 20
 
     blocks = []
     n_total = 0
@@ -2862,7 +2867,7 @@ def validate_registration_independent_grid(
             sy, sx, conf = phase_correlation(
                 blk_ref, blk_reg, valid_ref=v_ref, valid_tgt=v_reg)
 
-            if conf < 0.5:
+            if conf < confidence_threshold:
                 n_conf += 1
                 blocks.append({
                     'validation_row': br, 'validation_col': bc,
@@ -2876,7 +2881,7 @@ def validate_registration_independent_grid(
                 })
                 continue
 
-            if abs(sy) >= 10 or abs(sx) >= 10:
+            if abs(sy) >= max_residual_shift or abs(sx) >= max_residual_shift:
                 n_shift_limit += 1
                 blocks.append({
                     'validation_row': br, 'validation_col': bc,
@@ -2951,6 +2956,105 @@ def validate_registration_independent_grid(
         'stats': stats,
         'coverage': coverage,
         'failure_reason': failure_reason,
+    }
+
+
+def aggregate_final_validation_quality(validation_results, params=None):
+    """Aggregate residuals from independent validation on final arrays."""
+    params = params or {}
+    validation_results = list(validation_results or [])
+    residuals = []
+    confidences = []
+    summary_stats = []
+
+    for validation in validation_results:
+        if not isinstance(validation, dict):
+            continue
+        blocks = validation.get('blocks') or []
+        block_residuals = []
+        block_confidences = []
+        for block in blocks:
+            if not block.get('accepted'):
+                continue
+            residual = block.get('residual_magnitude')
+            confidence = block.get('confidence')
+            if residual is None or confidence is None:
+                continue
+            residual = float(residual)
+            confidence = float(confidence)
+            if np.isfinite(residual) and np.isfinite(confidence):
+                block_residuals.append(residual)
+                block_confidences.append(confidence)
+        if block_residuals:
+            residuals.extend(block_residuals)
+            confidences.extend(block_confidences)
+            continue
+
+        stats = validation.get('stats')
+        if not stats:
+            continue
+        try:
+            n_blocks = int(stats['n_accepted'])
+            median = float(stats['median'])
+            rmse = float(stats['rmse'])
+            p95 = float(stats['p95'])
+            mean_confidence = float(stats['mean_confidence'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if n_blocks > 0 and all(np.isfinite(v) for v in (
+                median, rmse, p95, mean_confidence)):
+            summary_stats.append((n_blocks, median, rmse, p95, mean_confidence))
+
+    if residuals:
+        residuals = np.asarray(residuals, dtype=float)
+        confidences = np.asarray(confidences, dtype=float)
+        stats = {
+            'median': float(np.median(residuals)),
+            'rmse': float(np.sqrt(np.mean(residuals ** 2))),
+            'p95': float(np.percentile(residuals, 95)),
+            'mean_confidence': float(np.mean(confidences)),
+            'n_accepted': int(len(residuals)),
+        }
+    elif summary_stats:
+        counts = np.asarray([item[0] for item in summary_stats], dtype=float)
+        total = int(counts.sum())
+        stats = {
+            'median': float(np.average([item[1] for item in summary_stats], weights=counts)),
+            'rmse': float(np.sqrt(np.average(
+                [item[2] ** 2 for item in summary_stats], weights=counts))),
+            'p95': float(np.average([item[3] for item in summary_stats], weights=counts)),
+            'mean_confidence': float(np.average(
+                [item[4] for item in summary_stats], weights=counts)),
+            'n_accepted': total,
+        }
+    else:
+        return {
+            'quality': 'fail',
+            'n_blocks': 0,
+            'mean_confidence': 0.0,
+            'median': float('inf'),
+            'rmse': float('inf'),
+            'p95': float('inf'),
+            'failure_reason': 'No accepted independent validation blocks',
+            'n_validation_results': len(validation_results),
+        }
+
+    quality = classify_registration_quality({
+        'status': 'pass',
+        'confidence': stats['mean_confidence'],
+        'residual_median': stats['median'],
+        'residual_rmse': stats['rmse'],
+        'residual_p95': stats['p95'],
+        'n_inliers': stats['n_accepted'],
+    }, params)
+    return {
+        'quality': quality,
+        'n_blocks': stats['n_accepted'],
+        'mean_confidence': stats['mean_confidence'],
+        'median': stats['median'],
+        'rmse': stats['rmse'],
+        'p95': stats['p95'],
+        'n_validation_results': len(validation_results),
     }
 
 

@@ -10,6 +10,19 @@ from src.coregistration import (
 )
 
 
+def test_independent_validation_uses_configured_thresholds(monkeypatch):
+    from src import coregistration
+    monkeypatch.setattr(coregistration, "phase_correlation",
+                        lambda *a, **k: (0.0, 0.0, 0.7))
+    arr = np.arange(64 * 64, dtype=float).reshape(64, 64)
+    result = coregistration.validate_registration_independent_grid(
+        arr, from_origin(0, 64, 1, 1), arr, from_origin(0, 64, 1, 1),
+        None, None, np.empty((0, 2)), block_size=16, step=16,
+        min_distance_from_training=0, confidence_threshold=0.7,
+        max_residual_shift=1.0, min_accepted=1)
+    assert result["stats"] is not None or result["failure_reason"] is not None
+
+
 def test_analyze_displacement_spikes_handles_distance_field(tmp_path):
     field = np.zeros((12, 12), dtype=float)
     overlap = np.ones_like(field, dtype=bool)

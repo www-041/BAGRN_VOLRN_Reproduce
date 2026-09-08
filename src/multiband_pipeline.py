@@ -263,6 +263,21 @@ def _collect_post_global_residual_pairs(
     return {"pairs": pairs, "failures": failures}
 
 
+def _training_points_for_edge(pair_measurements, idx_i, idx_j):
+    """Return training block centers in the reference coordinates of an edge."""
+    for pair in pair_measurements:
+        if {pair.get("idx_i"), pair.get("idx_j")} != {idx_i, idx_j}:
+            continue
+        matches = pair.get("matches") or []
+        if pair.get("idx_i") == idx_i and pair.get("idx_j") == idx_j:
+            points = [(m.get("ref_x"), m.get("ref_y")) for m in matches]
+        else:
+            points = [(m.get("tgt_x"), m.get("tgt_y")) for m in matches]
+        points = [point for point in points if None not in point]
+        return np.asarray(points, dtype=float).reshape((-1, 2))
+    return np.empty((0, 2), dtype=float)
+
+
 def _local_field_stats(field):
     """Return compact finite-field statistics for registration diagnostics."""
     values = np.asarray(field, dtype=float)
@@ -1053,6 +1068,8 @@ class MultibandPipeline:
             warp_multiband_with_displacement_field,
             rematch_pair_on_registered,
             refine_global_residual_shifts_from_original,
+            validate_registration_independent_grid,
+            aggregate_final_validation_quality,
         )
 
         if registration_band_idx is None:
@@ -1465,6 +1482,58 @@ class MultibandPipeline:
 
             logger.info("  [%d] 全局位移: dx=%.4f, dy=%.4f", idx, gdx, gdy)
 
+        # ---- Step 5: 在最终注册数组上执行独立验证 ----
+        validation_results = []
+        validation_block_size = int(reg_params.get("validation_block_size", 384))
+        validation_step = int(reg_params.get("validation_step", 256))
+        validation_offset_row = int(reg_params.get("validation_offset_row", 128))
+        validation_offset_col = int(reg_params.get("validation_offset_col", 128))
+        validation_min_distance = float(reg_params.get(
+            "validation_min_distance_from_training", 256,
+        ))
+        validation_confidence = float(reg_params.get(
+            "validation_confidence_threshold", 0.45,
+        ))
+        validation_max_shift = float(reg_params.get(
+            "validation_max_residual_shift", 3.0,
+        ))
+        validation_min_blocks = int(reg_params.get("final_min_blocks", 5))
+
+        for idx_i, idx_j in spanning_tree_edges:
+            training_points = _training_points_for_edge(
+                pair_measurements, idx_i, idx_j,
+            )
+            try:
+                validation = validate_registration_independent_grid(
+                    registered_arrays[idx_i][registration_band_idx], transforms[idx_i],
+                    registered_arrays[idx_j][registration_band_idx], transforms[idx_j],
+                    nodata_values[idx_i], nodata_values[idx_j], training_points,
+                    block_size=validation_block_size,
+                    step=validation_step,
+                    offset_row=validation_offset_row,
+                    offset_col=validation_offset_col,
+                    min_distance_from_training=validation_min_distance,
+                    confidence_threshold=validation_confidence,
+                    max_residual_shift=validation_max_shift,
+                    min_accepted=validation_min_blocks,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "最终独立验证边 (%d, %d) 异常: %s", idx_i, idx_j, exc,
+                )
+                validation = {
+                    "blocks": [], "stats": None, "coverage": None,
+                    "failure_reason": f"validation failed: {exc}",
+                }
+            validation["idx_i"] = idx_i
+            validation["idx_j"] = idx_j
+            validation_results.append(validation)
+
+        final_quality = aggregate_final_validation_quality(
+            validation_results, reg_params,
+        )
+        final_validation = {**final_quality, "results": validation_results}
+
         elapsed = time.time() - t0
         logger.info("配准完成, 耗时 %.1fs", elapsed)
 
@@ -1479,6 +1548,8 @@ class MultibandPipeline:
             "geometric_edges": geometric_edges,
             "matching_edges": matching_edges,
             "rejected_edges": rejected_list,
+            "quality": final_quality,
+            "final_validation": final_validation,
             "connected_components": [sorted(c) for c in components],
             "unreachable_scenes": unreachable_ids,
             "diagnostics": {
@@ -1491,6 +1562,7 @@ class MultibandPipeline:
                 "global_refinement_history": refine_result["history"],
                 "global_refinement_warnings": refine_result["warnings"],
                 "local_refinement": local_refinement,
+                "final_validation": final_validation,
                 "elapsed_sec": elapsed,
             },
         }
