@@ -22,6 +22,45 @@ import yaml
 # 默认参数值
 # ---------------------------------------------------------------------------
 
+_DEFAULT_REGISTRATION_PARAMS: Dict[str, Any] = {
+    "global_block_size": 512,
+    "global_confidence_threshold": 0.50,
+    "max_global_shift": 40.0,
+    "robust_mad_scale": 3.0,
+    "robust_residual_floor": 0.75,
+    "robust_min_inliers": 5,
+    "robust_min_inlier_ratio": 0.35,
+    "global_refine_block_size": 384,
+    "global_refine_max_iterations": 2,
+    "global_refine_stop_magnitude": 0.15,
+    "global_refine_max_correction": 5.0,
+    "enable_local_refinement": True,
+    "local_block_size": 256,
+    "local_confidence_threshold": 0.60,
+    "local_max_residual_shift": 3.0,
+    "local_min_controls": 12,
+    "local_min_spatial_groups": 3,
+    "local_max_component": 2.5,
+    "local_hull_buffer": 128,
+    "local_cv_min_rmse_improvement": 0.10,
+    "local_cv_min_p95_improvement": 0.15,
+    "local_smoothing_candidates": [0.01, 0.05, 0.1, 0.5, 1.0],
+    "validation_block_size": 384,
+    "validation_confidence_threshold": 0.45,
+    "validation_max_residual_shift": 3.0,
+    "final_min_blocks": 5,
+    "pass_min_mean_confidence": 0.50,
+    "pass_max_median": 0.35,
+    "pass_max_rmse": 0.60,
+    "pass_max_p95": 1.00,
+    "warn_min_mean_confidence": 0.45,
+    "warn_max_median": 0.50,
+    "warn_max_rmse": 0.75,
+    "warn_max_p95": 1.25,
+    "required_quality": "pass",
+}
+
+
 _DEFAULT_VOLRN_PARAMS: Dict[str, Any] = {
     "block_size": 400,
     "lambda": 0.5,
@@ -98,6 +137,8 @@ class ExperimentConfig:
     feather_widths: List[int] = field(default_factory=lambda: [100])
 
     # ---- VOLRN 参数 ----
+    registration_params: Dict[str, Any] = field(default_factory=lambda: copy.deepcopy(_DEFAULT_REGISTRATION_PARAMS))
+
     volrn_params: Dict[str, Any] = field(default_factory=lambda: copy.deepcopy(_DEFAULT_VOLRN_PARAMS))
 
     # ---- 消融 / 敏感性分析 ----
@@ -216,6 +257,12 @@ def validate_config(config: ExperimentConfig, skip_file_check: bool = False) -> 
         校验错误列表。空列表表示全部通过。
     """
     errors: List[str] = []
+
+    # ---- registration_params ----
+    if hasattr(config, 'registration_params'):
+        rq = config.registration_params.get("required_quality", "pass")
+        if rq not in ("pass", "warn", "fail"):
+            errors.append(f"registration_params.required_quality 必须是 'pass'/'warn'/'fail'，当前: '{rq}'")
 
     # ---- 基本字段 ----
     if not config.experiment_name.strip():
@@ -471,6 +518,18 @@ def _parse_bool(value) -> bool:
     raise ValueError(f"Cannot parse {type(value).__name__} as boolean")
 
 
+def _merge_registration_params(raw: Any) -> Dict[str, Any]:
+    """Merge user-provided registration_params with defaults."""
+    merged = copy.deepcopy(_DEFAULT_REGISTRATION_PARAMS)
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if k in merged:
+                merged[k] = v
+            else:
+                print(f"[experiment_config] 警告: 未知 registration_params 字段 '{k}'", file=sys.stderr)
+    return merged
+
+
 def _dict_to_config(raw: Dict[str, Any]) -> ExperimentConfig:
     """
     将原始字典转换为 ExperimentConfig 数据类。
@@ -492,6 +551,7 @@ def _dict_to_config(raw: Dict[str, Any]) -> ExperimentConfig:
         "mosaic_modes": lambda v: list(v) if isinstance(v, list) else [],
         "feather_widths": lambda v: [int(x) for x in v] if isinstance(v, list) else [],
         "volrn_params": lambda v: dict(v) if isinstance(v, dict) else copy.deepcopy(_DEFAULT_VOLRN_PARAMS),
+        "registration_params": _merge_registration_params,
         "ablation_methods": lambda v: list(v) if isinstance(v, list) else [],
         "sensitivity": lambda v: dict(v) if isinstance(v, dict) else copy.deepcopy(_DEFAULT_SENSITIVITY),
         "scale_scene_counts": lambda v: [int(x) for x in v] if isinstance(v, list) else [],
