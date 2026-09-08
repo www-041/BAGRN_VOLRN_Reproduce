@@ -61,7 +61,7 @@ def _local_spatial_group_labels(points_xy, n_groups_x=4, n_groups_y=4):
     return y_bin * n_groups_x + x_bin
 
 
-def _accept_local_rbf_candidate(controls, params, cv_result=None):
+def _accept_local_rbf_candidate(controls, params, cv_result=None, rematch_failures=None):
     """Apply the local-control and held-out-CV acceptance gates."""
     params = params or {}
     points = np.asarray(controls.get("points_xy", []), dtype=float)
@@ -75,6 +75,10 @@ def _accept_local_rbf_candidate(controls, params, cv_result=None):
         "cv_result": cv_result or {},
     }
 
+    if rematch_failures:
+        result["reason"] = "global-only fallback: required post-global rematch failed"
+        result["rematch_failures"] = list(rematch_failures)
+        return result
     if not params.get("enable_local_refinement", True):
         result["reason"] = "local refinement disabled"
         return result
@@ -1412,13 +1416,15 @@ class MultibandPipeline:
             else:
                 controls = _empty_local_controls()
 
-            cv_result = _local_holdout_cv(controls, reg_params)
-            gate = _accept_local_rbf_candidate(controls, reg_params, cv_result)
-            scene_result.update(gate)
             scene_failures = [
                 failure for failure in post_global_failures
                 if idx in (failure["idx_i"], failure["idx_j"])
             ]
+            cv_result = _local_holdout_cv(controls, reg_params)
+            gate = _accept_local_rbf_candidate(
+                controls, reg_params, cv_result, rematch_failures=scene_failures
+            )
+            scene_result.update(gate)
             if scene_failures:
                 scene_result["rematch_failures"] = scene_failures
             local_refinement["cv_results"][str(idx)] = cv_result or {}
@@ -1434,8 +1440,6 @@ class MultibandPipeline:
                     scene_result["reason"] = f"local RBF fitting failed: {exc}"
                     local_refinement["fallback_scenes"].append(idx)
             else:
-                if scene_failures:
-                    scene_result["reason"] = scene_failures[0]["reason"]
                 local_refinement["fallback_scenes"].append(idx)
             local_refinement["scenes"][str(idx)] = scene_result
 

@@ -80,3 +80,28 @@ Additional checks:
 
 - The managed Windows environment still prevents pytest from scanning/cleaning its temp directory, so the one `tmp_path` test cannot complete through the normal fixture even though the underlying direct distance-field check passed previously.
 - The fix intentionally rejects local refinement when held-out coverage is insufficient; affected scenes remain on the global-only fallback path.
+
+## Task 4 scoped re-review fix report
+
+### Finding fixed
+
+- Post-global rematch failures and unavailable control edges are now associated with every affected scene before local-candidate acceptance. Each affected scene is explicitly rejected with a global-only fallback reason and cannot be added to `used_for_scenes`; unaffected scenes continue through local refinement.
+- Added a focused regression test covering the case where one failed rematch edge coexists with otherwise sufficient local controls and passing CV metrics.
+- Added an integration regression test verifying that the affected scene is absent from `used_for_scenes`, is recorded in `fallback_scenes`, and does not prevent an unaffected scene on a surviving edge from being refined.
+
+### TDD and verification
+
+- RED run: the new regression test failed with the intended missing `rematch_failures` helper argument.
+- Focused regression run: `1 passed` with one pre-existing pytest-cache permission warning.
+- Full registration refinement file excluding the known temp-path case: `16 passed, 1 deselected`.
+- Adjacent registration suites: `12 passed` with one pre-existing pytest-cache permission warning.
+- Complete covering command: `28 passed, 1 error`; the error is the existing managed-Windows permission failure while pytest sets up `tmp_path` for `test_analyze_displacement_spikes_handles_distance_field`.
+- AST parsing passed and `git diff --check` passed with only existing LF/CRLF conversion warnings.
+
+### Fix commit
+
+- `fix: force global-only fallback for affected local rbf scenes`
+
+### Concerns
+
+- The managed Windows environment still prevents pytest from scanning the shared temp directory, so the one unrelated `tmp_path` test cannot complete through its normal fixture.

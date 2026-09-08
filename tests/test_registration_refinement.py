@@ -270,3 +270,121 @@ def test_single_scene_registration_has_local_refinement_diagnostics():
     }, [])
     diagnostics = result["diagnostics"]["local_refinement"]
     assert set(("enabled", "used_for_scenes", "fallback_scenes", "cv_results")) <= set(diagnostics)
+
+
+def test_local_rbf_forces_global_only_when_scene_rematch_fails():
+    from src import multiband_pipeline
+
+    result = multiband_pipeline._accept_local_rbf_candidate(
+        _four_corner_local_controls(),
+        {"local_min_controls": 5, "local_min_spatial_groups": 3,
+         "local_cv_min_rmse_improvement": 0.01,
+         "local_cv_min_p95_improvement": 0.01},
+        cv_result={"baseline_rmse": 1.0, "candidate_rmse": 0.5,
+                   "baseline_p95": 1.2, "candidate_p95": 0.8},
+        rematch_failures=[{"idx_i": 0, "idx_j": 1,
+                           "reason": "post-global rematch unavailable"}],
+    )
+    assert result["accepted"] is False
+    assert result["reason"] == "global-only fallback: required post-global rematch failed"
+
+
+def test_register_scenes_excludes_affected_scene_but_processes_surviving_edge(monkeypatch):
+    from src import coregistration, multiband_pipeline
+    from src.multiband_pipeline import MultibandPipeline
+
+    params = {
+        "enable_local_refinement": True,
+        "local_min_controls": 5,
+        "local_min_spatial_groups": 3,
+        "local_cv_min_rmse_improvement": 0.01,
+        "local_cv_min_p95_improvement": 0.01,
+        "local_max_controls": 60,
+        "local_block_size": 4,
+        "local_confidence_threshold": 0.6,
+    }
+    controls = _four_corner_local_controls()
+    monkeypatch.setattr(
+        coregistration, "collect_block_matches",
+        lambda *args, **kwargs: ([{}], {}),
+    )
+    monkeypatch.setattr(
+        coregistration, "build_robust_pair_measurement",
+        lambda *args, **kwargs: {
+            "status": "pass", "shift_dx": 0.0, "shift_dy": 0.0,
+            "confidence": 0.9, "n_blocks_inlier": 1, "n_blocks_total": 1,
+            "rmse": 0.0, "p95": 0.0, "matches": [], "screening": {},
+        },
+    )
+    monkeypatch.setattr(
+        coregistration, "multi_image_network_adjustment",
+        lambda *args, **kwargs: {"global_shifts": np.zeros((3, 2)), "loop_errors": []},
+    )
+    monkeypatch.setattr(
+        coregistration, "refine_global_residual_shifts_from_original",
+        lambda *args, **kwargs: {
+            "global_shifts": np.zeros((3, 2)), "history": [], "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        coregistration, "warp_multiband_with_displacement_field",
+        lambda array, *args, **kwargs: array.copy(),
+    )
+    rematch_calls = {"count": 0}
+
+    def rematch_with_one_unavailable_edge(*args, **kwargs):
+        rematch_calls["count"] += 1
+        if rematch_calls["count"] == 1:
+            return {"available": False}
+        return {
+            "available": True, "shift_dx": 0.0, "shift_dy": 0.0,
+            "confidence": 0.9, "n_blocks": 8, "rmse": 0.1, "p95": 0.2,
+            "matches": [],
+        }
+
+    monkeypatch.setattr(coregistration, "rematch_pair_on_registered", rematch_with_one_unavailable_edge)
+    monkeypatch.setattr(
+        coregistration, "build_parent_based_local_controls",
+        lambda *args, **kwargs: controls.copy(),
+    )
+    monkeypatch.setattr(
+        coregistration, "build_local_residual_controls",
+        lambda *args, **kwargs: controls.copy(),
+    )
+    monkeypatch.setattr(
+        coregistration, "balance_edge_controls",
+        lambda edge_controls, **kwargs: edge_controls,
+    )
+    monkeypatch.setattr(
+        multiband_pipeline, "_local_holdout_cv",
+        lambda *args, **kwargs: {
+            "available": True, "baseline_rmse": 1.0, "candidate_rmse": 0.5,
+            "baseline_p95": 1.2, "candidate_p95": 0.8,
+        },
+    )
+    monkeypatch.setattr(
+        multiband_pipeline, "_fit_local_rbf_field",
+        lambda controls, shape, params: (
+            np.zeros(shape), np.zeros(shape), {"dx": {}, "dy": {}, "clipping": {}},
+        ),
+    )
+
+    pipeline = MultibandPipeline.__new__(MultibandPipeline)
+    pipeline.common_bands = ["B14"]
+    pipeline.registration_band_idx = 0
+    pipeline.control_idx = 0
+    pipeline.smoke = False
+    pipeline.config = type("Config", (), {"registration_params": params})()
+    arrays = [np.ones((1, 8, 8)) for _ in range(3)]
+    transforms = [from_origin(0, 8, 1, 1) for _ in range(3)]
+    result = pipeline.register_scenes(
+        {"arrays": arrays, "transforms": transforms, "nodata_values": [None] * 3},
+        [{"idx_i": 0, "idx_j": 1}, {"idx_i": 1, "idx_j": 2}],
+    )
+
+    diagnostics = result["diagnostics"]["local_refinement"]
+    assert diagnostics["used_for_scenes"] == [2]
+    assert diagnostics["fallback_scenes"] == [1]
+    assert diagnostics["scenes"]["1"]["reason"] == (
+        "global-only fallback: required post-global rematch failed"
+    )
