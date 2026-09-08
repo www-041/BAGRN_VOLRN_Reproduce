@@ -603,15 +603,21 @@ def _interpolate_and_apply(
                 all_gm, all_gn, pixel_gm, pixel_gn,
             )
 
-            # 应用 f' = a*f + b，仅对有效像素
+            # 应用 f' = a*f + b，仅对有效像素且有有效系数的像素
             val = result[band]
             if nd is not None:
                 valid = (val != nd) & np.isfinite(val)
             else:
                 valid = np.isfinite(val)
-            result[band, valid] = a_vals[valid] * val[valid] + b_vals[valid]
-            # 将 nodata 像素设为 np.nan
-            result[band, ~valid] = np.nan
+            
+            # 检查系数是否有效（IDW 插值可能产生 NaN）
+            coeff_valid = np.isfinite(a_vals) & np.isfinite(b_vals)
+            apply_mask = valid & coeff_valid
+            
+            # 只对既有有效数据又有有效系数的像素应用校正
+            result[band, apply_mask] = a_vals[apply_mask] * val[apply_mask] + b_vals[apply_mask]
+            # 将无数据或无有效系数的像素设为 np.nan
+            result[band, ~apply_mask] = np.nan
 
         results.append(result)
 
