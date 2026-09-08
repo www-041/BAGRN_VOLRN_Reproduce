@@ -1023,18 +1023,30 @@ def refine_global_residual_shifts_from_original(original_arrays, global_shifts,
                 i, j = int(edge['idx_i']), int(edge['idx_j'])
             else:
                 i, j = int(edge[0]), int(edge[1])
-            result = rematch_pair_on_registered(
-                registered[i], registered[j], transforms[i], transforms[j],
-                nodatas[i], nodatas[j],
-                max_residual_shift=max_residual_shift,
-                block_size=block_size,
-                confidence_threshold=confidence_threshold,
-            )
+            try:
+                result = rematch_pair_on_registered(
+                    registered[i], registered[j], transforms[i], transforms[j],
+                    nodatas[i], nodatas[j],
+                    max_residual_shift=max_residual_shift,
+                    block_size=block_size,
+                    confidence_threshold=confidence_threshold,
+                )
+            except Exception as exc:
+                warning = f'rematch failed for edge ({i}, {j}): {exc}'
+                warnings.append(warning)
+                edge_history.append({
+                    'idx_i': i, 'idx_j': j, 'available': False,
+                    'fallback': 'keep_current_global_shift',
+                    'warning': warning,
+                })
+                continue
             if not result or not result.get('available', True):
                 warning = f'rematch unavailable for edge ({i}, {j})'
                 warnings.append(warning)
                 edge_history.append({'idx_i': i, 'idx_j': j,
-                                     'available': False, 'warning': warning})
+                                     'available': False,
+                                     'fallback': 'keep_current_global_shift',
+                                     'warning': warning})
                 continue
 
             delta_pairs.append({
@@ -2970,6 +2982,18 @@ def aggregate_final_validation_quality(
     confidences = []
     summary_stats = []
     unavailable_edges = []
+    required_edge_failures = []
+    final_min_blocks = int(params.get('final_min_blocks', 5))
+
+    def mark_required_edge_failure(idx_i, idx_j, reason):
+        edge = (idx_i, idx_j)
+        if edge not in unavailable_edges:
+            unavailable_edges.append(edge)
+        required_edge_failures.append({
+            'idx_i': idx_i,
+            'idx_j': idx_j,
+            'reason': reason,
+        })
 
     if required_edges:
         validation_by_edge = {}
@@ -2985,16 +3009,37 @@ def aggregate_final_validation_quality(
         for idx_i, idx_j in required_edges:
             validation = validation_by_edge.get(tuple(sorted((idx_i, idx_j))))
             if validation is None:
-                unavailable_edges.append((idx_i, idx_j))
+                mark_required_edge_failure(
+                    idx_i, idx_j, 'validation result is missing'
+                )
                 continue
-            has_accepted_block = any(
-                block.get("accepted")
+            edge_reasons = []
+            failure_reason = validation.get('failure_reason')
+            if failure_reason is not None:
+                edge_reasons.append(f'failure_reason: {failure_reason}')
+
+            usable_blocks = [
+                block for block in (validation.get("blocks") or [])
+                if isinstance(block, dict)
+                and block.get("accepted")
                 and block.get("residual_magnitude") is not None
                 and block.get("confidence") is not None
-                for block in (validation.get("blocks") or [])
-                if isinstance(block, dict)
-            )
+            ]
             stats = validation.get("stats") or {}
+            n_accepted = None
+            if isinstance(stats, dict) and 'n_accepted' in stats:
+                try:
+                    n_accepted = int(stats.get('n_accepted', 0))
+                except (TypeError, ValueError):
+                    n_accepted = 0
+            elif usable_blocks:
+                n_accepted = len(usable_blocks)
+            else:
+                n_accepted = 0
+            if n_accepted < final_min_blocks:
+                edge_reasons.append(
+                    f'n_accepted={n_accepted} < final_min_blocks={final_min_blocks}'
+                )
             try:
                 has_usable_stats = (
                     int(stats.get("n_accepted", 0)) > 0
@@ -3002,10 +3047,12 @@ def aggregate_final_validation_quality(
                         "median", "rmse", "p95", "mean_confidence",
                     ))
                 )
-            except (TypeError, ValueError):
+            except (AttributeError, TypeError, ValueError):
                 has_usable_stats = False
-            if not (has_accepted_block or has_usable_stats):
-                unavailable_edges.append((idx_i, idx_j))
+            if not (usable_blocks or has_usable_stats):
+                edge_reasons.append('no usable independent validation statistics')
+            if edge_reasons:
+                mark_required_edge_failure(idx_i, idx_j, '; '.join(edge_reasons))
 
     for validation in validation_results:
         if not isinstance(validation, dict):
@@ -3087,6 +3134,7 @@ def aggregate_final_validation_quality(
             'failure_reason': 'No accepted independent validation blocks',
             'n_validation_results': len(validation_results),
             'unavailable_edges': unavailable_edges,
+            'required_edge_failures': required_edge_failures,
         }
 
     quality = classify_registration_quality({
@@ -3109,6 +3157,7 @@ def aggregate_final_validation_quality(
     if unavailable_edges:
         result['quality'] = 'fail'
         result['unavailable_edges'] = unavailable_edges
+        result['required_edge_failures'] = required_edge_failures
         result['failure_reason'] = 'Unavailable required validation edges'
     return result
 
@@ -3718,12 +3767,23 @@ def build_robust_pair_measurement(matches, params=None):
     if n_conf < min_inliers:
         return failure(f"too few confident blocks: {n_conf} < {min_inliers}", n_conf, n_conf / n_total)
 
-    # Reject using one joint Euclidean residual for the 2-D shift vector.
-    center = np.array([np.median(dx[conf_mask]), np.median(dy[conf_mask])])
-    residuals = np.hypot(dx - center[0], dy - center[1])
-    mad = float(np.median(residuals[conf_mask]))
-    threshold = max(mad_scale * mad, residual_floor)
-    inlier_mask = conf_mask & (residuals <= threshold)
+    # Iteratively reject using one joint Euclidean residual for the 2-D shift
+    # vector.  Recompute the median/MAD on the retained controls so an edge
+    # case that survives the first pass cannot bias the next pass.
+    inlier_mask = conf_mask.copy()
+    for _ in range(5):
+        center = np.array([
+            np.median(dx[inlier_mask]), np.median(dy[inlier_mask])
+        ])
+        residuals = np.hypot(dx - center[0], dy - center[1])
+        mad = float(np.median(residuals[inlier_mask]))
+        threshold = max(mad_scale * mad, residual_floor)
+        next_inlier_mask = conf_mask & (residuals <= threshold)
+        if next_inlier_mask.sum() < min_inliers:
+            break
+        if np.array_equal(next_inlier_mask, inlier_mask):
+            break
+        inlier_mask = next_inlier_mask
     n_inlier = int(inlier_mask.sum())
     ratio = n_inlier / n_total if n_total else 0.0
     if n_inlier < min_inliers or ratio < min_ratio:

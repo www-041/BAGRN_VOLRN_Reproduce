@@ -28,7 +28,10 @@ if project_root not in sys.path:
 from src.experiment_config import load_config
 from src.io_utils import write_geotiff
 from src.mosaic import create_mosaic
-from src.multiband_pipeline import MultibandPipeline
+from src.multiband_pipeline import (
+    MultibandPipeline,
+    registration_quality_meets_requirement,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
@@ -260,6 +263,13 @@ def _reproject_to_reference(array, src_transform, src_crs, nodata, shape,
 def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
                                registration_band_idx=0, mosaic_mode="weighted"):
     """Write registered images, a red-green overlay, and a diagnostic mosaic."""
+    quality = registration.get("quality", {}) or {}
+    if (
+        str(registration.get("status", "")).lower() == "fail"
+        or registration.get("connected") is False
+        or quality.get("quality") == "fail"
+    ):
+        raise ValueError("cannot write registered artifacts for a failed registration")
     registered = registration.get("registered_arrays")
     if not registered or len(registered) < 2:
         raise ValueError("registration result does not contain two registered arrays")
@@ -375,15 +385,60 @@ def main(argv=None):
         return 1
 
     registration = pipeline.register_scenes(scene_data, overlaps)
+    quality = registration.get("quality", {}) or {}
+    required_quality = (getattr(config, "registration_params", {}) or {}).get(
+        "required_quality", "pass"
+    )
+    connected = bool(registration.get("connected", False))
+    quality_name = str(quality.get("quality", "unknown")).lower()
+    quality_ok = (
+        connected
+        and quality_name != "fail"
+        and registration_quality_meets_requirement(quality, required_quality)
+    )
+    status_failed = str(registration.get("status", "")).lower() == "fail"
+    if status_failed or not quality_ok:
+        failure = registration.get("failure", {}) or {}
+        if not failure:
+            if not connected:
+                code = "registration_connectivity_failed"
+                reason = "registration graph is not connected"
+            else:
+                code = "registration_quality_failed"
+                if quality_name == "fail":
+                    reason = "final registration quality is classified as fail"
+                else:
+                    reason = (
+                        f"final registration quality {quality.get('quality', 'unknown')!r} "
+                        f"is below required quality {required_quality!r}"
+                    )
+            failure = {"code": code, "reason": reason}
+        registration_for_payload = {
+            **registration,
+            "status": "fail",
+            "failure": failure,
+            "diagnostic_artifacts": {},
+        }
+        build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
+        logger.error(
+            "Registration diagnostic failed: connected=%s, quality=%s, required=%s",
+            connected, quality.get("quality", "unknown"), required_quality,
+        )
+        return 1
+
     artifacts = write_diagnostic_artifacts(
         registration, scene_data, scene_ids, output_dir,
         registration_band_idx=pipeline.registration_band_idx,
         mosaic_mode=args.mosaic_mode,
     )
-    registration_for_payload = {**registration, "diagnostic_artifacts": artifacts}
+    registration_for_payload = {
+        **registration,
+        "status": registration.get("status") or "pass",
+        "failure": registration.get("failure", {}) or {},
+        "diagnostic_artifacts": artifacts,
+    }
     build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
 
-    quality = registration.get("quality", {}) or {}
     logger.info("Connected: %s", registration.get("connected", False))
     logger.info("Quality: %s", quality.get("quality", "unknown"))
     logger.info("RMSE: %s px; P95: %s px; confidence: %s",

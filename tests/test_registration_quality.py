@@ -24,6 +24,71 @@ def test_final_quality_gate_uses_post_warp_residuals():
     assert result["n_blocks"] == 8
 
 
+@pytest.mark.parametrize(
+    "validation",
+    [
+        {
+            "idx_i": 0,
+            "idx_j": 1,
+            "stats": {
+                "median": 0.1,
+                "rmse": 0.2,
+                "p95": 0.3,
+                "mean_confidence": 0.9,
+                "n_accepted": 5,
+            },
+            "failure_reason": "independent validation reported a failure",
+        },
+        {
+            "idx_i": 0,
+            "idx_j": 1,
+            "stats": {
+                "median": 0.1,
+                "rmse": 0.2,
+                "p95": 0.3,
+                "mean_confidence": 0.9,
+                "n_accepted": 4,
+            },
+            "failure_reason": None,
+        },
+    ],
+)
+def test_final_quality_gate_rejects_any_failed_required_edge(validation):
+    """A required edge cannot be hidden by a passing pooled summary."""
+    from src.coregistration import aggregate_final_validation_quality
+
+    passing_edge = {
+        "idx_i": 1,
+        "idx_j": 2,
+        "stats": {
+            "median": 0.1,
+            "rmse": 0.2,
+            "p95": 0.3,
+            "mean_confidence": 0.9,
+            "n_accepted": 4,
+        },
+        "failure_reason": None,
+    }
+    params = {
+        "final_min_blocks": 5,
+        "pass_min_mean_confidence": 0.5,
+        "pass_max_median": 0.35,
+        "pass_max_rmse": 0.6,
+        "pass_max_p95": 1.0,
+        "warn_min_mean_confidence": 0.45,
+        "warn_max_median": 0.5,
+        "warn_max_rmse": 0.75,
+        "warn_max_p95": 1.25,
+    }
+
+    result = aggregate_final_validation_quality(
+        [validation, passing_edge], params, required_edges=[(0, 1), (1, 2)]
+    )
+
+    assert result["quality"] == "fail"
+    assert (0, 1) in result["unavailable_edges"]
+
+
 def test_final_quality_gate_rejects_bad_rmse_or_p95():
     from src.coregistration import classify_registration_quality
     params = {"pass_min_mean_confidence": 0.50, "pass_max_median": 0.35,

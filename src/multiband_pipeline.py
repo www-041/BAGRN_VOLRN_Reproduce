@@ -56,6 +56,37 @@ def registration_quality_meets_requirement(actual, required) -> bool:
         return False
     return quality_order[actual] >= quality_order[required]
 
+
+def _registration_status_and_failure(connected, quality, required_quality):
+    """Return the canonical status/failure pair for a registration result."""
+    if not connected:
+        return "fail", {
+            "code": "registration_connectivity_failed",
+            "reason": "registration graph is not connected",
+        }
+    actual_quality = (
+        quality.get("quality", "unknown")
+        if isinstance(quality, dict)
+        else quality
+    )
+    if (
+        str(actual_quality).lower() == "fail"
+        or not registration_quality_meets_requirement(quality, required_quality)
+    ):
+        if str(actual_quality).lower() == "fail":
+            reason = "final registration quality is classified as fail"
+        else:
+            reason = (
+                f"final registration quality {actual_quality!r} "
+                f"is below required quality {required_quality!r}"
+            )
+        return "fail", {
+            "code": "registration_quality_failed",
+            "reason": reason,
+        }
+    return "pass", {}
+
+
 def _local_spatial_group_labels(points_xy, n_groups_x=4, n_groups_y=4):
     """Assign local controls to normalized spatial grid cells."""
     points_xy = np.asarray(points_xy, dtype=float)
@@ -293,6 +324,58 @@ def _training_points_for_edge(pair_measurements, idx_i, idx_j):
     return np.unique(np.asarray(points, dtype=float).reshape((-1, 2)), axis=0)
 
 
+def _translate_training_measurements_to_crop(
+    pair_measurements, original_transforms, cropped_transforms,
+):
+    """Translate pair-match coordinates from a full frame into a crop frame.
+
+    Rasterio transforms encode the pixel origin.  A crop therefore changes
+    the pixel coordinates even when the underlying geographic locations are
+    unchanged.  Only the copied validation measurements are translated; the
+    registration result keeps its original full-frame coordinates.
+    """
+    offsets = []
+    for original, cropped in zip(original_transforms, cropped_transforms):
+        try:
+            x_resolution = float(original.a)
+            y_resolution = float(original.e)
+            if abs(x_resolution) < 1e-12 or abs(y_resolution) < 1e-12:
+                raise ValueError("zero pixel resolution")
+            col_offset = int(round((float(cropped.c) - float(original.c)) / x_resolution))
+            row_offset = int(round((float(original.f) - float(cropped.f)) / abs(y_resolution)))
+        except (AttributeError, TypeError, ValueError, ZeroDivisionError):
+            col_offset, row_offset = 0, 0
+        offsets.append((col_offset, row_offset))
+
+    translated = []
+    for pair in pair_measurements or []:
+        translated_pair = dict(pair)
+        idx_i = pair.get("idx_i")
+        idx_j = pair.get("idx_j")
+        matches = []
+        for match in pair.get("matches") or []:
+            if not isinstance(match, dict):
+                matches.append(match)
+                continue
+            translated_match = dict(match)
+            for x_key, y_key, scene_idx in (
+                ("ref_x", "ref_y", idx_i),
+                ("tgt_x", "tgt_y", idx_j),
+            ):
+                if x_key not in translated_match or y_key not in translated_match:
+                    continue
+                try:
+                    col_offset, row_offset = offsets[int(scene_idx)]
+                    translated_match[x_key] = float(translated_match[x_key]) - col_offset
+                    translated_match[y_key] = float(translated_match[y_key]) - row_offset
+                except (IndexError, TypeError, ValueError):
+                    continue
+            matches.append(translated_match)
+        translated_pair["matches"] = matches
+        translated.append(translated_pair)
+    return translated, offsets
+
+
 def _validate_final_registration_arrays(
     registered_arrays,
     registration_band_idx,
@@ -449,6 +532,11 @@ def _registration_failure_result(
         "rejected_edges": list(rejected_edges),
         "connected_components": list(connected_components),
         "unreachable_scenes": list(unreachable_scenes),
+        "status": "fail",
+        "failure": {
+            "code": "registration_blocked",
+            "reason": reason,
+        },
         "quality": quality,
         "final_validation": final_validation,
         "diagnostics": {
@@ -1242,6 +1330,8 @@ class MultibandPipeline:
                 'global_shifts': np.ndarray (n_images, 2),
                 'pair_matches': list of dict,
                 'connected': bool,
+                'status': 'pass' or 'fail',
+                'failure': dict,
                 'quality': dict,
                 'final_validation': {'edges': list, 'overall': dict},
                 'local_refinement': dict,
@@ -1291,6 +1381,9 @@ class MultibandPipeline:
                 "n_blocks": 0,
             }
             final_validation = {"edges": [], "overall": quality}
+            status, failure = _registration_status_and_failure(
+                True, quality, reg_params.get("required_quality", "pass")
+            )
             return {
                 "registered_arrays": [a.copy() for a in arrays],
                 "global_shifts": np.zeros((n_images, 2)),
@@ -1305,6 +1398,8 @@ class MultibandPipeline:
                 "rejected_edges": [],
                 "connected_components": [list(range(n_images))] if n_images else [],
                 "unreachable_scenes": [],
+                "status": status,
+                "failure": failure,
                 "quality": quality,
                 "final_validation": final_validation,
                 "diagnostics": {
@@ -1321,6 +1416,11 @@ class MultibandPipeline:
         pair_measurements: List[dict] = []
         raw_block_matches: List[dict] = []
         rejected_edges: List[dict] = []
+        global_block_size = int(reg_params.get("global_block_size", 512))
+        max_global_shift = float(reg_params.get("max_global_shift", 40.0))
+        global_confidence_threshold = float(
+            reg_params.get("global_confidence_threshold", 0.5)
+        )
         for ov in overlaps:
             i, j = ov["idx_i"], ov["idx_j"]
             arr_i_reg = arrays[i][registration_band_idx]
@@ -1333,9 +1433,9 @@ class MultibandPipeline:
                 arr_i_reg, transforms[i],
                 arr_j_reg, transforms[j],
                 nd_i, nd_j,
-                block_size=512,
-                max_global_shift=40,
-                confidence_threshold=0.5,
+                block_size=global_block_size,
+                max_global_shift=max_global_shift,
+                confidence_threshold=global_confidence_threshold,
             )
             raw_matches = [dict(match) for match in matches]
             raw_block_matches.append({
@@ -1373,8 +1473,6 @@ class MultibandPipeline:
 
             # 尝试2: overlap phase correlation fallback（地理重叠区）
             logger.info("  [%d]-[%d] 块匹配失败，尝试 phase correlation fallback...", i, j)
-            valid_i = np.isfinite(arr_i_reg) & (arr_i_reg != nd_i)
-            valid_j = np.isfinite(arr_j_reg) & (arr_j_reg != nd_j)
             try:
                 sy, sx, conf_pc = phase_correlation_from_overlap(
                     arr_i_reg, transforms[i],
@@ -1385,7 +1483,9 @@ class MultibandPipeline:
                 logger.warning("  [%d]-[%d] phase correlation 异常: %s", i, j, exc)
                 sy, sx, conf_pc = 0.0, 0.0, 0.0
 
-            if conf_pc > 0.3 and (abs(sy) < 40 and abs(sx) < 40):
+            if (conf_pc >= global_confidence_threshold
+                    and abs(sy) < max_global_shift
+                    and abs(sx) < max_global_shift):
                 pair_measurements.append({
                     "idx_i": i, "idx_j": j,
                     "shift_dx": float(sx), "shift_dy": float(sy),
@@ -1719,6 +1819,11 @@ class MultibandPipeline:
             reg_params,
         )
         connected = not bool(unreachable)
+        status, failure = _registration_status_and_failure(
+            connected,
+            final_quality,
+            reg_params.get("required_quality", "pass"),
+        )
 
         elapsed = time.time() - t0
         logger.info("配准完成, 耗时 %.1fs", elapsed)
@@ -1731,6 +1836,8 @@ class MultibandPipeline:
             "local_refinement": local_refinement,
             "pair_matches": pair_measurements,
             "connected": connected,
+            "status": status,
+            "failure": failure,
             "spanning_tree": spanning_tree_edges,
             "geometric_edges": geometric_edges,
             "matching_edges": matching_edges,
@@ -2364,19 +2471,37 @@ class MultibandPipeline:
                         registered_arrays.append(warped)
                     logger.info("  [%d] 全局位移: dx=%.4f, dy=%.4f (复用全幅配准)", idx, gdx, gdy)
 
+                validation_measurements, crop_offsets = (
+                    _translate_training_measurements_to_crop(
+                        full_registration["pair_matches"],
+                        full_transforms,
+                        scene_data["transforms"],
+                    )
+                )
                 cropped_quality, cropped_final_validation = _validate_final_registration_arrays(
                     registered_arrays,
                     self.registration_band_idx,
                     scene_data["transforms"],
                     scene_data["nodata_values"],
                     full_registration["spanning_tree"],
-                    full_registration["pair_matches"],
+                    validation_measurements,
                     self.config.registration_params,
                 )
                 smoke_diagnostics = dict(full_registration.get("diagnostics", {}))
                 smoke_diagnostics["quality"] = cropped_quality
                 smoke_diagnostics["final_validation"] = cropped_final_validation
                 smoke_diagnostics["smoke_recropped_validation"] = True
+                smoke_diagnostics["smoke_training_coordinate_offsets"] = [
+                    {"col": col, "row": row} for col, row in crop_offsets
+                ]
+                status, failure = _registration_status_and_failure(
+                    bool(full_registration["connected"]),
+                    cropped_quality,
+                    self.config.registration_params.get("required_quality", "pass"),
+                )
+                if full_registration.get("status") == "fail":
+                    status = "fail"
+                    failure = full_registration.get("failure", failure)
 
                 # 构建 registration dict，复用全幅配准的连通性信息
                 registration = {
@@ -2387,6 +2512,8 @@ class MultibandPipeline:
                     "local_refinement": full_registration.get("local_refinement", {}),
                     "pair_matches": full_registration["pair_matches"],
                     "connected": full_registration["connected"],
+                    "status": status,
+                    "failure": failure,
                     "spanning_tree": full_registration["spanning_tree"],
                     "geometric_edges": full_registration["geometric_edges"],
                     "matching_edges": full_registration["matching_edges"],

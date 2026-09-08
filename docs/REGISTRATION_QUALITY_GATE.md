@@ -34,6 +34,10 @@ For the DZ01V B14 N=2→4→6 experiment series, `required_quality: pass` is set
 
 The initial block matches, robust pair measurements, and network-adjustment shifts are training and registration diagnostics. They are not final quality evidence. After global and optional gated local refinement, the pipeline builds the final registered arrays from the ORIGINAL arrays and runs an independent validation grid on those arrays. The resulting `final_validation` and `quality` dictionaries are the authoritative quality evidence used by the gate.
 
+Every required validation edge must also have no `failure_reason` and at least
+`final_min_blocks` accepted blocks. A passing pooled summary cannot mask a
+failed or under-sampled required edge.
+
 ## Robust Estimation
 
 The pipeline uses MAD-based robust estimation instead of simple weighted average:
@@ -52,11 +56,13 @@ python scripts/diagnose_registration_pair.py \
     --scene-i 0 --scene-j 1
 ```
 
-The command writes `registration_diagnostics.json`, registered reference and
-target GeoTIFFs, a red-green overlay, and a diagnostic mosaic beneath the
-requested output directory. The default mosaic mode is `weighted`; use
-`--mosaic-mode source_selection` only when that diagnostic mode is explicitly
-requested.
+On success, the command writes `registration_diagnostics.json`, registered
+reference and target GeoTIFFs, a red-green overlay, and a diagnostic mosaic
+beneath the requested output directory. If connectivity or the configured
+quality gate fails, it writes only a structured failure JSON record, returns a
+nonzero exit status, and does not label fallback arrays as registered. The
+default mosaic mode is `weighted`; use `--mosaic-mode source_selection` only
+when that diagnostic mode is explicitly requested.
 
 ## Manual Validation Procedure
 

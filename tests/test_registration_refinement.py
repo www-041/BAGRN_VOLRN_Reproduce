@@ -297,6 +297,30 @@ def test_robust_pair_measurement_rejects_joint_xy_outliers():
     assert result["rmse"] < 0.2
 
 
+def test_robust_pair_measurement_repeats_mad_filter_until_stable():
+    shifts = [
+        (0.7562135272, -2.0909937659),
+        (-1.6522541736, -9.7658695306),
+        (7.1988295309, 4.5766634881),
+        (-1.3016913475, 3.0952263469),
+        (1.1248426792, -2.2152913457),
+        (3.9102698045, -1.2422261866),
+        (-1.3152956162, -3.1685870214),
+        (1.8198322850, -0.3967922069),
+    ]
+    result = build_robust_pair_measurement(
+        [{"shift_dx": dx, "shift_dy": dy, "confidence": 0.9}
+         for dx, dy in shifts],
+        {"global_confidence_threshold": 0.5, "robust_mad_scale": 3.0,
+         "robust_residual_floor": 0.75, "robust_min_inliers": 5,
+         "robust_min_inlier_ratio": 0.35},
+    )
+
+    assert result["status"] == "pass"
+    assert result["n_blocks_inlier"] == 6
+    assert all(match["shift_dy"] > -9.0 for match in result["matches"])
+
+
 def test_n2_pair_uses_block_samples_not_one_pair_sample():
     matches = [{"shift_dx": 4.0 + dx, "shift_dy": 1.5 + dy, "confidence": 0.8}
                for dx, dy in [(0.0, 0.0), (0.1, 0.0), (-0.1, 0.0),
@@ -496,6 +520,50 @@ def test_post_global_rematch_exception_is_recorded_as_fallback():
     assert result["pairs"] == []
     assert result["failures"][0]["idx_i"] == 0
     assert "synthetic rematch failure" in result["failures"][0]["reason"]
+
+
+def test_global_residual_rematch_exception_is_recorded_per_edge(monkeypatch):
+    from src import coregistration
+
+    calls = {"count": 0}
+
+    def fail_rematch(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("synthetic global rematch failure")
+        return {
+            "available": True,
+            "shift_dx": 0.0,
+            "shift_dy": 0.0,
+            "confidence": 0.9,
+            "n_blocks": 1,
+            "rmse": 0.0,
+            "p95": 0.0,
+            "matches": [],
+        }
+
+    monkeypatch.setattr(coregistration, "rematch_pair_on_registered", fail_rematch)
+    monkeypatch.setattr(
+        coregistration,
+        "multi_image_network_adjustment",
+        lambda *args, **kwargs: {
+            "global_shifts": np.zeros((3, 2)), "loop_errors": []
+        },
+    )
+    result = coregistration.refine_global_residual_shifts_from_original(
+        [np.zeros((8, 8)) for _ in range(3)],
+        np.zeros((3, 2)),
+        [from_origin(0, 8, 1, 1) for _ in range(3)],
+        [None, None, None],
+        [(0, 1), (1, 2)],
+        {"global_refine_max_iterations": 1},
+    )
+
+    assert np.array_equal(result["global_shifts"], np.zeros((3, 2)))
+    assert result["history"][0]["edges"][0]["available"] is False
+    assert result["history"][0]["edges"][1]["available"] is True
+    assert "synthetic global rematch failure" in result["history"][0]["edges"][0]["warning"]
+    assert result["history"][0]["accepted"] is False
 
 
 def test_single_scene_registration_has_local_refinement_diagnostics():
@@ -722,6 +790,109 @@ def test_register_scenes_returns_actual_registration_schema(monkeypatch):
     assert "unreachable_scenes" in result
 
 
+def test_register_scenes_forwards_configured_initial_matching_controls(monkeypatch):
+    from src import coregistration, multiband_pipeline
+    from src.multiband_pipeline import MultibandPipeline
+
+    params = {
+        "global_block_size": 17,
+        "max_global_shift": 7.5,
+        "global_confidence_threshold": 0.8,
+        "enable_local_refinement": False,
+        "global_refine_max_iterations": 0,
+    }
+    seen = {}
+
+    def fake_collect(*args, **kwargs):
+        seen.update(kwargs)
+        return [], {}
+
+    monkeypatch.setattr(coregistration, "collect_block_matches", fake_collect)
+    monkeypatch.setattr(
+        coregistration,
+        "phase_correlation_from_overlap",
+        lambda *args, **kwargs: (1.0, 2.0, 0.9),
+    )
+    monkeypatch.setattr(
+        coregistration,
+        "multi_image_network_adjustment",
+        lambda *args, **kwargs: {
+            "global_shifts": np.zeros((2, 2)), "loop_errors": []
+        },
+    )
+    monkeypatch.setattr(
+        multiband_pipeline,
+        "_validate_final_registration_arrays",
+        lambda *args, **kwargs: (
+            {"quality": "pass"}, {"edges": [], "overall": {"quality": "pass"}}
+        ),
+    )
+
+    pipeline = MultibandPipeline.__new__(MultibandPipeline)
+    pipeline.registration_band_idx = 0
+    pipeline.control_idx = 0
+    pipeline.common_bands = ["B14"]
+    pipeline.smoke = False
+    pipeline.config = SimpleNamespace(registration_params=params)
+    scene_data = {
+        "arrays": [np.ones((1, 8, 8)), np.ones((1, 8, 8))],
+        "transforms": [from_origin(0, 8, 1, 1)] * 2,
+        "nodata_values": [None, None],
+        "scene_ids": ["a", "b"],
+    }
+
+    result = pipeline.register_scenes(
+        scene_data, [{"idx_i": 0, "idx_j": 1}],
+    )
+
+    assert seen["block_size"] == 17
+    assert seen["max_global_shift"] == 7.5
+    assert seen["confidence_threshold"] == 0.8
+    assert result["pair_matches"][0]["method"] == "overlap_phase_correlation"
+
+
+def test_register_scenes_applies_configured_phase_fallback_limits(monkeypatch):
+    from src import coregistration
+    from src.multiband_pipeline import MultibandPipeline
+
+    params = {
+        "global_block_size": 17,
+        "max_global_shift": 7.5,
+        "global_confidence_threshold": 0.95,
+        "enable_local_refinement": False,
+    }
+    monkeypatch.setattr(
+        coregistration,
+        "collect_block_matches",
+        lambda *args, **kwargs: ([], {}),
+    )
+    monkeypatch.setattr(
+        coregistration,
+        "phase_correlation_from_overlap",
+        lambda *args, **kwargs: (8.0, 0.0, 0.9),
+    )
+
+    pipeline = MultibandPipeline.__new__(MultibandPipeline)
+    pipeline.registration_band_idx = 0
+    pipeline.control_idx = 0
+    pipeline.common_bands = ["B14"]
+    pipeline.smoke = False
+    pipeline.config = SimpleNamespace(registration_params=params)
+    scene_data = {
+        "arrays": [np.ones((1, 8, 8)), np.ones((1, 8, 8))],
+        "transforms": [from_origin(0, 8, 1, 1)] * 2,
+        "nodata_values": [None, None],
+        "scene_ids": ["a", "b"],
+    }
+
+    result = pipeline.register_scenes(
+        scene_data, [{"idx_i": 0, "idx_j": 1}],
+    )
+
+    assert result["pair_matches"] == []
+    assert result["rejected_edges"]
+
+
 def test_registration_quality_meets_requirement_uses_final_quality_order():
     from src.multiband_pipeline import registration_quality_meets_requirement
 
@@ -886,8 +1057,8 @@ def test_smoke_registration_quality_is_recomputed_for_recropped_arrays(monkeypat
     cropped_scene_data = {
         **full_scene_data,
         "arrays": cropped_arrays,
-        "transforms": [from_origin(0, 2, 1, 1)] * 2,
-        "bounds": [(0, 0, 2, 2), (0, 0, 2, 2)],
+        "transforms": [from_origin(2, 2, 1, 1)] * 2,
+        "bounds": [(2, 0, 4, 2), (2, 0, 4, 2)],
     }
     full_quality = {
         "quality": "pass", "rmse": 0.1, "p95": 0.2,
@@ -900,7 +1071,14 @@ def test_smoke_registration_quality_is_recomputed_for_recropped_arrays(monkeypat
         "local_dy_fields": [np.zeros((4, 4)) for _ in range(2)],
         "local_refinement": {"enabled": False, "used_for_scenes": [],
                               "fallback_scenes": [], "cv_results": {}},
-        "pair_matches": [{"idx_i": 0, "idx_j": 1, "matches": []}],
+        "pair_matches": [{
+            "idx_i": 0,
+            "idx_j": 1,
+            "matches": [{
+                "ref_x": 3.0, "ref_y": 3.0,
+                "tgt_x": 3.5, "tgt_y": 3.5,
+            }],
+        }],
         "connected": True, "spanning_tree": [(0, 1)],
         "geometric_edges": [(0, 1)], "matching_edges": [(0, 1)],
         "rejected_edges": [], "connected_components": [[0, 1]],
@@ -933,8 +1111,11 @@ def test_smoke_registration_quality_is_recomputed_for_recropped_arrays(monkeypat
     monkeypatch.setattr(multiband_pipeline, "validate_band_consistency", lambda *args, **kwargs: [])
     validation_calls = []
 
-    def validate_cropped_only(arr_ref, tr_ref, arr_tgt, tr_tgt, *args, **kwargs):
-        validation_calls.append((arr_ref.shape, arr_tgt.shape))
+    def validate_cropped_only(arr_ref, tr_ref, arr_tgt, tr_tgt,
+                              nodata_ref, nodata_tgt, training_points, **kwargs):
+        validation_calls.append(
+            (arr_ref.shape, arr_tgt.shape, np.asarray(training_points).copy())
+        )
         return {"blocks": [], "stats": None, "coverage": {},
                 "failure_reason": "cropped validation unavailable"}
 
@@ -945,7 +1126,8 @@ def test_smoke_registration_quality_is_recomputed_for_recropped_arrays(monkeypat
 
     result = pipeline.run()
 
-    assert validation_calls == [((2, 2), (2, 2))]
+    assert validation_calls[0][0:2] == ((2, 2), (2, 2))
+    assert {tuple(point) for point in validation_calls[0][2]} == {(1.0, 1.0)}
     assert result["registration"]["quality"]["quality"] == "fail"
     assert normalization_calls == []
     assert result["pipeline_status"] == "failed"

@@ -9,6 +9,7 @@ import json
 from types import SimpleNamespace
 
 import numpy as np
+from rasterio.transform import from_origin
 
 
 def test_registration_diagnostic_distinguishes_raw_and_robust_pair_matches(tmp_path):
@@ -152,6 +153,75 @@ def test_no_overlap_writes_structured_failure_payload(tmp_path, monkeypatch):
     )
     assert payload["status"] == "fail"
     assert payload["failure"]["code"] == "no_overlap"
+    assert payload["quality"]["quality"] == "fail"
+    assert not list(output_dir.glob("*.tif"))
+
+
+def test_failed_overlapping_registration_writes_failure_only_and_returns_nonzero(
+    tmp_path, monkeypatch,
+):
+    from scripts import diagnose_registration_pair
+
+    config = SimpleNamespace(
+        scenes=[{"id": "scene_a"}, {"id": "scene_b"}],
+        control_scene="original_control",
+        output_root=str(tmp_path / "default-output"),
+        registration_params={"required_quality": "pass"},
+    )
+    raw_arrays = [np.ones((1, 4, 4)), np.ones((1, 4, 4)) * 2]
+
+    class FakePipeline:
+        registration_band_idx = 0
+
+        def __init__(self, pipeline_config):
+            self.config = pipeline_config
+
+        def load_scenes(self):
+            return {
+                "arrays": raw_arrays,
+                "transforms": [from_origin(0, 4, 1, 1)] * 2,
+                "nodata_values": [None, None],
+                "crs": "EPSG:4326",
+                "scene_ids": ["scene_a", "scene_b"],
+            }
+
+        def detect_overlaps(self, scene_data):
+            return [{"idx_i": 0, "idx_j": 1}]
+
+        def register_scenes(self, scene_data, overlaps):
+            # These arrays are the raw fallback arrays from a blocked result;
+            # the CLI must not publish them as registered artifacts.
+            return {
+                "registered_arrays": raw_arrays,
+                "connected": False,
+                "quality": {"quality": "fail"},
+                "pair_matches": [],
+                "diagnostics": {"registration_blocked": True},
+            }
+
+    monkeypatch.setattr(diagnose_registration_pair, "load_config", lambda _: config)
+    monkeypatch.setattr(diagnose_registration_pair, "MultibandPipeline", FakePipeline)
+    monkeypatch.setattr(
+        diagnose_registration_pair,
+        "write_diagnostic_artifacts",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("failed registration must not write raster artifacts")
+        ),
+    )
+    output_dir = tmp_path / "diagnostic"
+
+    result = diagnose_registration_pair.main([
+        "--config", "ignored.yaml", "--scene-i", "0", "--scene-j", "1",
+        "--output-dir", str(output_dir),
+    ])
+
+    assert result == 1
+    payload = json.loads(
+        (output_dir / "registration_diagnostics.json").read_text(encoding="utf-8")
+    )
+    assert payload["status"] == "fail"
+    assert payload["failure"]["code"] == "registration_connectivity_failed"
+    assert payload["connected"] is False
     assert payload["quality"]["quality"] == "fail"
     assert not list(output_dir.glob("*.tif"))
 
