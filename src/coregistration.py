@@ -3387,6 +3387,78 @@ def robust_shift_estimate(
     }
 
 
+def build_robust_pair_measurement(matches, params=None):
+    """Build a robust pair shift measurement from block match samples."""
+    params = params or {}
+    matches = list(matches or [])
+    n_total = len(matches)
+    screening = params.get("screening", {})
+    defaults = {
+        "robust_mad_scale": 3.0,
+        "robust_residual_floor": 0.75,
+        "robust_min_inliers": 5,
+        "robust_min_inlier_ratio": 0.35,
+    }
+    mad_scale = params.get("robust_mad_scale", defaults["robust_mad_scale"])
+    residual_floor = params.get("robust_residual_floor", defaults["robust_residual_floor"])
+    min_inliers = params.get("robust_min_inliers", defaults["robust_min_inliers"])
+    min_ratio = params.get("robust_min_inlier_ratio", defaults["robust_min_inlier_ratio"])
+
+    def failure(reason, n_inlier=0, ratio=0.0):
+        return {
+            "shift_dx": 0.0, "shift_dy": 0.0, "confidence": 0.0,
+            "n_blocks_total": n_total, "n_blocks_inlier": n_inlier,
+            "inlier_ratio": ratio, "residual_median": float("inf"),
+            "rmse": float("inf"), "p95": float("inf"), "status": "fail",
+            "reason": reason, "matches": matches, "screening": screening,
+        }
+
+    if not matches:
+        return failure("no block matches")
+
+    try:
+        dx = np.asarray([m["shift_dx"] for m in matches], dtype=np.float64)
+        dy = np.asarray([m["shift_dy"] for m in matches], dtype=np.float64)
+        confidence = np.asarray([m["confidence"] for m in matches], dtype=np.float64)
+    except (KeyError, TypeError, ValueError) as exc:
+        return failure(f"invalid block match: {exc}")
+
+    conf_mask = np.isfinite(dx) & np.isfinite(dy) & np.isfinite(confidence)
+    conf_mask &= confidence >= params.get("global_confidence_threshold", 0.50)
+    n_conf = int(conf_mask.sum())
+    if n_conf < min_inliers:
+        return failure(f"too few confident blocks: {n_conf} < {min_inliers}", n_conf, n_conf / n_total)
+
+    # Reject using one joint Euclidean residual for the 2-D shift vector.
+    center = np.array([np.median(dx[conf_mask]), np.median(dy[conf_mask])])
+    residuals = np.hypot(dx - center[0], dy - center[1])
+    mad = float(np.median(residuals[conf_mask]))
+    threshold = max(mad_scale * mad, residual_floor)
+    inlier_mask = conf_mask & (residuals <= threshold)
+    n_inlier = int(inlier_mask.sum())
+    ratio = n_inlier / n_total if n_total else 0.0
+    if n_inlier < min_inliers or ratio < min_ratio:
+        return failure(
+            f"too few robust inliers: {n_inlier} < {min_inliers} or ratio {ratio:.3f} < {min_ratio:.3f}",
+            n_inlier, ratio)
+
+    weights = confidence[inlier_mask]
+    shift_dx = float(np.average(dx[inlier_mask], weights=weights))
+    shift_dy = float(np.average(dy[inlier_mask], weights=weights))
+    final_residuals = np.hypot(dx[inlier_mask] - shift_dx, dy[inlier_mask] - shift_dy)
+    inlier_matches = [m for m, keep in zip(matches, inlier_mask) if keep]
+    return {
+        "shift_dx": shift_dx, "shift_dy": shift_dy,
+        "confidence": float(np.average(weights)),
+        "n_blocks_total": n_total, "n_blocks_inlier": n_inlier,
+        "inlier_ratio": ratio,
+        "residual_median": float(np.median(final_residuals)),
+        "rmse": float(np.sqrt(np.mean(final_residuals ** 2))),
+        "p95": float(np.percentile(final_residuals, 95)),
+        "status": "pass", "matches": inlier_matches, "screening": screening,
+    }
+
+
 def classify_registration_quality(
     result: Dict[str, Any],
     params: Dict[str, Any],
@@ -3425,4 +3497,3 @@ def classify_registration_quality(
         return "warn"
     
     return "fail"
-

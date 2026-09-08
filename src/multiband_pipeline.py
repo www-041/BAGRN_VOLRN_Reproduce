@@ -766,6 +766,7 @@ class MultibandPipeline:
         """
         from src.coregistration import (
             collect_block_matches,
+            build_robust_pair_measurement,
             multi_image_network_adjustment,
             warp_multiband_with_displacement_field,
             rematch_pair_on_registered,
@@ -795,14 +796,11 @@ class MultibandPipeline:
             }
 
         # ---- Step 1: 逐对匹配（用配准波段） ----
-        from src.coregistration import (
-    phase_correlation_from_overlap,
-    robust_shift_estimate,
-    classify_registration_quality,
-)
+        from src.coregistration import phase_correlation_from_overlap
 
         pair_measurements: List[dict] = []
         rejected_edges: List[dict] = []
+        reg_params = self.config.registration_params
 
         for ov in overlaps:
             i, j = ov["idx_i"], ov["idx_j"]
@@ -822,31 +820,30 @@ class MultibandPipeline:
             )
 
             if matches:
-                confs = np.array([m["confidence"] for m in matches])
-                dxs = np.array([m["shift_dx"] for m in matches])
-                dys = np.array([m["shift_dy"] for m in matches])
-                shift_dx = float(np.average(dxs, weights=confs))
-                shift_dy = float(np.average(dys, weights=confs))
-                res = np.hypot(dxs - shift_dx, dys - shift_dy)
-                rmse = float(np.sqrt(np.mean(res**2)))
-                p95 = float(np.percentile(res, 95)) if len(res) > 0 else 0.0
-
-                pair_measurements.append({
-                    "idx_i": i, "idx_j": j,
-                    "shift_dx": shift_dx, "shift_dy": shift_dy,
-                    "confidence": float(confs.mean()),
-                    "n_blocks": len(matches),
-                    "rmse": rmse, "p95": p95,
-                    "matches": matches, "screening": screening,
-                    "method": "block_match",
-                })
-                logger.info(
-                    "  [%d]-[%d] block_match: dx=%.4f, dy=%.4f, conf=%.3f, "
-                    "blocks=%d, rmse=%.3f, p95=%.3f",
-                    i, j, shift_dx, shift_dy, float(confs.mean()),
-                    len(matches), rmse, p95,
-                )
-                continue
+                robust_pair = build_robust_pair_measurement(
+                    matches, {**reg_params, "screening": screening})
+                if robust_pair["status"] == "pass":
+                    pair_measurements.append({
+                        "idx_i": i, "idx_j": j,
+                        "shift_dx": robust_pair["shift_dx"],
+                        "shift_dy": robust_pair["shift_dy"],
+                        "confidence": robust_pair["confidence"],
+                        "n_blocks": robust_pair["n_blocks_inlier"],
+                        "n_blocks_total": robust_pair["n_blocks_total"],
+                        "rmse": robust_pair["rmse"], "p95": robust_pair["p95"],
+                        "matches": robust_pair["matches"],
+                        "screening": robust_pair["screening"],
+                        "method": "block_match",
+                    })
+                    logger.info(
+                        "  [%d]-[%d] block_match: dx=%.4f, dy=%.4f, conf=%.3f, "
+                        "blocks=%d/%d, rmse=%.3f, p95=%.3f",
+                        i, j, robust_pair["shift_dx"], robust_pair["shift_dy"],
+                        robust_pair["confidence"], robust_pair["n_blocks_inlier"],
+                        robust_pair["n_blocks_total"], robust_pair["rmse"], robust_pair["p95"],
+                    )
+                    continue
+                logger.info("  [%d]-[%d] 稳健块匹配失败: %s", i, j, robust_pair.get("reason"))
 
             # 尝试2: overlap phase correlation fallback（地理重叠区）
             logger.info("  [%d]-[%d] 块匹配失败，尝试 phase correlation fallback...", i, j)
@@ -879,7 +876,9 @@ class MultibandPipeline:
                 continue
 
             # 尝试3: 拒绝该边
-            reason = "block_match无匹配且phase_correlation失败"
+            reason = "稳健块匹配失败且phase_correlation失败"
+            if matches:
+                reason = f"稳健块匹配失败 ({robust_pair.get('reason', 'unknown')}) 且phase_correlation失败"
             if screening.get("low_valid", 0) > 0:
                 reason += f" (low_valid={screening['low_valid']})"
             if screening.get("low_texture", 0) > 0:
@@ -978,54 +977,6 @@ class MultibandPipeline:
         )
         global_shifts = adj_result["global_shifts"]
         logger.info("网络平差完成, 闭环误差数: %d", len(adj_result.get("loop_errors", [])))
-
-        # ---- Step 2.5: Registration Quality Gate ----
-        reg_params = self.config.registration_params
-        # Collect all pairwise shifts for quality assessment
-        all_shifts_x = []
-        all_shifts_y = []
-        all_confs = []
-        for p in pair_measurements:
-            all_shifts_x.append(p["shift_dx"])
-            all_shifts_y.append(p["shift_dy"])
-            all_confs.append(p["confidence"])
-        
-        if all_shifts_x:
-            robust_result = robust_shift_estimate(
-                np.array(all_shifts_x), np.array(all_shifts_y), np.array(all_confs),
-                reg_params,
-            )
-            quality = classify_registration_quality(robust_result, reg_params)
-            required_quality = reg_params.get("required_quality", "pass")
-            
-            logger.info("配准质量: %s (要求: %s)", quality, required_quality)
-            logger.info("  置信度=%.3f, 中值残差=%.3f, RMSE=%.3f, P95=%.3f, 内点数=%d",
-                       robust_result.get("confidence", 0.0),
-                       robust_result.get("residual_median", 999.0),
-                       robust_result.get("residual_rmse", 999.0),
-                       robust_result.get("residual_p95", 999.0),
-                       robust_result.get("n_inliers", 0))
-            
-            quality_order = {"pass": 0, "warn": 1, "fail": 2}
-            if quality_order.get(quality, 2) > quality_order.get(required_quality, 0):
-                # Build informative error message
-                rmse = robust_result.get("residual_rmse")
-                p95 = robust_result.get("residual_p95")
-                n_inliers = robust_result.get("n_inliers", 0)
-                inlier_ratio = robust_result.get("inlier_ratio", 0.0)
-                
-                if rmse is None or rmse > 900:
-                    # Robust estimation failed - show initial stats
-                    initial_rmse = np.sqrt(np.mean([(p["rmse"]**2) for p in pair_measurements]))
-                    initial_p95 = max([p.get("p95", 0) for p in pair_measurements])
-                    msg = (f"配准质量 {quality} 不满足要求 {required_quality}。"
-                           f"稳健估计失败 (内点数={n_inliers}, 内点率={inlier_ratio:.2f})。"
-                           f"初始匹配 RMSE={initial_rmse:.3f}, P95={initial_p95:.3f}")
-                else:
-                    msg = (f"配准质量 {quality} 不满足要求 {required_quality}。"
-                           f"RMSE={rmse:.3f}, P95={p95:.3f}, 内点数={n_inliers}")
-                
-                raise ValueError(msg)
 
         # ---- Step 3: 对所有波段施加全局位移 ----
         registered_arrays: List[np.ndarray] = []
