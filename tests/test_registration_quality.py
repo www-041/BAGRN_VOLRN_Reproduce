@@ -126,3 +126,22 @@ def test_default_registration_params_exist():
     
     assert "registration_params" in dir(cfg)
     assert cfg.registration_params["required_quality"] == "pass"
+
+
+@pytest.mark.parametrize(
+    ("actual", "required", "expected"),
+    [
+        ("pass", "pass", True),
+        ("pass", "warn", True),
+        ("warn", "pass", False),
+        ("fail", "fail", True),
+        ("unknown", "pass", False),
+        ("pass", "unknown", False),
+    ],
+)
+def test_registration_quality_meets_requirement_uses_quality_order(
+    actual, required, expected,
+):
+    from src.multiband_pipeline import registration_quality_meets_requirement
+
+    assert registration_quality_meets_requirement(actual, required) is expected

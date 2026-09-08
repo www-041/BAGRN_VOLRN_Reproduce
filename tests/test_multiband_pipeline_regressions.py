@@ -6,6 +6,7 @@ Task 9 of reliability-fixes plan:
 """
 
 import numpy as np
+from types import SimpleNamespace
 
 
 def test_nodata_none_not_converted_to_zero():
@@ -43,3 +44,40 @@ def test_volrn_can_return_diagnostics():
     
     assert isinstance(diag, dict)
     assert 'n_blocks' in diag
+
+
+def test_pipeline_stops_before_normalization_when_registration_quality_fails(monkeypatch):
+    from src import multiband_pipeline
+    from src.multiband_pipeline import MultibandPipeline
+
+    config = SimpleNamespace(
+        experiment_name="quality-gate-test",
+        scenes=[{"id": "a"}, {"id": "b"}],
+        selected_bands=["B14"],
+        registration_band="B14",
+        registration_params={"required_quality": "pass"},
+    )
+    pipeline = MultibandPipeline.__new__(MultibandPipeline)
+    pipeline.config = config
+    pipeline.dry_run = False
+    pipeline.smoke = False
+    pipeline.load_scenes = lambda: {"arrays": [], "transforms": [],
+                                    "nodata_values": [], "bounds": [],
+                                    "crs": None, "scene_ids": []}
+    pipeline.detect_overlaps = lambda scene_data: [{"idx_i": 0, "idx_j": 1}]
+    pipeline.register_scenes = lambda scene_data, overlaps: {
+        "connected": True,
+        "unreachable_scenes": [],
+        "quality": {"quality": "warn"},
+    }
+    normalization_calls = []
+    pipeline.apply_radiometric_normalization = lambda *args, **kwargs: normalization_calls.append(True)
+    monkeypatch.setattr(multiband_pipeline, "validate_config", lambda config: [])
+    monkeypatch.setattr(multiband_pipeline, "validate_band_consistency", lambda *args, **kwargs: [])
+
+    result = pipeline.run()
+
+    assert normalization_calls == []
+    assert result["pipeline_status"] == "failed"
+    assert result["normalized"] is None
+    assert "registration_quality_gate" in result["skipped_outputs"]

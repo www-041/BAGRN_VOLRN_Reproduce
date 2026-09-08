@@ -43,6 +43,19 @@ logger = logging.getLogger(__name__)
 # 辅助函数
 # ===========================================================================
 
+def registration_quality_meets_requirement(actual, required) -> bool:
+    """Return whether a final registration quality meets its configured floor."""
+    quality_order = {"fail": 0, "warn": 1, "pass": 2}
+    if isinstance(actual, dict):
+        actual = actual.get("quality")
+    if isinstance(required, dict):
+        required = required.get("quality")
+    actual = str(actual).lower()
+    required = str(required).lower()
+    if actual not in quality_order or required not in quality_order:
+        return False
+    return quality_order[actual] >= quality_order[required]
+
 def _local_spatial_group_labels(points_xy, n_groups_x=4, n_groups_y=4):
     """Assign local controls to normalized spatial grid cells."""
     points_xy = np.asarray(points_xy, dtype=float)
@@ -1038,11 +1051,11 @@ class MultibandPipeline:
         对所有场景执行多波段配准。
 
         流程：
-          1. 用配准波段执行逐对匹配
-          2. 构建生成树
-          3. 网络平差求解全局位移
-          4. 用 warp_multiband_with_displacement_field 对所有波段施加位移
-          5. 可选 RBF 局部精化
+          1. 用配准波段执行逐对稳健匹配并检查图连通性
+          2. 网络平差并从原始影像执行全局残差精化
+          3. 对通过门控的后全局残差执行可选 RBF 局部精化
+          4. 从原始影像执行一次最终全局+局部位移 warp
+          5. 对最终数组执行独立验证并分类质量
 
         参数
         ----------
@@ -1060,6 +1073,10 @@ class MultibandPipeline:
                 'registered_arrays': list of np.ndarray,
                 'global_shifts': np.ndarray (n_images, 2),
                 'pair_matches': list of dict,
+                'connected': bool,
+                'quality': dict,
+                'final_validation': {'edges': list, 'overall': dict},
+                'local_refinement': dict,
                 'diagnostics': dict,
             }
         """
@@ -1099,6 +1116,15 @@ class MultibandPipeline:
                 "cv_results": {},
                 "rematch_failures": [],
             }
+            quality = {
+                "quality": "pass",
+                "rmse": 0.0,
+                "p95": 0.0,
+                "median": 0.0,
+                "confidence": 1.0,
+                "n_blocks": 0,
+            }
+            final_validation = {"edges": [], "overall": quality}
             return {
                 "registered_arrays": [a.copy() for a in arrays],
                 "global_shifts": np.zeros((n_images, 2)),
@@ -1106,10 +1132,20 @@ class MultibandPipeline:
                 "local_dy_fields": [np.zeros(a.shape[1:], dtype=np.float64) for a in arrays],
                 "local_refinement": local_refinement,
                 "pair_matches": [],
+                "connected": True,
+                "spanning_tree": [],
+                "geometric_edges": [],
+                "matching_edges": [],
+                "rejected_edges": [],
+                "connected_components": [list(range(n_images))] if n_images else [],
+                "unreachable_scenes": [],
+                "quality": quality,
+                "final_validation": final_validation,
                 "diagnostics": {
                     "skipped": True,
                     "reason": "单景无需配准",
                     "local_refinement": local_refinement,
+                    "final_validation": final_validation,
                 },
             }
 
@@ -1337,19 +1373,18 @@ class MultibandPipeline:
 
         # Rematch only the global-only arrays generated from ORIGINAL inputs.
         global_only_arrays = []
-        for idx in range(n_images):
-            gdx, gdy = global_shifts[idx]
-            h, w = arrays[idx].shape[1:]
-            global_only_arrays.append(warp_multiband_with_displacement_field(
-                arrays[idx], gdx, gdy,
-                np.zeros((h, w), dtype=np.float64),
-                np.zeros((h, w), dtype=np.float64),
-                nodata_values[idx],
-            ))
-
         post_global_pairs = []
         post_global_failures = []
         if local_enabled:
+            for idx in range(n_images):
+                gdx, gdy = global_shifts[idx]
+                h, w = arrays[idx].shape[1:]
+                global_only_arrays.append(warp_multiband_with_displacement_field(
+                    arrays[idx], gdx, gdy,
+                    np.zeros((h, w), dtype=np.float64),
+                    np.zeros((h, w), dtype=np.float64),
+                    nodata_values[idx],
+                ))
             local_confidence = float(reg_params.get("local_confidence_threshold", 0.60))
             post_global_result = _collect_post_global_residual_pairs(
                 global_only_arrays, registration_band_idx, transforms, nodata_values,
@@ -1531,10 +1566,26 @@ class MultibandPipeline:
             validation["idx_j"] = idx_j
             validation_results.append(validation)
 
-        final_quality = aggregate_final_validation_quality(
+        aggregate_quality = aggregate_final_validation_quality(
             validation_results, reg_params,
         )
-        final_validation = {**final_quality, "results": validation_results}
+        final_quality = {
+            "quality": aggregate_quality.get("quality", "fail"),
+            "rmse": float(aggregate_quality.get("rmse", float("inf"))),
+            "p95": float(aggregate_quality.get("p95", float("inf"))),
+            "median": float(aggregate_quality.get("median", float("inf"))),
+            "confidence": float(aggregate_quality.get(
+                "mean_confidence", aggregate_quality.get("confidence", 0.0)
+            )),
+            "n_blocks": int(aggregate_quality.get(
+                "n_blocks", aggregate_quality.get("n_accepted", 0)
+            )),
+        }
+        final_validation = {
+            "edges": validation_results,
+            "overall": final_quality,
+        }
+        connected = not bool(unreachable)
 
         elapsed = time.time() - t0
         logger.info("配准完成, 耗时 %.1fs", elapsed)
@@ -1546,6 +1597,7 @@ class MultibandPipeline:
             "local_dy_fields": local_dy_fields,
             "local_refinement": local_refinement,
             "pair_matches": pair_measurements,
+            "connected": connected,
             "spanning_tree": spanning_tree_edges,
             "geometric_edges": geometric_edges,
             "matching_edges": matching_edges,
@@ -1565,6 +1617,7 @@ class MultibandPipeline:
                 "global_refinement_warnings": refine_result["warnings"],
                 "local_refinement": local_refinement,
                 "final_validation": final_validation,
+                "quality": final_quality,
                 "elapsed_sec": elapsed,
             },
         }
@@ -2185,12 +2238,15 @@ class MultibandPipeline:
                     "local_dy_fields": cropped_local_dy_fields,
                     "local_refinement": full_registration.get("local_refinement", {}),
                     "pair_matches": full_registration["pair_matches"],
+                    "connected": full_registration["connected"],
                     "spanning_tree": full_registration["spanning_tree"],
                     "geometric_edges": full_registration["geometric_edges"],
                     "matching_edges": full_registration["matching_edges"],
                     "rejected_edges": full_registration["rejected_edges"],
                     "connected_components": full_registration["connected_components"],
                     "unreachable_scenes": full_registration["unreachable_scenes"],
+                    "quality": full_registration["quality"],
+                    "final_validation": full_registration["final_validation"],
                     "diagnostics": full_registration["diagnostics"],
                 }
             else:
@@ -2207,7 +2263,43 @@ class MultibandPipeline:
 
         n_scenes_processed = len(scene_data["arrays"])
         unreachable_scenes = registration.get("unreachable_scenes", [])
-        registration_connected = len(unreachable_scenes) == 0
+        registration_connected = bool(
+            registration.get("connected", len(unreachable_scenes) == 0)
+        )
+
+        required_quality = getattr(
+            self.config, "registration_params", {}
+        ).get("required_quality", "pass")
+        final_quality = registration.get("quality", {}).get("quality", "fail")
+        registration_quality_ok = (
+            registration_connected
+            and registration_quality_meets_requirement(final_quality, required_quality)
+        )
+        if not registration_quality_ok:
+            skipped_outputs.append("registration_quality_gate")
+            logger.error(
+                "注册质量门控失败: connected=%s, final_quality=%s, required_quality=%s",
+                registration_connected, final_quality, required_quality,
+            )
+            return {
+                "config": self.config,
+                "scene_data": scene_data,
+                "overlaps": overlaps,
+                "registration": registration,
+                "normalized": None,
+                "mosaics": None,
+                "metrics": None,
+                "spectral": {},
+                "quality": {},
+                "elapsed_total": time.time() - total_t0,
+                "pipeline_status": "failed",
+                "registration_connected": registration_connected,
+                "n_scenes_requested": n_scenes_requested,
+                "n_scenes_processed": n_scenes_processed,
+                "unreachable_scenes": unreachable_scenes,
+                "failed_methods": [],
+                "skipped_outputs": skipped_outputs,
+            }
 
         # 4. 辐射归一化
         normalized = self.apply_radiometric_normalization(

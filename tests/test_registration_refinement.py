@@ -153,6 +153,103 @@ def test_register_scenes_validates_final_arrays_and_all_training_controls(monkey
     assert result["quality"]["quality"] == "pass"
 
 
+def test_register_scenes_returns_stable_final_registration_schema(monkeypatch):
+    from src import coregistration
+    from src.multiband_pipeline import MultibandPipeline
+
+    params = {
+        "enable_local_refinement": False,
+        "validation_block_size": 4,
+        "validation_step": 4,
+        "validation_offset_row": 0,
+        "validation_offset_col": 0,
+        "validation_min_distance_from_training": 0,
+        "validation_confidence_threshold": 0.6,
+        "validation_max_residual_shift": 1.0,
+        "final_min_blocks": 5,
+        "pass_min_mean_confidence": 0.5,
+        "pass_max_median": 0.35,
+        "pass_max_rmse": 0.6,
+        "pass_max_p95": 1.0,
+        "warn_min_mean_confidence": 0.45,
+        "warn_max_median": 0.5,
+        "warn_max_rmse": 0.75,
+        "warn_max_p95": 1.25,
+    }
+    matches = [
+        {"ref_x": 2.0, "ref_y": 2.0, "tgt_x": 2.0, "tgt_y": 2.0,
+         "shift_dx": 1.0, "shift_dy": 0.0, "confidence": 0.9},
+    ]
+    monkeypatch.setattr(
+        coregistration, "collect_block_matches",
+        lambda *args, **kwargs: (matches, {}),
+    )
+    monkeypatch.setattr(
+        coregistration, "build_robust_pair_measurement",
+        lambda *args, **kwargs: {
+            "status": "pass", "shift_dx": 1.0, "shift_dy": 0.0,
+            "confidence": 0.9, "n_blocks_inlier": 1,
+            "n_blocks_total": 1, "rmse": 0.0, "p95": 0.0,
+            "matches": matches, "screening": {},
+        },
+    )
+    monkeypatch.setattr(
+        coregistration, "multi_image_network_adjustment",
+        lambda *args, **kwargs: {
+            "global_shifts": np.array([[0.0, 0.0], [1.0, 0.0]]),
+            "loop_errors": [],
+        },
+    )
+    monkeypatch.setattr(
+        coregistration, "refine_global_residual_shifts_from_original",
+        lambda *args, **kwargs: {
+            "global_shifts": np.array([[0.0, 0.0], [1.0, 0.0]]),
+            "history": [], "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        coregistration, "warp_multiband_with_displacement_field",
+        lambda array, *args, **kwargs: array.astype(float).copy(),
+    )
+    validation = {
+        "blocks": [],
+        "stats": {"median": 0.1, "rmse": 0.2, "p95": 0.3,
+                  "mean_confidence": 0.8, "n_accepted": 5},
+        "coverage": {}, "failure_reason": None,
+    }
+    monkeypatch.setattr(
+        coregistration, "validate_registration_independent_grid",
+        lambda *args, **kwargs: validation.copy(),
+    )
+
+    pipeline = MultibandPipeline.__new__(MultibandPipeline)
+    pipeline.common_bands = ["B14"]
+    pipeline.registration_band_idx = 0
+    pipeline.control_idx = 0
+    pipeline.smoke = False
+    pipeline.config = type("Config", (), {"registration_params": params})()
+    arrays = [np.ones((1, 8, 8)), np.ones((1, 8, 8)) * 2]
+    result = pipeline.register_scenes(
+        {"arrays": arrays,
+         "transforms": [from_origin(0, 8, 1, 1)] * 2,
+         "nodata_values": [None, None]},
+        [{"idx_i": 0, "idx_j": 1}],
+    )
+
+    assert result["connected"] is True
+    assert result["pair_matches"]
+    assert {"spanning_tree", "geometric_edges", "matching_edges",
+            "rejected_edges", "connected_components", "unreachable_scenes"} <= result.keys()
+    assert {"enabled", "used_for_scenes", "fallback_scenes", "cv_results"} <= result["local_refinement"].keys()
+    assert {"edges", "overall"} == set(result["final_validation"])
+    assert set(result["quality"]) == {
+        "quality", "rmse", "p95", "median", "confidence", "n_blocks",
+    }
+    assert result["quality"]["quality"] == "pass"
+    assert result["quality"]["confidence"] == pytest.approx(0.8)
+    assert result["quality"]["n_blocks"] == 5
+
+
 def test_analyze_displacement_spikes_handles_distance_field(tmp_path):
     field = np.zeros((12, 12), dtype=float)
     overlap = np.ones_like(field, dtype=bool)
@@ -531,3 +628,104 @@ def test_register_scenes_excludes_affected_scene_but_processes_surviving_edge(mo
     assert diagnostics["scenes"]["1"]["reason"] == (
         "global-only fallback: required post-global rematch failed"
     )
+
+
+def test_register_scenes_returns_actual_registration_schema(monkeypatch):
+    from src.experiment_config import ExperimentConfig
+    from src.multiband_pipeline import MultibandPipeline
+
+    params = {
+        "global_block_size": 16,
+        "global_confidence_threshold": 0.5,
+        "max_global_shift": 40.0,
+        "robust_min_inliers": 1,
+        "robust_min_inlier_ratio": 0.1,
+        "enable_local_refinement": False,
+        "global_refine_max_iterations": 0,
+        "validation_block_size": 4,
+        "validation_step": 4,
+        "validation_offset_row": 0,
+        "validation_offset_col": 0,
+        "validation_min_distance_from_training": 0,
+        "validation_confidence_threshold": 0.5,
+        "validation_max_residual_shift": 1.0,
+        "final_min_blocks": 1,
+        "pass_min_mean_confidence": 0.5,
+        "pass_max_median": 0.35,
+        "pass_max_rmse": 0.6,
+        "pass_max_p95": 1.0,
+        "warn_min_mean_confidence": 0.45,
+        "warn_max_median": 0.5,
+        "warn_max_rmse": 0.75,
+        "warn_max_p95": 1.25,
+        "required_quality": "warn",
+    }
+    pipeline = object.__new__(MultibandPipeline)
+    pipeline.registration_band_idx = 0
+    pipeline.control_idx = 0
+    pipeline.common_bands = ["B14"]
+    pipeline.n_bands = 1
+    pipeline.smoke = False
+    pipeline.config = ExperimentConfig(
+        selected_bands=["B14"], registration_band="B14",
+        registration_params=params,
+    )
+    arrays = [
+        np.arange(64, dtype=float).reshape(1, 8, 8),
+        np.arange(64, dtype=float).reshape(1, 8, 8),
+    ]
+    scene_data = {
+        "arrays": arrays,
+        "transforms": [from_origin(0, 8, 1, 1)] * 2,
+        "nodata_values": [None, None],
+        "scene_ids": ["a", "b"],
+    }
+    monkeypatch.setattr(
+        "src.coregistration.collect_block_matches",
+        lambda *a, **k: ([{
+            "shift_dx": 0.0, "shift_dy": 0.0, "confidence": 0.9,
+            "ref_x": 4.0, "ref_y": 4.0, "tgt_x": 4.0, "tgt_y": 4.0,
+        }], {}),
+    )
+    monkeypatch.setattr(
+        "src.coregistration.multi_image_network_adjustment",
+        lambda *a, **k: {"global_shifts": np.zeros((2, 2)), "loop_errors": []},
+    )
+    monkeypatch.setattr(
+        "src.coregistration.validate_registration_independent_grid",
+        lambda *a, **k: {
+            "stats": {
+                "median": 0.1, "rmse": 0.2, "p95": 0.3,
+                "mean_confidence": 0.9, "n_accepted": 1,
+            },
+            "blocks": [], "failure_reason": None,
+        },
+    )
+
+    result = pipeline.register_scenes(scene_data, [{"idx_i": 0, "idx_j": 1}])
+
+    assert result["connected"] is True
+    assert result["quality"]["quality"] in {"pass", "warn", "fail"}
+    assert set(result["quality"]) >= {
+        "quality", "rmse", "p95", "median", "confidence", "n_blocks",
+    }
+    assert set(result["local_refinement"]) >= {
+        "enabled", "used_for_scenes", "fallback_scenes", "cv_results",
+    }
+    assert set(result["final_validation"]) >= {"edges", "overall"}
+    assert result["spanning_tree"] == [(0, 1)]
+    assert "geometric_edges" in result
+    assert "matching_edges" in result
+    assert "rejected_edges" in result
+    assert "connected_components" in result
+    assert "unreachable_scenes" in result
+
+
+def test_registration_quality_meets_requirement_uses_final_quality_order():
+    from src.multiband_pipeline import registration_quality_meets_requirement
+
+    assert registration_quality_meets_requirement("fail", "pass") is False
+    assert registration_quality_meets_requirement("warn", "pass") is False
+    assert registration_quality_meets_requirement("pass", "pass") is True
+    assert registration_quality_meets_requirement("pass", "warn") is True
+    assert registration_quality_meets_requirement("warn", "warn") is True
