@@ -1000,16 +1000,18 @@ class MultibandPipeline:
             
             logger.info("配准质量: %s (要求: %s)", quality, required_quality)
             logger.info("  置信度=%.3f, 中值残差=%.3f, RMSE=%.3f, P95=%.3f, 内点数=%d",
-                       robust_result["confidence"], robust_result["residual_median"],
-                       robust_result["residual_rmse"], robust_result["residual_p95"],
-                       robust_result["n_inliers"])
+                       robust_result.get("confidence", 0.0),
+                       robust_result.get("residual_median", 999.0),
+                       robust_result.get("residual_rmse", 999.0),
+                       robust_result.get("residual_p95", 999.0),
+                       robust_result.get("n_inliers", 0))
             
             quality_order = {"pass": 0, "warn": 1, "fail": 2}
             if quality_order.get(quality, 2) > quality_order.get(required_quality, 0):
                 raise ValueError(
                     f"配准质量 {quality} 不满足要求 {required_quality}。"
-                    f"RMSE={robust_result['residual_rmse']:.3f}, "
-                    f"P95={robust_result['residual_p95']:.3f}"
+                    f"RMSE={robust_result.get('residual_rmse', 999.0):.3f}, "
+                    f"P95={robust_result.get('residual_p95', 999.0):.3f}"
                 )
 
         # ---- Step 3: 对所有波段施加全局位移 ----
