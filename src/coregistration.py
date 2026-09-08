@@ -713,7 +713,7 @@ def warp_affine_once(arr, model, tr_orig, crs, nodata, output_path):
 
 
 def build_local_residual_controls(matches, global_dx, global_dy,
-                                   confidence_threshold=0.75):
+                                   confidence_threshold=0.75, min_points=10):
     """从块匹配中构建局部残差控制点。
 
     Parameters
@@ -746,7 +746,7 @@ def build_local_residual_controls(matches, global_dx, global_dy,
     # 置信度筛选
     valid = conf >= confidence_threshold
 
-    if valid.sum() < 10:
+    if valid.sum() < min_points:
         return {'points_xy': np.empty((0, 2)), 'residual_dx': np.array([]),
                 'residual_dy': np.array([]), 'confidence': np.array([]),
                 'valid_mask': np.array([], dtype=bool), 'n_valid': 0}
@@ -778,7 +778,8 @@ def build_local_residual_controls(matches, global_dx, global_dy,
 
 
 def build_parent_based_local_controls(image_idx, parent_idx, pair_measurements,
-                                       global_shifts, confidence_threshold=0.5):
+                                       global_shifts, confidence_threshold=0.5,
+                                       min_points=10):
     """基于父子关系构建局部RBF控制点。
 
     自动判断 pair 记录方向，确保控制点坐标始终在 image_idx 像素坐标系中。
@@ -864,14 +865,19 @@ def build_parent_based_local_controls(image_idx, parent_idx, pair_measurements,
     parent_rel_dx = global_shifts[image_idx, 0] - global_shifts[parent_idx, 0]
     parent_rel_dy = global_shifts[image_idx, 1] - global_shifts[parent_idx, 1]
 
-    # 局部残差 = 实测位移 - 网络全局位移差
-    residual_dx = shift_dx_arr - parent_rel_dx
-    residual_dy = shift_dy_arr - parent_rel_dy
+    # Post-global rematches already measure the residual displacement applied
+    # to the target; initial pair matches still need the network difference.
+    if pair.get('is_post_global_residual', False):
+        residual_dx = shift_dx_arr
+        residual_dy = shift_dy_arr
+    else:
+        residual_dx = shift_dx_arr - parent_rel_dx
+        residual_dy = shift_dy_arr - parent_rel_dy
 
     # 置信度筛选
     valid = conf_arr >= confidence_threshold
 
-    if valid.sum() < 10:
+    if valid.sum() < min_points:
         return {'points_xy': np.empty((0, 2)), 'residual_dx': np.array([]),
                 'residual_dy': np.array([]), 'confidence': np.array([]),
                 'valid_mask': np.array([], dtype=bool), 'n_valid': 0}

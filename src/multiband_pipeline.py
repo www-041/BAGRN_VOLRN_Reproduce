@@ -43,6 +43,192 @@ logger = logging.getLogger(__name__)
 # 辅助函数
 # ===========================================================================
 
+def _local_spatial_group_labels(points_xy, n_groups_x=4, n_groups_y=4):
+    """Assign local controls to normalized spatial grid cells."""
+    points_xy = np.asarray(points_xy, dtype=float)
+    if points_xy.ndim != 2 or len(points_xy) == 0:
+        return np.array([], dtype=int)
+    x = points_xy[:, 0]
+    y = points_xy[:, 1]
+    x_bin = np.clip(
+        ((x - x.min()) / max(x.max() - x.min(), 1e-10) * n_groups_x).astype(int),
+        0, n_groups_x - 1,
+    )
+    y_bin = np.clip(
+        ((y - y.min()) / max(y.max() - y.min(), 1e-10) * n_groups_y).astype(int),
+        0, n_groups_y - 1,
+    )
+    return y_bin * n_groups_x + x_bin
+
+
+def _accept_local_rbf_candidate(controls, params, cv_result=None):
+    """Apply the local-control and held-out-CV acceptance gates."""
+    params = params or {}
+    points = np.asarray(controls.get("points_xy", []), dtype=float)
+    n_controls = int(controls.get("n_valid", len(points)))
+    n_groups = int(len(np.unique(_local_spatial_group_labels(points)))) if len(points) else 0
+    result = {
+        "accepted": False,
+        "reason": None,
+        "n_controls": n_controls,
+        "n_spatial_groups": n_groups,
+        "cv_result": cv_result or {},
+    }
+
+    if not params.get("enable_local_refinement", True):
+        result["reason"] = "local refinement disabled"
+        return result
+    if n_controls < int(params.get("local_min_controls", 12)):
+        result["reason"] = "too few local controls"
+        return result
+    if n_groups < int(params.get("local_min_spatial_groups", 3)):
+        result["reason"] = "insufficient local spatial groups"
+        return result
+    if not cv_result:
+        result["reason"] = "held-out CV unavailable"
+        return result
+
+    try:
+        baseline_rmse = float(cv_result["baseline_rmse"])
+        candidate_rmse = float(cv_result["candidate_rmse"])
+        baseline_p95 = float(cv_result["baseline_p95"])
+        candidate_p95 = float(cv_result["candidate_p95"])
+    except (KeyError, TypeError, ValueError):
+        result["reason"] = "held-out CV metrics unavailable"
+        return result
+
+    rmse_improvement = baseline_rmse - candidate_rmse
+    p95_improvement = baseline_p95 - candidate_p95
+    result["rmse_improvement"] = rmse_improvement
+    result["p95_improvement"] = p95_improvement
+    if not (np.isfinite(rmse_improvement) and np.isfinite(p95_improvement)):
+        result["reason"] = "held-out CV metrics are not finite"
+        return result
+    if rmse_improvement < float(params.get("local_cv_min_rmse_improvement", 0.10)):
+        result["reason"] = "held-out RMSE improvement below threshold"
+        return result
+    if p95_improvement < float(params.get("local_cv_min_p95_improvement", 0.15)):
+        result["reason"] = "held-out P95 improvement below threshold"
+        return result
+
+    result["accepted"] = True
+    result["reason"] = "held-out RMSE and P95 improvements passed"
+    return result
+
+
+def _local_holdout_cv(controls, params):
+    """Compare zero-residual translation with RBF on spatially held-out controls."""
+    from src.coregistration import fit_local_rbf
+
+    points = np.asarray(controls.get("points_xy", []), dtype=float)
+    residual_dx = np.asarray(controls.get("residual_dx", []), dtype=float)
+    residual_dy = np.asarray(controls.get("residual_dy", []), dtype=float)
+    if len(points) < 4:
+        return None
+
+    groups = _local_spatial_group_labels(points)
+    smoothing_values = params.get("local_smoothing_candidates", [0.1])
+    smoothing = float(smoothing_values[0]) if smoothing_values else 0.1
+    baseline_errors = []
+    candidate_errors = []
+    for group_id in np.unique(groups):
+        test = groups == group_id
+        train = ~test
+        if test.sum() == 0 or train.sum() < 3:
+            continue
+        try:
+            rbf_dx, rbf_dy, coord_min, coord_max = fit_local_rbf(
+                points[train], residual_dx[train], residual_dy[train],
+                smoothing=smoothing, neighbors=min(20, int(train.sum())),
+            )
+            tx = (points[test, 0] - coord_min[0]) / max(coord_max[0] - coord_min[0], 1e-10)
+            ty = (points[test, 1] - coord_min[1]) / max(coord_max[1] - coord_min[1], 1e-10)
+            predicted_dx = np.asarray(rbf_dx(np.column_stack([tx, ty])), dtype=float)
+            predicted_dy = np.asarray(rbf_dy(np.column_stack([tx, ty])), dtype=float)
+        except Exception:
+            continue
+        baseline_errors.extend(np.hypot(residual_dx[test], residual_dy[test]).tolist())
+        candidate_errors.extend(
+            np.hypot(residual_dx[test] - predicted_dx, residual_dy[test] - predicted_dy).tolist()
+        )
+
+    if not baseline_errors or len(baseline_errors) != len(candidate_errors):
+        return None
+    baseline_errors = np.asarray(baseline_errors, dtype=float)
+    candidate_errors = np.asarray(candidate_errors, dtype=float)
+    return {
+        "baseline_rmse": float(np.sqrt(np.mean(baseline_errors ** 2))),
+        "candidate_rmse": float(np.sqrt(np.mean(candidate_errors ** 2))),
+        "baseline_p95": float(np.percentile(baseline_errors, 95)),
+        "candidate_p95": float(np.percentile(candidate_errors, 95)),
+        "n_folds": int(len(np.unique(groups))),
+        "n_validation_controls": int(len(baseline_errors)),
+        "smoothing": smoothing,
+    }
+
+
+def _local_field_stats(field):
+    """Return compact finite-field statistics for registration diagnostics."""
+    values = np.asarray(field, dtype=float)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return {"min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
+    return {
+        "min": float(finite.min()), "max": float(finite.max()),
+        "mean": float(finite.mean()), "std": float(finite.std()),
+    }
+
+
+def _fit_local_rbf_field(controls, shape, params):
+    """Fit, fade, and component-clip one target-scene local field."""
+    from src.coregistration import compute_hull_fade_mask, fit_local_rbf
+
+    points = np.asarray(controls["points_xy"], dtype=float)
+    smoothing_values = params.get("local_smoothing_candidates", [0.1])
+    smoothing = float(smoothing_values[0]) if smoothing_values else 0.1
+    rbf_dx, rbf_dy, coord_min, coord_max = fit_local_rbf(
+        points,
+        np.asarray(controls["residual_dx"], dtype=float),
+        np.asarray(controls["residual_dy"], dtype=float),
+        smoothing=smoothing,
+        neighbors=min(20, len(points)),
+    )
+
+    h, w = shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    tx = (xx.ravel() - coord_min[0]) / max(coord_max[0] - coord_min[0], 1e-10)
+    ty = (yy.ravel() - coord_min[1]) / max(coord_max[1] - coord_min[1], 1e-10)
+    normalized = np.column_stack([tx, ty])
+    raw_dx = np.asarray(rbf_dx(normalized), dtype=float).reshape(h, w)
+    raw_dy = np.asarray(rbf_dy(normalized), dtype=float).reshape(h, w)
+    fade = compute_hull_fade_mask(
+        points, h, w, buffer=int(params.get("local_hull_buffer", 128))
+    )
+    faded_dx = raw_dx * fade
+    faded_dy = raw_dy * fade
+    max_component = float(params.get("local_max_component", 2.5))
+    clipped_dx = int(np.count_nonzero(np.abs(faded_dx) > max_component))
+    clipped_dy = int(np.count_nonzero(np.abs(faded_dy) > max_component))
+    field_dx = np.clip(faded_dx, -max_component, max_component)
+    field_dy = np.clip(faded_dy, -max_component, max_component)
+    return field_dx, field_dy, {
+        "smoothing": smoothing,
+        "clipping": {"dx": clipped_dx, "dy": clipped_dy, "total": clipped_dx + clipped_dy},
+        "fade": {"min": float(fade.min()), "max": float(fade.max())},
+        "local_dx": _local_field_stats(field_dx),
+        "local_dy": _local_field_stats(field_dy),
+    }
+
+
+def _empty_local_controls():
+    return {
+        "points_xy": np.empty((0, 2), dtype=float),
+        "residual_dx": np.array([], dtype=float),
+        "residual_dy": np.array([], dtype=float),
+        "confidence": np.array([], dtype=float),
+        "n_valid": 0,
+    }
+
 def validate_band_consistency(scenes_config: List[Dict[str, Any]], required_bands=None) -> List[str]:
     """
     校验所有场景的波段一致性。
@@ -995,24 +1181,183 @@ class MultibandPipeline:
             len(refine_result["history"]), len(refine_result["warnings"]),
         )
 
-        # ---- Step 3: 对所有波段施加全局位移 ----
+        # ---- Step 3: 后全局残余控制与门控局部RBF ----
+        from src.coregistration import (
+            balance_edge_controls,
+            build_local_residual_controls,
+            build_parent_based_local_controls,
+            rematch_pair_on_registered,
+            warp_multiband_with_displacement_field,
+        )
+
+        local_enabled = bool(reg_params.get("enable_local_refinement", True))
+        local_dx_fields = [
+            np.zeros(arrays[idx].shape[1:], dtype=np.float64) for idx in range(n_images)
+        ]
+        local_dy_fields = [
+            np.zeros(arrays[idx].shape[1:], dtype=np.float64) for idx in range(n_images)
+        ]
+        local_refinement = {
+            "enabled": local_enabled,
+            "used_for_scenes": [],
+            "fallback_scenes": [],
+            "cv_results": {},
+            "scenes": {},
+        }
+
+        # Rematch only the global-only arrays generated from ORIGINAL inputs.
+        global_only_arrays = []
+        for idx in range(n_images):
+            gdx, gdy = global_shifts[idx]
+            h, w = arrays[idx].shape[1:]
+            global_only_arrays.append(warp_multiband_with_displacement_field(
+                arrays[idx], gdx, gdy,
+                np.zeros((h, w), dtype=np.float64),
+                np.zeros((h, w), dtype=np.float64),
+                nodata_values[idx],
+            ))
+
+        post_global_pairs = []
+        if local_enabled:
+            local_block_size = int(reg_params.get("local_block_size", 256))
+            local_confidence = float(reg_params.get("local_confidence_threshold", 0.60))
+            local_max_shift = float(reg_params.get("local_max_residual_shift", 3.0))
+            for i, j in matching_edges:
+                rematch = rematch_pair_on_registered(
+                    global_only_arrays[i][registration_band_idx],
+                    global_only_arrays[j][registration_band_idx],
+                    transforms[i], transforms[j], nodata_values[i], nodata_values[j],
+                    max_residual_shift=local_max_shift,
+                    block_size=local_block_size,
+                    confidence_threshold=local_confidence,
+                )
+                if not rematch or not rematch.get("available", True):
+                    continue
+                post_global_pairs.append({
+                    "idx_i": i, "idx_j": j,
+                    "shift_dx": float(rematch.get("shift_dx", 0.0)),
+                    "shift_dy": float(rematch.get("shift_dy", 0.0)),
+                    "confidence": float(rematch.get("confidence", 0.0)),
+                    "n_blocks": int(rematch.get("n_blocks", 0)),
+                    "rmse": float(rematch.get("rmse", 0.0)),
+                    "p95": float(rematch.get("p95", rematch.get("rmse", 0.0))),
+                    "matches": rematch.get("matches", []),
+                    "available": True,
+                    "is_post_global_residual": True,
+                })
+
+        parent_map = {child: parent for parent, child in spanning_tree_edges}
+        for idx in range(n_images):
+            if idx == self.control_idx:
+                continue
+            scene_result = {"accepted": False, "n_controls": 0, "n_spatial_groups": 0}
+            if not local_enabled:
+                scene_result["reason"] = "local refinement disabled"
+                local_refinement["fallback_scenes"].append(idx)
+                local_refinement["scenes"][str(idx)] = scene_result
+                continue
+
+            edge_controls = []
+            parent_idx = parent_map.get(idx)
+            parent_added = False
+            if parent_idx is not None:
+                parent_control = build_parent_based_local_controls(
+                    idx, parent_idx, post_global_pairs, global_shifts,
+                    confidence_threshold=local_confidence, min_points=1,
+                )
+                if parent_control.get("n_valid", 0) > 0:
+                    edge_controls.append(parent_control)
+                    parent_added = True
+
+            # Add other post-global edges in the current target scene's pixel system.
+            for pair in post_global_pairs:
+                if parent_added and {pair["idx_i"], pair["idx_j"]} == {idx, parent_idx}:
+                    continue
+                if idx == pair["idx_j"]:
+                    oriented_matches = pair["matches"]
+                elif idx == pair["idx_i"]:
+                    oriented_matches = [
+                        {
+                            **match,
+                            "tgt_x": match["ref_x"], "tgt_y": match["ref_y"],
+                            "shift_dx": -match["shift_dx"],
+                            "shift_dy": -match["shift_dy"],
+                        }
+                        for match in pair["matches"]
+                        if "ref_x" in match and "ref_y" in match
+                    ]
+                else:
+                    continue
+                controls = build_local_residual_controls(
+                    oriented_matches, 0.0, 0.0,
+                    confidence_threshold=local_confidence, min_points=1,
+                )
+                if controls.get("n_valid", 0) > 0:
+                    edge_controls.append(controls)
+
+            balanced = balance_edge_controls(
+                edge_controls,
+                max_total=int(reg_params.get("local_max_controls", 60)),
+                grid_size=int(reg_params.get("local_block_size", 256)),
+                min_per_edge=1,
+                dedup_distance=float(reg_params.get("local_dedup_distance", 50.0)),
+            )
+            usable_balanced = [c for c in balanced if c.get("n_valid", 0) > 0]
+            if usable_balanced:
+                points = np.vstack([c["points_xy"] for c in usable_balanced])
+                residual_dx = np.concatenate([
+                    c["residual_dx"] for c in usable_balanced
+                ])
+                residual_dy = np.concatenate([
+                    c["residual_dy"] for c in usable_balanced
+                ])
+                confidence = np.concatenate([
+                    c["confidence"] for c in usable_balanced
+                ])
+                controls = {
+                    "points_xy": points, "residual_dx": residual_dx,
+                    "residual_dy": residual_dy, "confidence": confidence,
+                    "n_valid": len(points),
+                }
+            else:
+                controls = _empty_local_controls()
+
+            cv_result = _local_holdout_cv(controls, reg_params)
+            gate = _accept_local_rbf_candidate(controls, reg_params, cv_result)
+            scene_result.update(gate)
+            local_refinement["cv_results"][str(idx)] = cv_result or {}
+            if gate["accepted"]:
+                try:
+                    local_dx_fields[idx], local_dy_fields[idx], field_stats = _fit_local_rbf_field(
+                        controls, arrays[idx].shape[1:], reg_params
+                    )
+                    scene_result["field_stats"] = field_stats
+                    local_refinement["used_for_scenes"].append(idx)
+                except Exception as exc:
+                    scene_result["accepted"] = False
+                    scene_result["reason"] = f"local RBF fitting failed: {exc}"
+                    local_refinement["fallback_scenes"].append(idx)
+            else:
+                local_refinement["fallback_scenes"].append(idx)
+            local_refinement["scenes"][str(idx)] = scene_result
+
+        # ---- Step 4: 对所有波段从 ORIGINAL 影像施加一次最终位移 ----
         registered_arrays: List[np.ndarray] = []
         for idx in range(n_images):
             gdx = global_shifts[idx, 0]
             gdy = global_shifts[idx, 1]
 
-            if abs(gdx) < 1e-6 and abs(gdy) < 1e-6:
+            if (abs(gdx) < 1e-6 and abs(gdy) < 1e-6
+                    and not np.any(local_dx_fields[idx])
+                    and not np.any(local_dy_fields[idx])):
                 registered_arrays.append(arrays[idx].astype(np.float64))
             else:
-                # 构建全零局部场（先做全局配准，局部精化在后面）
                 h, w = arrays[idx].shape[1], arrays[idx].shape[2]
-                local_dx = np.zeros((h, w), dtype=np.float64)
-                local_dy = np.zeros((h, w), dtype=np.float64)
                 nd_val = nodata_values[idx]  # Keep None as None, don't convert to 0.0
 
                 warped = warp_multiband_with_displacement_field(
                     arrays[idx], gdx, gdy,
-                    local_dx, local_dy, nd_val,
+                    local_dx_fields[idx], local_dy_fields[idx], nd_val,
                 )
                 registered_arrays.append(warped)
 
@@ -1024,6 +1369,9 @@ class MultibandPipeline:
         return {
             "registered_arrays": registered_arrays,
             "global_shifts": global_shifts,
+            "local_dx_fields": local_dx_fields,
+            "local_dy_fields": local_dy_fields,
+            "local_refinement": local_refinement,
             "pair_matches": pair_measurements,
             "spanning_tree": spanning_tree_edges,
             "geometric_edges": geometric_edges,
@@ -1040,6 +1388,7 @@ class MultibandPipeline:
                 "loop_errors": adj_result.get("loop_errors", []),
                 "global_refinement_history": refine_result["history"],
                 "global_refinement_warnings": refine_result["warnings"],
+                "local_refinement": local_refinement,
                 "elapsed_sec": elapsed,
             },
         }
@@ -1604,6 +1953,9 @@ class MultibandPipeline:
                 # 先在全幅上配准，验证连通性并获取全局位移
                 full_registration = self.register_scenes(scene_data, overlaps)
                 full_global_shifts = full_registration["global_shifts"]
+                full_local_dx_fields = full_registration.get("local_dx_fields", [])
+                full_local_dy_fields = full_registration.get("local_dy_fields", [])
+                full_transforms = list(scene_data["transforms"])
 
                 # 裁剪到目标尺寸
                 scene_data = self._smoke_recrop_by_spanning_tree(scene_data, initial_tree)
@@ -1613,15 +1965,34 @@ class MultibandPipeline:
 
                 # 对裁剪后的影像直接应用全幅配准的全局位移（不再重新配准）
                 registered_arrays = []
+                cropped_local_dx_fields = []
+                cropped_local_dy_fields = []
                 for idx in range(len(scene_data["arrays"])):
                     gdx = full_global_shifts[idx, 0]
                     gdy = full_global_shifts[idx, 1]
-                    if abs(gdx) < 1e-6 and abs(gdy) < 1e-6:
+                    h, w = scene_data["arrays"][idx].shape[1:]
+                    local_dx = np.zeros((h, w), dtype=np.float64)
+                    local_dy = np.zeros((h, w), dtype=np.float64)
+                    if idx < len(full_local_dx_fields) and idx < len(full_local_dy_fields):
+                        old_tr = full_transforms[idx]
+                        new_tr = scene_data["transforms"][idx]
+                        col_offset = int(round((new_tr.c - old_tr.c) / old_tr.a))
+                        row_offset = int(round((old_tr.f - new_tr.f) / abs(old_tr.e)))
+                        source_dx = full_local_dx_fields[idx]
+                        source_dy = full_local_dy_fields[idx]
+                        if (row_offset >= 0 and col_offset >= 0
+                                and row_offset + h <= source_dx.shape[0]
+                                and col_offset + w <= source_dx.shape[1]):
+                            local_dx = source_dx[row_offset:row_offset + h,
+                                                 col_offset:col_offset + w]
+                            local_dy = source_dy[row_offset:row_offset + h,
+                                                 col_offset:col_offset + w]
+                    cropped_local_dx_fields.append(local_dx)
+                    cropped_local_dy_fields.append(local_dy)
+                    if (abs(gdx) < 1e-6 and abs(gdy) < 1e-6
+                            and not np.any(local_dx) and not np.any(local_dy)):
                         registered_arrays.append(scene_data["arrays"][idx].astype(np.float64))
                     else:
-                        h, w = scene_data["arrays"][idx].shape[1], scene_data["arrays"][idx].shape[2]
-                        local_dx = np.zeros((h, w), dtype=np.float64)
-                        local_dy = np.zeros((h, w), dtype=np.float64)
                         nd_val = scene_data["nodata_values"][idx]  # Keep None as None
                         warped = warp_multiband_with_displacement_field(
                             scene_data["arrays"][idx], gdx, gdy,
@@ -1634,6 +2005,9 @@ class MultibandPipeline:
                 registration = {
                     "registered_arrays": registered_arrays,
                     "global_shifts": full_global_shifts,
+                    "local_dx_fields": cropped_local_dx_fields,
+                    "local_dy_fields": cropped_local_dy_fields,
+                    "local_refinement": full_registration.get("local_refinement", {}),
                     "pair_matches": full_registration["pair_matches"],
                     "spanning_tree": full_registration["spanning_tree"],
                     "geometric_edges": full_registration["geometric_edges"],

@@ -122,3 +122,35 @@ def test_global_refinement_rejects_over_limit_before_stop(monkeypatch):
     assert np.array_equal(result["global_shifts"], np.zeros((2, 2)))
     assert any("max_correction" in warning for warning in result["warnings"])
     assert result["history"][0]["accepted"] is False
+
+
+def test_local_rbf_reduces_smooth_spatial_residual(monkeypatch):
+    from src import multiband_pipeline
+    controls = {
+        "points_xy": np.array([[1, 1], [6, 1], [1, 6], [6, 6], [3, 3], [4, 4]], float),
+        "residual_dx": np.array([0.0, 0.5, 0.0, 0.5, 0.25, 0.33]),
+        "residual_dy": np.zeros(6), "confidence": np.ones(6), "n_valid": 6,
+    }
+    result = multiband_pipeline._accept_local_rbf_candidate(
+        controls,
+        {"local_min_controls": 5, "local_min_spatial_groups": 3,
+         "local_cv_min_rmse_improvement": 0.01, "local_cv_min_p95_improvement": 0.01},
+        cv_result={"baseline_rmse": 1.0, "candidate_rmse": 0.5,
+                   "baseline_p95": 1.2, "candidate_p95": 0.8},
+    )
+    assert result["accepted"] is True
+
+
+def test_local_rbf_rejected_when_cv_does_not_improve():
+    from src import multiband_pipeline
+    controls = {"points_xy": np.array([[0, 0], [1, 0], [0, 1], [1, 1], [2, 2]], float),
+                "residual_dx": np.zeros(5), "residual_dy": np.zeros(5),
+                "confidence": np.ones(5), "n_valid": 5}
+    result = multiband_pipeline._accept_local_rbf_candidate(
+        controls,
+        {"local_min_controls": 5, "local_min_spatial_groups": 3,
+         "local_cv_min_rmse_improvement": 0.1, "local_cv_min_p95_improvement": 0.1},
+        cv_result={"baseline_rmse": 1.0, "candidate_rmse": 0.99,
+                   "baseline_p95": 1.2, "candidate_p95": 1.2},
+    )
+    assert result["accepted"] is False

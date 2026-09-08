@@ -1,0 +1,54 @@
+# Task 4 Report
+
+## Changed files
+
+- `src/coregistration.py`: extended local-control helpers with configurable minimum counts and explicit handling of post-global residual measurements while preserving target-pixel displacement signs.
+- `src/multiband_pipeline.py`: added the local-control spatial gate, held-out RBF CV, post-global rematching, balanced target-coordinate controls, hull fade, component clipping, field statistics, fallback diagnostics, final one-shot local/global warp, and smoke-mode field cropping.
+- `tests/test_registration_refinement.py`: added the two required Task 4 acceptance-gate tests.
+- `.superpowers/sdd/2026-09-08-registration-pipeline-reliability/task-4-report.md`: this report.
+
+Unrelated Task 1–3 changes, planning files, and the untracked `data/report_figures` tree were not staged or modified.
+
+## Commits
+
+- `feat: integrate gated local rbf registration refinement`
+
+## TDD and verification
+
+Required RED run:
+
+```text
+.venv\Scripts\python.exe -m pytest tests/test_registration_refinement.py::test_local_rbf_reduces_smooth_spatial_residual tests/test_registration_refinement.py::test_local_rbf_rejected_when_cv_does_not_improve -v
+```
+
+Observed result: both tests failed with the intended missing-helper `AttributeError` for `multiband_pipeline._accept_local_rbf_candidate`.
+
+Required focused GREEN run: `2 passed` with one pre-existing pytest-cache permission warning.
+
+Final focused run: `2 passed` with one pre-existing pytest-cache permission warning.
+
+Adjacent registration run excluding the environment-blocked `tmp_path` test: `12 passed` with one pre-existing pytest-cache permission warning. The complete adjacent command reached `21 passed` and then errored during temporary-directory fixture setup/cleanup for `test_analyze_displacement_spikes_handles_distance_field` because the managed Windows environment denied access to pytest’s temp directory. The equivalent direct distance-field check passed.
+
+Additional checks:
+
+- Task 4 registration tests excluding the temp-path case: `9 passed, 1 deselected`.
+- AST parsing of the three changed Python files: passed.
+- Target-coordinate/sign smoke check for post-global parent controls: passed.
+- Synthetic local CV/field smoke check: passed; field shape and clipping diagnostics were produced.
+- `git diff --check`: passed with only Git’s existing LF/CRLF conversion warnings.
+
+## Self-review
+
+- Local fields are fitted only from rematches performed after global refinement on global-only arrays generated from the ORIGINAL inputs.
+- `shift_dx` and `shift_dy` consistently mean the displacement applied to the target; flipped pair controls are negated and placed in the target/image pixel system.
+- The acceptance gate requires local enablement, minimum control count, minimum spatial-group count, and both configured held-out RMSE and P95 improvements.
+- Accepted fields use `fit_local_rbf()`, `compute_hull_fade_mask()`, component-wise `local_max_component` clipping, and per-scene field/clipping diagnostics.
+- Rejected, unavailable, disabled, or failed-fit scenes fall back to global-only fields and are recorded in `fallback_scenes` with reasons.
+- Final non-smoke warps combine global and local fields in one warp from ORIGINAL arrays; smoke mode crops the full-scene local fields before its final warp.
+- Existing registration graph fields and Task 1–3 behavior remain in the returned schema.
+
+## Concerns
+
+- The repository’s managed Windows filesystem continues to deny pytest temp-directory scanning/cleanup, so the one `tmp_path`-based adjacent test cannot complete through pytest in this environment even though its underlying direct check passes.
+- Local rematching adds work after global refinement; this is intentional to ensure local controls are post-global residuals rather than initial pair measurements.
+- The local CV uses the configured first smoothing candidate; smoothing-model selection remains outside this Task 4 gate.
