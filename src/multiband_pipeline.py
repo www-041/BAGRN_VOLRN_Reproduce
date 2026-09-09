@@ -338,7 +338,7 @@ def _build_pair_holdout_context(
     """Build common-valid TRAIN/HOLDOUT masks in reference-patch pixels."""
     from src.coregistration import (
         build_pair_overlap_context,
-        build_spatial_train_holdout_split,
+        reserve_validation_windows,
     )
 
     pair_grid = build_pair_overlap_context(
@@ -349,15 +349,29 @@ def _build_pair_holdout_context(
 
     common_valid = pair_grid["common_valid_mask"]
 
-    block_size = int(params.get(
-        "holdout_block_size", params.get("global_block_size", 512)
-    ))
-    split = build_spatial_train_holdout_split(
+    block_sizes = params.get(
+        "validation_block_size_candidates",
+        [params.get("validation_block_size", 384)],
+    )
+    block_sizes = [int(size) for size in block_sizes]
+    reservation_step = params.get("validation_reservation_step")
+    if reservation_step is None:
+        reservation_step = max(
+            1,
+            min(int(params.get("validation_step", 256)), min(block_sizes) // 2),
+        )
+    split = reserve_validation_windows(
         common_valid,
-        block_size=block_size,
+        block_size_candidates=block_sizes,
+        final_min_blocks=int(params.get("final_min_blocks", 5)),
+        step=int(reservation_step),
+        offset_row=int(params.get("validation_reservation_offset_row", 0)),
+        offset_col=int(params.get("validation_reservation_offset_col", 0)),
+        min_common_valid_ratio=float(
+            params.get("validation_min_common_valid_ratio", 0.30)
+        ),
         seed=int(params.get("holdout_seed", 42)),
-        holdout_fraction=float(params.get("holdout_fraction", 0.20)),
-        min_holdout_cells=int(params.get("min_holdout_cells", 2)),
+        reservation_margin=int(params.get("validation_reservation_margin", 2)),
         buffer_pixels=int(params.get("holdout_buffer_pixels", 0)),
     )
     split.update({
@@ -370,6 +384,7 @@ def _build_pair_holdout_context(
         "common_valid_pixels": int(common_valid.sum()),
         "common_valid_ratio": float(common_valid.mean()),
         "common_valid_mask": common_valid,
+        "validation_reservation": dict(split),
     })
     return split
 
@@ -378,6 +393,26 @@ def _public_holdout_summary(context):
     """Return JSON-safe holdout metadata without serializing large masks."""
     if not context:
         return None
+    reservation = context.get("validation_reservation")
+    reservation_summary = None
+    if reservation is not None:
+        reservation_summary = {
+            "selected_block_size": reservation.get("selected_block_size"),
+            "candidates_before_spatial_filter": int(
+                reservation.get("candidates_before_spatial_filter", 0)
+            ),
+            "reserved_windows": list(reservation.get("reserved_windows", [])),
+            "reserved_count": int(reservation.get("reserved_count", 0)),
+            "reserved_centers": list(reservation.get("reserved_centers", [])),
+            "train_usable_cells": int(
+                len(reservation.get("train_usable_cells", []))
+            ),
+            "unused_cells": list(reservation.get("unused_cells", [])),
+            "unused_count": int(len(reservation.get("unused_cells", []))),
+            "candidate_counts": dict(reservation.get("candidate_counts", {})),
+            "buffer_pixels": int(reservation.get("buffer_pixels", 0)),
+            "failure_reason": reservation.get("failure_reason"),
+        }
     return {
         "available": bool(context.get("available", False)),
         "candidate_cells": len(context.get("candidate_cells", [])),
@@ -387,6 +422,7 @@ def _public_holdout_summary(context):
         "common_valid_pixels": int(context.get("common_valid_pixels", 0)),
         "common_valid_ratio": float(context.get("common_valid_ratio", 0.0)),
         "failure_reason": context.get("failure_reason"),
+        "validation_reservation": reservation_summary,
     }
 
 
@@ -501,9 +537,12 @@ def _validate_final_registration_arrays(
         )
         context = (holdout_contexts or {}).get((idx_i, idx_j))
         reserved_mask = None
+        reserved_windows = None
         if bool(params.get("enable_spatial_holdout", False)):
             if context and context.get("available"):
                 reserved_mask = context.get("holdout_region_full_mask")
+                reservation = context.get("validation_reservation", {})
+                reserved_windows = reservation.get("reserved_windows")
             if reserved_mask is None:
                 reserved_mask = np.zeros_like(
                     registered_arrays[idx_i][registration_band_idx], dtype=bool
@@ -526,6 +565,7 @@ def _validate_final_registration_arrays(
                 if reserved_mask is not None else None,
                 required_candidate_count=required_candidate_count
                 if reserved_mask is not None else None,
+                reserved_validation_windows=reserved_windows,
             )
         except Exception as exc:
             logger.warning(
@@ -1566,6 +1606,58 @@ class MultibandPipeline:
         global_confidence_threshold = float(
             reg_params.get("global_confidence_threshold", 0.5)
         )
+        holdout_enabled = bool(reg_params.get("enable_spatial_holdout", False))
+
+        # Reserve exact validation windows before any matching or refinement.
+        # This makes insufficient independent geometry an immediate failure,
+        # rather than a late failure after a full registration run.
+        if holdout_enabled:
+            geometric_edges = [(ov["idx_i"], ov["idx_j"]) for ov in overlaps]
+            for ov in overlaps:
+                i, j = ov["idx_i"], ov["idx_j"]
+                holdout_context = _build_pair_holdout_context(
+                    arrays[i][registration_band_idx], transforms[i],
+                    arrays[j][registration_band_idx], transforms[j],
+                    nodata_values[i], nodata_values[j], reg_params,
+                )
+                if holdout_context.get("available"):
+                    ri_s, ri_e, ci_s, ci_e = holdout_context["patch_window_ref"]
+                    full_holdout = np.zeros(
+                        arrays[i][registration_band_idx].shape, dtype=bool,
+                    )
+                    full_holdout[ri_s:ri_e, ci_s:ci_e] = holdout_context[
+                        "holdout_region_mask"
+                    ]
+                    holdout_context["holdout_region_full_mask"] = full_holdout
+                holdout_contexts[(i, j)] = holdout_context
+                required = int(reg_params.get("final_min_blocks", 5))
+                if (not holdout_context.get("available")
+                        or int(holdout_context.get("reserved_count", 0)) < required):
+                    reason = holdout_context.get(
+                        "failure_reason",
+                        "insufficient independent validation geometry",
+                    )
+                    failure_result = _registration_failure_result(
+                        arrays,
+                        reg_params.get("enable_local_refinement", True),
+                        [], [], geometric_edges, [], [],
+                        _graph_components(n_images, geometric_edges),
+                        [
+                            scene_data.get("scene_ids", [str(k) for k in range(n_images)])[k]
+                            for k in range(n_images) if k != self.control_idx
+                        ],
+                        reason,
+                    )
+                    failure_result["diagnostics"]["holdout"] = {
+                        f"{i}-{j}": _public_holdout_summary(holdout_context)
+                    }
+                    failure_result["diagnostics"]["validation_reservation"] = {
+                        f"{i}-{j}": _public_holdout_summary(holdout_context).get(
+                            "validation_reservation"
+                        )
+                    }
+                    return failure_result
+
         for ov in overlaps:
             i, j = ov["idx_i"], ov["idx_j"]
             arr_i_reg = arrays[i][registration_band_idx]
@@ -1574,19 +1666,8 @@ class MultibandPipeline:
             nd_j = nodata_values[j]  # Keep None as None, don't convert to 0
 
             sampling_mask = None
-            if bool(reg_params.get("enable_spatial_holdout", False)):
-                holdout_context = _build_pair_holdout_context(
-                    arr_i_reg, transforms[i], arr_j_reg, transforms[j],
-                    nd_i, nd_j, reg_params,
-                )
-                if holdout_context.get("available"):
-                    ri_s, ri_e, ci_s, ci_e = holdout_context["patch_window_ref"]
-                    full_holdout = np.zeros(arr_i_reg.shape, dtype=bool)
-                    full_holdout[ri_s:ri_e, ci_s:ci_e] = holdout_context[
-                        "holdout_region_mask"
-                    ]
-                    holdout_context["holdout_region_full_mask"] = full_holdout
-                holdout_contexts[(i, j)] = holdout_context
+            if holdout_enabled:
+                holdout_context = holdout_contexts[(i, j)]
                 if holdout_context.get("available"):
                     sampling_mask = holdout_context["train_sampling_mask"]
 

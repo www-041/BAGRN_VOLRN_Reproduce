@@ -2,6 +2,49 @@ import numpy as np
 from rasterio.transform import from_origin
 
 
+def test_registration_fails_early_when_five_windows_are_physically_impossible(monkeypatch):
+    from types import SimpleNamespace
+    from src import coregistration, multiband_pipeline
+
+    monkeypatch.setattr(
+        multiband_pipeline,
+        "_build_pair_holdout_context",
+        lambda *args, **kwargs: {
+            "available": False,
+            "failure_reason": "insufficient independent validation geometry",
+            "reserved_count": 1,
+        },
+    )
+
+    def should_not_match(*args, **kwargs):
+        raise AssertionError("registration matching must not start after early geometry failure")
+
+    monkeypatch.setattr(coregistration, "collect_block_matches", should_not_match)
+
+    pipeline = object.__new__(multiband_pipeline.MultibandPipeline)
+    pipeline.registration_band_idx = 0
+    pipeline.common_bands = ["B14"]
+    pipeline.control_idx = 0
+    pipeline.smoke = False
+    pipeline.config = SimpleNamespace(registration_params={
+        "enable_local_refinement": True,
+        "enable_spatial_holdout": True,
+        "final_min_blocks": 5,
+    })
+    arr = np.ones((1, 64, 64), dtype=float)
+    scene_data = {
+        "arrays": [arr, arr.copy()],
+        "transforms": [from_origin(0, 64, 1, 1), from_origin(0, 64, 1, 1)],
+        "nodata_values": [None, None],
+        "scene_ids": ["a", "b"],
+    }
+
+    result = pipeline.register_scenes(scene_data, [{"idx_i": 0, "idx_j": 1}])
+
+    assert result["status"] == "fail"
+    assert "insufficient independent validation geometry" in result["failure"]["reason"]
+
+
 def test_holdout_is_created_before_control_extraction():
     from src.coregistration import build_spatial_train_holdout_split
 
@@ -138,4 +181,7 @@ def test_register_scenes_reserves_holdout_before_matching(monkeypatch):
     assert seen["allowed_mask"] is not None
     assert seen["holdout_contexts"][(0, 1)]["available"] is True
     assert seen["holdout_contexts"][(0, 1)]["holdout_region_full_mask"].any()
+    reservation = seen["holdout_contexts"][(0, 1)]["validation_reservation"]
+    assert reservation["reserved_count"] >= 5
+    assert reservation["reserved_windows"]
     assert result["status"] == "pass"

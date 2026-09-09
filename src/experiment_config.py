@@ -61,6 +61,11 @@ _DEFAULT_REGISTRATION_PARAMS: Dict[str, Any] = {
     "holdout_block_size": 512,
     "min_holdout_cells": 2,
     "holdout_buffer_pixels": 0,
+    "validation_reservation_step": 64,
+    "validation_reservation_offset_row": 0,
+    "validation_reservation_offset_col": 0,
+    "validation_reservation_margin": 2,
+    "validation_min_common_valid_ratio": 0.30,
     "validation_required_candidate_count": 10,
     "validation_confidence_threshold": 0.45,
     "validation_max_residual_shift": 3.0,
@@ -293,6 +298,23 @@ def validate_config(config: ExperimentConfig, skip_file_check: bool = False) -> 
         for key in ("local_search_max_shift", "local_hard_max_component"):
             if float(rp.get(key, 0.0)) <= 0:
                 errors.append(f"registration_params.{key} 必须大于 0")
+        reservation_step = int(rp.get("validation_reservation_step", 1))
+        if reservation_step <= 0:
+            errors.append(
+                "registration_params.validation_reservation_step 必须大于 0"
+            )
+        reservation_margin = int(rp.get("validation_reservation_margin", 0))
+        if reservation_margin < 0:
+            errors.append(
+                "registration_params.validation_reservation_margin 必须为非负数"
+            )
+        min_valid_ratio = float(
+            rp.get("validation_min_common_valid_ratio", 0.30)
+        )
+        if not 0.0 <= min_valid_ratio <= 1.0:
+            errors.append(
+                "registration_params.validation_min_common_valid_ratio 必须在 [0, 1] 内"
+            )
 
     # ---- 基本字段 ----
     if not config.experiment_name.strip():

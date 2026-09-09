@@ -32,13 +32,15 @@ For the DZ01V B14 N=2→4→6 experiment series, `required_quality: pass` is set
 
 ## Registration and final evidence
 
-The initial block matches, robust pair measurements, and network-adjustment shifts are training and registration diagnostics. They are not final quality evidence. Each pair first builds a common-valid mask and reserves blocked spatial HOLDOUT cells. Global matching, global residual refinement, and local residual controls are restricted to TRAIN cells; the local RBF remains behind an internal spatial cross-validation gate. After global and optional gated local refinement, the pipeline builds the final registered arrays from the ORIGINAL arrays and runs bounded residual phase correlation only on the reserved HOLDOUT cells. Validation block size is selected from `[384, 256, 192]` using geometric candidate counts, never by residual quality. The resulting `final_validation` and `quality` dictionaries are the authoritative quality evidence used by the gate.
+The initial block matches, robust pair measurements, and network-adjustment shifts are training and registration diagnostics. They are not final quality evidence. Each pair first builds a common-valid overlap grid and reserves exact validation windows from `[384, 256, 192]`, largest viable size first, using only footprint geometry and common-valid ratios. Global matching, global residual refinement, and local residual controls are restricted to TRAIN cells; the local RBF remains behind an internal spatial cross-validation gate. After global and optional gated local refinement, the pipeline builds the final registered arrays from the ORIGINAL arrays and runs bounded residual phase correlation only on those exact reserved HOLDOUT windows. The resulting `final_validation` and `quality` dictionaries are the authoritative quality evidence used by the gate.
 
 Every required validation edge must also have no `failure_reason` and at least
 `final_min_blocks` accepted blocks. A passing pooled summary cannot mask a
 failed or under-sampled required edge. If no candidate block size can provide
-enough holdout geometry, the result is explicitly reported as insufficient
-geometry and remains FAIL; PASS thresholds are never reduced to compensate.
+enough independent validation windows, the result is failed before matching
+starts with `insufficient independent validation geometry`; PASS thresholds are
+never reduced to compensate. The reservation diagnostics account for every
+geometry candidate, including unused candidates and train-usable cells.
 
 The diagnostic JSON separates `overlap`, `holdout`, `local_controls`,
 `local_field`, and `final_validation`. This lets a failed run distinguish an

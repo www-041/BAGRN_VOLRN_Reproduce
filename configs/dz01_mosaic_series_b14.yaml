@@ -110,6 +110,11 @@ registration_params:
   holdout_block_size: 384
   min_holdout_cells: 2
   holdout_buffer_pixels: 0
+  validation_reservation_step: 64
+  validation_reservation_offset_row: 0
+  validation_reservation_offset_col: 0
+  validation_reservation_margin: 2
+  validation_min_common_valid_ratio: 0.30
   validation_block_size: 384
   validation_block_size_candidates: [384, 256, 192]
   validation_confidence_threshold: 0.45

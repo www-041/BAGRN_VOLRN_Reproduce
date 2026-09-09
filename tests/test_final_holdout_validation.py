@@ -111,6 +111,31 @@ def test_final_validation_reads_only_reserved_holdout(monkeypatch):
     assert result["stats"]["n_rejected_near_training"] == 0
 
 
+def test_final_validation_reuses_exact_reserved_windows(monkeypatch):
+    from src import coregistration
+
+    monkeypatch.setattr(
+        coregistration,
+        "phase_correlation",
+        lambda *args, **kwargs: (0.5, -0.25, 0.9),
+    )
+    rng = np.random.RandomState(7)
+    arr = rng.normal(size=(96, 96)).astype(float)
+    reserved = [(5, 7, 16, 16), (51, 43, 16, 16)]
+
+    result = coregistration.validate_registration_independent_grid(
+        arr, from_origin(0, 96, 1, 1), arr.copy(), from_origin(0, 96, 1, 1),
+        None, None, [], block_size=32, step=32, offset_row=0, offset_col=0,
+        confidence_threshold=0.5, max_residual_shift=3, min_accepted=2,
+        reserved_validation_windows=reserved,
+    )
+
+    accepted = [block for block in result["blocks"] if block["accepted"]]
+    assert {(block["validation_row"], block["validation_col"]) for block in accepted} == {
+        (5, 7), (51, 43),
+    }
+
+
 def test_bad_holdout_rmse_or_p95_remains_fail():
     from src.coregistration import aggregate_final_validation_quality
 

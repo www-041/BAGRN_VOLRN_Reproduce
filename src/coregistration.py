@@ -3173,6 +3173,240 @@ def select_validation_block_size(
     }
 
 
+def enumerate_validation_windows(
+    common_valid_mask,
+    block_size,
+    step=None,
+    offset_row=0,
+    offset_col=0,
+    min_common_valid_ratio=0.30,
+):
+    """Enumerate complete, geometry-only validation windows.
+
+    Each returned window is expressed in the common overlap-grid coordinates.
+    No registration residual, confidence, or radiometric quality is inspected.
+    """
+    common = np.asarray(common_valid_mask, dtype=bool)
+    if common.ndim != 2:
+        raise ValueError("common-valid mask must be a 2D array")
+    size = int(block_size)
+    if size <= 0:
+        raise ValueError("validation block size must be positive")
+    stride = max(1, size // 2 if step is None else int(step))
+    candidates = []
+    for row in range(int(offset_row), common.shape[0] - size + 1, stride):
+        for col in range(int(offset_col), common.shape[1] - size + 1, stride):
+            block = common[row:row + size, col:col + size]
+            ratio = float(block.mean())
+            if block.shape != (size, size) or ratio < float(min_common_valid_ratio):
+                continue
+            candidates.append({
+                "row": int(row), "col": int(col),
+                "height": size, "width": size,
+                "center_row": float(row + size / 2.0),
+                "center_col": float(col + size / 2.0),
+                "common_valid_ratio": ratio,
+            })
+    return candidates
+
+
+def reserve_validation_windows(
+    common_valid_mask,
+    block_size_candidates,
+    final_min_blocks,
+    step=None,
+    offset_row=0,
+    offset_col=0,
+    min_common_valid_ratio=0.30,
+    seed=42,
+    reservation_margin=2,
+    buffer_pixels=0,
+):
+    """Reserve exact independent validation windows before registration.
+
+    Candidate enumeration and spatial selection use only the common-valid
+    overlap mask.  The largest block size that can reserve at least
+    ``final_min_blocks`` non-overlapping windows is selected.  The optional
+    margin is used when geometry permits more windows, but never makes an
+    otherwise viable reservation fail.
+    """
+    common = np.asarray(common_valid_mask, dtype=bool)
+    if common.ndim != 2:
+        raise ValueError("common-valid mask must be a 2D array")
+    sizes = sorted({int(size) for size in block_size_candidates}, reverse=True)
+    if not sizes or any(size <= 0 for size in sizes):
+        raise ValueError("validation block sizes must be positive")
+    minimum = int(final_min_blocks)
+    if minimum <= 0:
+        raise ValueError("final_min_blocks must be positive")
+    buffer_pixels = int(buffer_pixels)
+    if buffer_pixels < 0:
+        raise ValueError("buffer_pixels must be non-negative")
+
+    candidate_by_size = {}
+    candidate_counts = {}
+    for size in sizes:
+        candidates = enumerate_validation_windows(
+            common, size, step=step, offset_row=offset_row,
+            offset_col=offset_col,
+            min_common_valid_ratio=min_common_valid_ratio,
+        )
+        candidate_by_size[size] = candidates
+        candidate_counts[size] = len(candidates)
+
+    def overlaps_with_buffer(a, b):
+        return not (
+            a["row"] + a["height"] + buffer_pixels <= b["row"]
+            or b["row"] + b["height"] + buffer_pixels <= a["row"]
+            or a["col"] + a["width"] + buffer_pixels <= b["col"]
+            or b["col"] + b["width"] + buffer_pixels <= a["col"]
+        )
+
+    def spatially_select(candidates):
+        if not candidates:
+            return []
+        centers = np.asarray([
+            [item["center_row"], item["center_col"]] for item in candidates
+        ], dtype=float)
+        if len(candidates) > 1:
+            centered = centers - centers.mean(axis=0)
+            covariance = centered.T @ centered
+            eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+            axis = eigenvectors[:, int(np.argmax(eigenvalues))]
+            projection = centered @ axis
+        else:
+            projection = np.zeros(1, dtype=float)
+
+        remaining = set(range(len(candidates)))
+        selected_indices = []
+        first = min(remaining, key=lambda idx: (projection[idx], idx))
+        selected_indices.append(first)
+        remaining.remove(first)
+        while remaining:
+            compatible = [
+                idx for idx in remaining
+                if all(not overlaps_with_buffer(candidates[idx], candidates[chosen])
+                       for chosen in selected_indices)
+            ]
+            if not compatible:
+                break
+            def score(idx):
+                distances = [
+                    float(np.linalg.norm(centers[idx] - centers[chosen]))
+                    for chosen in selected_indices
+                ]
+                return (min(distances), projection[idx], -idx)
+            chosen = max(compatible, key=score)
+            selected_indices.append(chosen)
+            remaining.remove(chosen)
+        return [candidates[idx] for idx in selected_indices]
+
+    selected_size = None
+    selected = []
+    unused = []
+    candidates_before_filter = 0
+    for size in sizes:
+        candidates = candidate_by_size[size]
+        candidates_before_filter = len(candidates)
+        trial = spatially_select(candidates)
+        if len(trial) >= minimum:
+            selected_size = size
+            selected = trial[:max(minimum, minimum + int(reservation_margin))]
+            unused = [item for item in candidates if item not in selected]
+            break
+
+    if selected_size is None:
+        all_candidates = candidate_by_size[sizes[-1]]
+        trial = spatially_select(all_candidates)
+        holdout_region = np.zeros_like(common, dtype=bool)
+        holdout_buffer = np.zeros_like(common, dtype=bool)
+        for item in trial:
+            row, col = item["row"], item["col"]
+            height, width = item["height"], item["width"]
+            holdout_region[row:row + height, col:col + width] = True
+            r0 = max(0, row - buffer_pixels)
+            c0 = max(0, col - buffer_pixels)
+            r1 = min(common.shape[0], row + height + buffer_pixels)
+            c1 = min(common.shape[1], col + width + buffer_pixels)
+            holdout_buffer[r0:r1, c0:c1] = True
+        return {
+            "available": False,
+            "selected_block_size": None,
+            "candidate_counts": candidate_counts,
+            "candidates_before_spatial_filter": candidates_before_filter,
+            "candidate_cells": list(all_candidates),
+            "reserved_windows": list(trial),
+            "reserved_count": len(trial),
+            "reserved_centers": [
+                [item["center_row"], item["center_col"]] for item in trial
+            ],
+            "unused_cells": [item for item in all_candidates if item not in trial],
+            "train_usable_cells": [],
+            "train_cells": [],
+            "holdout_cells": [
+                (item["row"], item["col"]) for item in trial
+            ],
+            "holdout_mask": common & holdout_buffer,
+            "holdout_region_mask": holdout_region,
+            "holdout_buffer_mask": holdout_buffer,
+            "train_mask": common & ~holdout_buffer,
+            "train_sampling_mask": common & ~holdout_buffer,
+            "buffer_pixels": buffer_pixels,
+            "failure_reason": "insufficient independent validation geometry",
+        }
+
+    holdout_region = np.zeros_like(common, dtype=bool)
+    holdout_buffer = np.zeros_like(common, dtype=bool)
+    for item in selected:
+        row, col = item["row"], item["col"]
+        height, width = item["height"], item["width"]
+        holdout_region[row:row + height, col:col + width] = True
+        r0 = max(0, row - buffer_pixels)
+        c0 = max(0, col - buffer_pixels)
+        r1 = min(common.shape[0], row + height + buffer_pixels)
+        c1 = min(common.shape[1], col + width + buffer_pixels)
+        holdout_buffer[r0:r1, c0:c1] = True
+
+    train_cells = []
+    for row in range(0, common.shape[0] - selected_size + 1, selected_size):
+        for col in range(0, common.shape[1] - selected_size + 1, selected_size):
+            block = common[row:row + selected_size, col:col + selected_size]
+            candidate = {
+                "row": row, "col": col,
+                "height": selected_size, "width": selected_size,
+            }
+            if block.all() and not any(
+                overlaps_with_buffer(candidate, item) for item in selected
+            ):
+                train_cells.append((row, col))
+
+    return {
+        "available": True,
+        "selected_block_size": selected_size,
+        "candidate_counts": candidate_counts,
+        "candidates_before_spatial_filter": candidates_before_filter,
+        "candidate_cells": list(candidate_by_size[selected_size]),
+        "reserved_windows": list(selected),
+        "reserved_count": len(selected),
+        "reserved_centers": [
+            [item["center_row"], item["center_col"]] for item in selected
+        ],
+        "unused_cells": list(unused),
+        "train_usable_cells": list(train_cells),
+        "train_cells": list(train_cells),
+        "holdout_cells": [
+            (item["row"], item["col"]) for item in selected
+        ],
+        "holdout_mask": common & holdout_buffer,
+        "holdout_region_mask": holdout_region,
+        "holdout_buffer_mask": holdout_buffer,
+        "train_mask": common & ~holdout_buffer,
+        "train_sampling_mask": common & ~holdout_buffer,
+        "buffer_pixels": buffer_pixels,
+        "failure_reason": None,
+    }
+
+
 def validate_registration_independent_grid(
     arr_ref, tr_ref, arr_registered, tr_registered,
     nodata_ref, nodata_tgt,
@@ -3186,6 +3420,7 @@ def validate_registration_independent_grid(
     reserved_holdout_mask=None,
     validation_block_size_candidates=None,
     required_candidate_count=None,
+    reserved_validation_windows=None,
 ):
     """严格独立偏移网格验证。
 
@@ -3294,7 +3529,52 @@ def validate_registration_independent_grid(
     common_valid = pair_grid["common_valid_mask"]
     selected_block_size = int(block_size)
     size_selection = None
-    if reserved_holdout_mask is not None:
+    exact_windows = None
+    if reserved_validation_windows is not None:
+        exact_windows = []
+        for item in reserved_validation_windows:
+            if isinstance(item, dict):
+                row = item.get("row", item.get("validation_row"))
+                col = item.get("col", item.get("validation_col"))
+                height = item.get("height", item.get("size", block_size))
+                width = item.get("width", item.get("size", height))
+            else:
+                values = list(item)
+                if len(values) == 3:
+                    row, col, height = values
+                    width = height
+                elif len(values) == 4:
+                    row, col, height, width = values
+                else:
+                    raise ValueError("reserved validation windows need 3 or 4 values")
+            row, col = int(row), int(col)
+            height, width = int(height), int(width)
+            if height <= 0 or width <= 0:
+                raise ValueError("reserved validation windows must be non-empty")
+            if (row < 0 or col < 0 or row + height > h_ref
+                    or col + width > w_ref):
+                return {
+                    'blocks': [], 'stats': None, 'coverage': None,
+                    'failure_reason': 'reserved validation window outside overlap grid',
+                    'validation_block_size_selected': None,
+                    'validation_candidate_counts': {},
+                }
+            exact_windows.append((row, col, height, width))
+        if exact_windows:
+            selected_block_size = int(exact_windows[0][2])
+            if any(item[2] != selected_block_size or item[3] != selected_block_size
+                   for item in exact_windows):
+                return {
+                    'blocks': [], 'stats': None, 'coverage': None,
+                    'failure_reason': 'reserved validation windows have inconsistent sizes',
+                    'validation_block_size_selected': None,
+                    'validation_candidate_counts': {},
+                }
+            size_selection = {
+                "candidate_counts": {selected_block_size: len(exact_windows)}
+            }
+
+    if exact_windows is None and reserved_holdout_mask is not None:
         candidates = validation_block_size_candidates or [block_size]
         required_count = int(
             required_candidate_count
@@ -3337,12 +3617,18 @@ def validate_registration_independent_grid(
     n_shift_limit = 0
     n_outside_holdout = 0
 
-    grid_rows = list(range(r0 + offset_row, r1 - selected_block_size + 1, step))
-    grid_cols = list(range(c0 + offset_col, c1 - selected_block_size + 1, step))
+    if exact_windows is not None:
+        validation_windows = exact_windows
+    else:
+        grid_rows = list(range(r0 + offset_row, r1 - selected_block_size + 1, step))
+        grid_cols = list(range(c0 + offset_col, c1 - selected_block_size + 1, step))
+        validation_windows = [
+            (br, bc, selected_block_size, selected_block_size)
+            for br in grid_rows for bc in grid_cols
+        ]
 
-    for br in grid_rows:
-        for bc in grid_cols:
-            br2, bc2 = br + selected_block_size, bc + selected_block_size
+    for br, bc, current_height, current_width in validation_windows:
+            br2, bc2 = br + current_height, bc + current_width
             cx, cy = bc + selected_block_size // 2, br + selected_block_size // 2
             n_total += 1
 
@@ -3381,7 +3667,7 @@ def validate_registration_independent_grid(
             v_ref = valid_ref[br:br2, bc:bc2]
             v_reg = valid_reg[br:br2, bc:bc2]
             joint = v_ref & v_reg
-            valid_ratio = joint.sum() / (selected_block_size * selected_block_size)
+            valid_ratio = joint.sum() / (current_height * current_width)
 
             if valid_ratio < 0.3:
                 n_nodata += 1
@@ -3481,14 +3767,20 @@ def validate_registration_independent_grid(
             'min_distance_used': actual_min_dist,
         }
 
-    grid_n_rows = max(1, (overlap_h - selected_block_size) // step + 1)
-    grid_n_cols = max(1, (overlap_w - selected_block_size) // step + 1)
-    total_cells = grid_n_rows * grid_n_cols
-    covered = set()
-    for b in accepted:
-        gr = (b['validation_row'] - r0) // step
-        gc = (b['validation_col'] - c0) // step
-        covered.add((min(gr, grid_n_rows - 1), min(gc, grid_n_cols - 1)))
+    if exact_windows is not None:
+        total_cells = len(validation_windows)
+        covered = {
+            (b['validation_row'], b['validation_col']) for b in accepted
+        }
+    else:
+        grid_n_rows = max(1, (overlap_h - selected_block_size) // step + 1)
+        grid_n_cols = max(1, (overlap_w - selected_block_size) // step + 1)
+        total_cells = grid_n_rows * grid_n_cols
+        covered = set()
+        for b in accepted:
+            gr = (b['validation_row'] - r0) // step
+            gc = (b['validation_col'] - c0) // step
+            covered.add((min(gr, grid_n_rows - 1), min(gc, grid_n_cols - 1)))
     coverage = {
         'covered_cells': len(covered),
         'total_cells': total_cells,
