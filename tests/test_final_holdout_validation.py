@@ -2,6 +2,87 @@ import numpy as np
 from rasterio.transform import from_origin
 
 
+def _different_shape_overlap_pair():
+    """Build two full rasters whose overlap is not their top-left crop."""
+    ref_h, ref_w = 100, 120
+    tgt_h, tgt_w = 110, 90
+    ref_transform = from_origin(0, 100, 1, 1)
+    tgt_transform = from_origin(30, 110, 1, 1)
+
+    ref_rows, ref_cols = np.indices((ref_h, ref_w), dtype=float)
+    tgt_rows, tgt_cols = np.indices((tgt_h, tgt_w), dtype=float)
+
+    def field(rows, cols):
+        return (
+            np.sin((cols + 0.5) * 0.17)
+            + np.cos((rows + 0.5) * 0.23)
+            + 0.002 * rows * cols
+        )
+
+    ref = field(ref_rows, ref_cols)
+    # The target starts 30 columns right and 10 rows north in geographic space.
+    # Its local row 10 / col 0 is therefore reference row 0 / col 30.
+    tgt = field(tgt_rows - 10, tgt_cols + 30)
+    return ref, ref_transform, tgt, tgt_transform
+
+
+def test_final_validation_handles_different_full_scene_shapes(monkeypatch):
+    from src import coregistration, multiband_pipeline
+
+    ref, ref_transform, tgt, tgt_transform = _different_shape_overlap_pair()
+    monkeypatch.setattr(
+        coregistration,
+        "phase_correlation",
+        lambda *args, **kwargs: (1.0, -2.0, 0.9),
+    )
+
+    holdout_full = np.zeros_like(ref, dtype=bool)
+    holdout_full[:64, 30:94] = True
+    quality, validation = multiband_pipeline._validate_final_registration_arrays(
+        [ref[None, ...], tgt[None, ...]], 0,
+        [ref_transform, tgt_transform], [None, None], [(0, 1)], [],
+        {
+            "enable_spatial_holdout": True,
+            "validation_block_size": 16,
+            "validation_step": 16,
+            "validation_offset_row": 0,
+            "validation_offset_col": 0,
+            "validation_block_size_candidates": [16],
+            "validation_required_candidate_count": 1,
+            "validation_confidence_threshold": 0.5,
+            "validation_max_residual_shift": 3.0,
+            "final_min_blocks": 1,
+        },
+        holdout_contexts={
+            (0, 1): {
+                "available": True,
+                "holdout_region_full_mask": holdout_full,
+            },
+        },
+    )
+
+    accepted = [block for block in validation["edges"][0]["blocks"] if block["accepted"]]
+    assert accepted
+    assert quality["rmse"] == np.hypot(1.0, -2.0)
+
+
+def test_overlap_alignment_uses_geospatial_windows_not_top_left_crop():
+    from src.coregistration import build_pair_overlap_context
+
+    ref, ref_transform, tgt, tgt_transform = _different_shape_overlap_pair()
+    context = build_pair_overlap_context(
+        ref, ref_transform, tgt, tgt_transform, None, None,
+    )
+
+    assert context["ref_overlap"].shape == context["tgt_overlap"].shape
+    assert context["common_valid_mask"].shape == context["ref_overlap"].shape
+    assert context["shape"] == context["common_valid_mask"].shape
+    assert context["ref_window"] == (0, 100, 30, 120)
+    assert context["tgt_window"] == (10, 110, 0, 90)
+    np.testing.assert_allclose(context["ref_overlap"], context["tgt_overlap"])
+    assert not np.allclose(ref[:, :90], tgt[:100, :90])
+
+
 def test_final_validation_reads_only_reserved_holdout(monkeypatch):
     from src import coregistration
 

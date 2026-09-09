@@ -50,6 +50,147 @@ def build_common_valid_mask(
     return valid_ref & valid_tgt
 
 
+def _resample_array_to_grid(array, src_transform, dst_shape, dst_transform,
+                            nodata=None):
+    """Resample one same-CRS array onto an explicit destination grid.
+
+    The registration pipeline validates scenes after checking that their CRS
+    is shared.  For grids that are not pixel-phase compatible, use the affine
+    transforms to map destination pixel centres back into the source array.
+    Values and validity weights are resampled separately so NoData does not
+    bleed into valid pixels.
+    """
+    from scipy.ndimage import map_coordinates
+
+    source = np.asarray(array)
+    if source.ndim != 2:
+        raise ValueError("overlap resampling requires 2D arrays")
+    dst_h, dst_w = (int(dst_shape[0]), int(dst_shape[1]))
+    if dst_h <= 0 or dst_w <= 0:
+        raise ValueError("destination overlap grid must be non-empty")
+
+    source_valid = np.isfinite(source)
+    if nodata is not None:
+        source_valid &= source != nodata
+
+    rows, cols = np.indices((dst_h, dst_w), dtype=float)
+    x, y = dst_transform * (cols + 0.5, rows + 0.5)
+    source_cols, source_rows = (~src_transform) * (x, y)
+    source_cols -= 0.5
+    source_rows -= 0.5
+
+    coords = np.asarray([source_rows, source_cols])
+    weighted_values = np.where(source_valid, source.astype(float), 0.0)
+    values = map_coordinates(
+        weighted_values, coords, order=1, mode="constant", cval=0.0,
+        prefilter=False,
+    )
+    weights = map_coordinates(
+        source_valid.astype(float), coords, order=1, mode="constant",
+        cval=0.0, prefilter=False,
+    )
+    in_bounds = (
+        (source_rows >= -0.5) & (source_rows <= source.shape[0] - 0.5)
+        & (source_cols >= -0.5) & (source_cols <= source.shape[1] - 0.5)
+    )
+    result = np.full((dst_h, dst_w), np.nan, dtype=float)
+    valid = in_bounds & (weights > 1e-6)
+    result[valid] = values[valid] / weights[valid]
+    return result
+
+
+def build_pair_overlap_context(
+    ref_array,
+    ref_transform,
+    tgt_array,
+    tgt_transform,
+    ref_nodata=None,
+    tgt_nodata=None,
+):
+    """Build one common geographic overlap grid for a scene pair.
+
+    The reference overlap window defines the validation coordinate domain.
+    If the target window has the same shape and top-left affine transform,
+    both arrays are sliced directly.  Otherwise the target is explicitly
+    resampled to that reference overlap grid; arrays are never aligned by a
+    top-left minimum-shape crop.
+    """
+    from rasterio.transform import array_bounds
+    from src.overlap import get_overlap_window
+
+    ref = np.asarray(ref_array)
+    tgt = np.asarray(tgt_array)
+    if ref.ndim != 2 or tgt.ndim != 2:
+        raise ValueError("pair overlap context requires 2D arrays")
+
+    windows = get_overlap_window(
+        array_bounds(*ref.shape, ref_transform), ref_transform,
+        array_bounds(*tgt.shape, tgt_transform), tgt_transform,
+    )
+    if windows is None:
+        return {"available": False, "failure_reason": "No geographic overlap"}
+
+    def clip_window(window, shape):
+        row_start, row_end, col_start, col_end = window
+        row_start = max(0, min(int(row_start), shape[0]))
+        row_end = max(row_start, min(int(row_end), shape[0]))
+        col_start = max(0, min(int(col_start), shape[1]))
+        col_end = max(col_start, min(int(col_end), shape[1]))
+        return row_start, row_end, col_start, col_end
+
+    ref_window = clip_window(windows[0], ref.shape)
+    tgt_window = clip_window(windows[1], tgt.shape)
+    ref_row_start, ref_row_end, ref_col_start, ref_col_end = ref_window
+    tgt_row_start, tgt_row_end, tgt_col_start, tgt_col_end = tgt_window
+    ref_overlap = ref[ref_row_start:ref_row_end, ref_col_start:ref_col_end]
+    tgt_window_array = tgt[tgt_row_start:tgt_row_end, tgt_col_start:tgt_col_end]
+    if ref_overlap.size == 0 or tgt_window_array.size == 0:
+        return {"available": False, "failure_reason": "Empty geographic overlap"}
+
+    overlap_transform = ref_transform * Affine.translation(
+        ref_col_start, ref_row_start,
+    )
+    tgt_overlap_transform = tgt_transform * Affine.translation(
+        tgt_col_start, tgt_row_start,
+    )
+    grid_compatible = (
+        ref_overlap.shape == tgt_window_array.shape
+        and np.allclose(
+            np.asarray(overlap_transform)[:6],
+            np.asarray(tgt_overlap_transform)[:6],
+            atol=1e-8,
+            rtol=0.0,
+        )
+    )
+    if grid_compatible:
+        tgt_overlap = tgt_window_array
+    else:
+        tgt_overlap = _resample_array_to_grid(
+            tgt, tgt_transform, ref_overlap.shape, overlap_transform,
+            nodata=tgt_nodata,
+        )
+
+    common_valid = build_common_valid_mask(
+        ref_overlap, tgt_overlap, ref_nodata, tgt_nodata,
+    )
+    return {
+        "available": True,
+        "ref_window": ref_window,
+        "tgt_window": tgt_window,
+        "overlap_transform": overlap_transform,
+        "shape": tuple(ref_overlap.shape),
+        "ref_overlap": ref_overlap,
+        "tgt_overlap": tgt_overlap,
+        "ref_valid": np.isfinite(ref_overlap)
+        & ((ref_overlap != ref_nodata) if ref_nodata is not None else True),
+        "tgt_valid": np.isfinite(tgt_overlap)
+        & ((tgt_overlap != tgt_nodata) if tgt_nodata is not None else True),
+        "common_valid_mask": common_valid,
+        "grid_compatible": bool(grid_compatible),
+        "resampled_target": not bool(grid_compatible),
+    }
+
+
 def build_spatial_train_holdout_split(
     common_valid_mask,
     block_size,
@@ -3080,8 +3221,52 @@ def validate_registration_independent_grid(
     from src.overlap import intersection_bounds
     from rasterio.transform import array_bounds, rowcol
 
+    original_ref_shape = tuple(np.asarray(arr_ref).shape)
+    pair_grid = build_pair_overlap_context(
+        arr_ref, tr_ref, arr_registered, tr_registered,
+        nodata_ref, nodata_tgt,
+    )
+    if not pair_grid.get("available"):
+        return {
+            'blocks': [], 'stats': None, 'coverage': None,
+            'failure_reason': pair_grid.get(
+                'failure_reason', 'No geographic overlap between images'
+            ),
+            'validation_block_size_selected': None,
+            'validation_candidate_counts': {},
+        }
+
+    ref_window = pair_grid["ref_window"]
+    arr_ref = pair_grid["ref_overlap"]
+    arr_registered = pair_grid["tgt_overlap"]
+    tr_ref = pair_grid["overlap_transform"]
+    tr_registered = pair_grid["overlap_transform"]
     h_ref, w_ref = arr_ref.shape
     h_reg, w_reg = arr_registered.shape
+
+    if reserved_holdout_mask is not None:
+        reserved_holdout_mask = np.asarray(reserved_holdout_mask, dtype=bool)
+        if reserved_holdout_mask.shape == original_ref_shape:
+            r_start, r_end, c_start, c_end = ref_window
+            reserved_holdout_mask = reserved_holdout_mask[
+                r_start:r_end, c_start:c_end
+            ]
+        elif reserved_holdout_mask.shape != arr_ref.shape:
+            return {
+                'blocks': [], 'stats': None, 'coverage': None,
+                'failure_reason': 'reserved holdout mask shape mismatch',
+            }
+
+    if training_points_xy is None:
+        training_points_xy = []
+    if len(training_points_xy) > 0:
+        training_points_xy = np.asarray(training_points_xy, dtype=float).reshape((-1, 2)).copy()
+        if original_ref_shape == tuple(np.asarray(arr_ref).shape):
+            pass
+        else:
+            r_start, _, c_start, _ = ref_window
+            training_points_xy[:, 0] -= c_start
+            training_points_xy[:, 1] -= r_start
 
     valid_ref = np.isfinite(arr_ref)
     valid_reg = np.isfinite(arr_registered)
@@ -3106,16 +3291,10 @@ def validate_registration_independent_grid(
     c0, c1 = max(0, c0), min(w_ref, c1)
     overlap_h, overlap_w = r1 - r0, c1 - c0
 
-    common_valid = valid_ref & valid_reg
+    common_valid = pair_grid["common_valid_mask"]
     selected_block_size = int(block_size)
     size_selection = None
     if reserved_holdout_mask is not None:
-        reserved_holdout_mask = np.asarray(reserved_holdout_mask, dtype=bool)
-        if reserved_holdout_mask.shape != arr_ref.shape:
-            return {
-                'blocks': [], 'stats': None, 'coverage': None,
-                'failure_reason': 'reserved holdout mask shape mismatch',
-            }
         candidates = validation_block_size_candidates or [block_size]
         required_count = int(
             required_candidate_count

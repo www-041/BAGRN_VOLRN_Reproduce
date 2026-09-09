@@ -336,29 +336,18 @@ def _build_pair_holdout_context(
     arr_ref, tr_ref, arr_tgt, tr_tgt, nodata_ref, nodata_tgt, params,
 ):
     """Build common-valid TRAIN/HOLDOUT masks in reference-patch pixels."""
-    from rasterio.transform import array_bounds
     from src.coregistration import (
-        build_common_valid_mask,
+        build_pair_overlap_context,
         build_spatial_train_holdout_split,
     )
 
-    win = get_overlap_window(
-        array_bounds(*arr_ref.shape, tr_ref), tr_ref,
-        array_bounds(*arr_tgt.shape, tr_tgt), tr_tgt,
+    pair_grid = build_pair_overlap_context(
+        arr_ref, tr_ref, arr_tgt, tr_tgt, nodata_ref, nodata_tgt,
     )
-    if win is None:
-        return {"available": False, "failure_reason": "No geographic overlap"}
+    if not pair_grid.get("available"):
+        return pair_grid
 
-    (ri_s, ri_e, ci_s, ci_e), (rj_s, rj_e, cj_s, cj_e) = win
-    ref_patch = arr_ref[ri_s:ri_e, ci_s:ci_e]
-    tgt_patch = arr_tgt[rj_s:rj_e, cj_s:cj_e]
-    common_h = min(ref_patch.shape[0], tgt_patch.shape[0])
-    common_w = min(ref_patch.shape[1], tgt_patch.shape[1])
-    ref_patch = ref_patch[:common_h, :common_w]
-    tgt_patch = tgt_patch[:common_h, :common_w]
-    common_valid = build_common_valid_mask(
-        ref_patch, tgt_patch, nodata_ref, nodata_tgt,
-    )
+    common_valid = pair_grid["common_valid_mask"]
 
     block_size = int(params.get(
         "holdout_block_size", params.get("global_block_size", 512)
@@ -372,8 +361,12 @@ def _build_pair_holdout_context(
         buffer_pixels=int(params.get("holdout_buffer_pixels", 0)),
     )
     split.update({
-        "patch_window_ref": (ri_s, ri_s + common_h, ci_s, ci_s + common_w),
-        "patch_window_tgt": (rj_s, rj_s + common_h, cj_s, cj_s + common_w),
+        "patch_window_ref": pair_grid["ref_window"],
+        "patch_window_tgt": pair_grid["tgt_window"],
+        "overlap_transform": pair_grid["overlap_transform"],
+        "shape": pair_grid["shape"],
+        "grid_compatible": pair_grid["grid_compatible"],
+        "resampled_target": pair_grid["resampled_target"],
         "common_valid_pixels": int(common_valid.sum()),
         "common_valid_ratio": float(common_valid.mean()),
         "common_valid_mask": common_valid,
