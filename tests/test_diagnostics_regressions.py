@@ -7,8 +7,10 @@ Task 12 of reliability-fixes plan:
 
 import json
 from types import SimpleNamespace
+from pathlib import Path
 
 import numpy as np
+import pytest
 from rasterio.transform import from_origin
 
 
@@ -302,6 +304,196 @@ def test_registration_diagnostic_uses_actual_registration_schema(tmp_path, monke
     assert payload["scene_ids"] == ["scene_a", "scene_b"]
     assert payload["quality"]["quality"] == "pass"
     assert payload["final_validation"] == registration["final_validation"]
+
+
+def test_registration_diagnostic_payload_preserves_global_only_and_stage_comparison(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = {
+        "global_only_quality": {"quality": "fail", "rmse": 1.8},
+        "global_only_validation": {"edges": [], "overall": {"rmse": 1.8}},
+        "final_validation": {"edges": [], "overall": {"rmse": 1.2}},
+        "stage_validation_comparison": {
+            "available": True, "rmse_improvement": 0.6,
+        },
+        "holdout_local_field_samples": {"1": {"edges": []}},
+        "quality": {"quality": "fail"},
+    }
+
+    payload = diagnose_registration_pair.build_diagnostic_payload(
+        registration, ["a", "b"], tmp_path
+    )
+
+    assert payload["global_only_quality"] == registration["global_only_quality"]
+    assert payload["global_only_validation"] == registration["global_only_validation"]
+    assert payload["stage_validation_comparison"] == registration[
+        "stage_validation_comparison"
+    ]
+    assert payload["holdout_local_field_samples"] == registration[
+        "holdout_local_field_samples"
+    ]
+
+
+def test_registration_diagnostic_payload_defaults_new_stage_fields_for_old_results(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    payload = diagnose_registration_pair.build_diagnostic_payload(
+        {"quality": {}, "final_validation": {}}, ["a", "b"], tmp_path
+    )
+
+    assert payload["global_only_quality"] is None
+    assert payload["global_only_validation"] is None
+    assert payload["stage_validation_comparison"] is None
+    assert payload["holdout_local_field_samples"] == {}
+
+
+def test_connected_quality_fail_can_write_diagnostic_artifacts_but_returns_nonzero(
+    tmp_path, monkeypatch,
+):
+    from scripts import diagnose_registration_pair
+
+    config = SimpleNamespace(
+        scenes=[{"id": "a"}, {"id": "b"}],
+        control_scene="a",
+        output_root=str(tmp_path / "default-output"),
+        registration_params={"required_quality": "pass"},
+    )
+    arrays = [np.ones((1, 4, 4)), np.ones((1, 4, 4)) * 2]
+    registration = {
+        "registered_arrays": arrays,
+        "global_only_arrays": arrays,
+        "connected": True,
+        "status": "fail",
+        "quality": {"quality": "fail", "rmse": 1.2, "p95": 2.0},
+        "final_validation": {"edges": [], "overall": {"quality": "fail"}},
+        "diagnostics": {"registration_blocked": False},
+    }
+
+    class FakePipeline:
+        registration_band_idx = 0
+
+        def __init__(self, pipeline_config):
+            self.config = pipeline_config
+
+        def load_scenes(self):
+            return {
+                "arrays": arrays,
+                "transforms": [from_origin(0, 4, 1, 1)] * 2,
+                "nodata_values": [None, None],
+                "crs": "EPSG:4326",
+                "scene_ids": ["a", "b"],
+            }
+
+        def detect_overlaps(self, scene_data):
+            return [{"idx_i": 0, "idx_j": 1}]
+
+        def register_scenes(self, scene_data, overlaps):
+            return registration
+
+    writer_calls = []
+    monkeypatch.setattr(diagnose_registration_pair, "load_config", lambda _: config)
+    monkeypatch.setattr(diagnose_registration_pair, "MultibandPipeline", FakePipeline)
+    monkeypatch.setattr(
+        diagnose_registration_pair,
+        "write_diagnostic_artifacts",
+        lambda *args, **kwargs: writer_calls.append(kwargs) or {"final": "artifact"},
+    )
+
+    result = diagnose_registration_pair.main([
+        "--config", "ignored.yaml", "--scene-i", "0", "--scene-j", "1",
+        "--output-dir", str(tmp_path / "diagnostic"),
+    ])
+
+    assert result == 1
+    assert writer_calls[0]["allow_quality_fail_for_diagnostics"] is True
+
+
+def test_blocked_quality_fail_still_cannot_write_artifacts(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = {
+        "registered_arrays": [np.ones((1, 4, 4)), np.ones((1, 4, 4))],
+        "connected": True,
+        "quality": {"quality": "fail"},
+        "diagnostics": {"registration_blocked": True},
+    }
+
+    with pytest.raises(ValueError, match="blocked/disconnected"):
+        diagnose_registration_pair.write_diagnostic_artifacts(
+            registration,
+            {"transforms": [from_origin(0, 4, 1, 1)] * 2,
+             "nodata_values": [None, None], "crs": "EPSG:4326"},
+            ["a", "b"], tmp_path,
+            allow_quality_fail_for_diagnostics=True,
+        )
+
+
+def test_diagnostic_artifacts_write_distinct_global_only_and_final_overlays(
+    tmp_path, monkeypatch,
+):
+    from scripts import diagnose_registration_pair
+
+    global_only = [np.ones((1, 4, 4)), np.ones((1, 4, 4)) * 2]
+    final = [np.ones((1, 4, 4)) * 3, np.ones((1, 4, 4)) * 4]
+    written = []
+    monkeypatch.setattr(
+        diagnose_registration_pair,
+        "write_geotiff",
+        lambda path, array, *args, **kwargs: written.append(Path(path).name),
+    )
+    monkeypatch.setattr(diagnose_registration_pair, "create_mosaic", lambda *a, **k: None)
+    monkeypatch.setattr(diagnose_registration_pair, "_reproject_to_reference",
+                        lambda *a, **k: np.asarray(a[0]))
+    monkeypatch.setattr(diagnose_registration_pair, "_save_mask_png", lambda *a, **k: None)
+    monkeypatch.setattr(diagnose_registration_pair, "_save_residual_vectors", lambda *a, **k: None)
+    monkeypatch.setattr(diagnose_registration_pair, "_save_validation_holdout_png", lambda *a, **k: None)
+    monkeypatch.setattr(diagnose_registration_pair, "_save_field_png", lambda *a, **k: None)
+    registration = {
+        "registered_arrays": final,
+        "global_only_arrays": global_only,
+        "connected": True,
+        "quality": {"quality": "pass"},
+        "pair_matches": [{}],
+        "diagnostics": {"raw_block_matches": [{"matches": []}]},
+        "diagnostic_masks": {"0-1": {
+            "common_valid_mask": np.ones((4, 4), dtype=bool),
+            "train_sampling_mask": np.ones((4, 4), dtype=bool),
+            "holdout_region_mask": np.ones((4, 4), dtype=bool),
+        }},
+        "final_validation": {"edges": [], "overall": {}},
+        "local_dx_fields": [np.zeros((4, 4)), np.zeros((4, 4))],
+        "local_dy_fields": [np.zeros((4, 4)), np.zeros((4, 4))],
+    }
+    artifacts = diagnose_registration_pair.write_diagnostic_artifacts(
+        registration,
+        {"transforms": [from_origin(0, 4, 1, 1)] * 2,
+         "nodata_values": [None, None], "crs": "EPSG:4326"},
+        ["a", "b"], tmp_path,
+    )
+
+    expected = {
+        "registered_global_only_reference.tif",
+        "registered_global_only_target.tif",
+        "registered_global_only_red_green_overlay.tif",
+        "registered_final_reference.tif",
+        "registered_final_target.tif",
+        "registered_final_red_green_overlay.tif",
+    }
+    assert expected <= set(written)
+    assert artifacts["final_holdout_validation_blocks"].endswith(
+        "final_holdout_validation_blocks.png"
+    )
+
+
+def test_diagnostic_payload_does_not_serialize_large_global_only_arrays(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    payload = diagnose_registration_pair.build_diagnostic_payload(
+        {"global_only_arrays": [np.ones((1, 4, 4))], "quality": {}},
+        ["a", "b"], tmp_path,
+    )
+
+    assert "global_only_arrays" not in payload
 
 
 def test_identity_gain_has_zero_rms():

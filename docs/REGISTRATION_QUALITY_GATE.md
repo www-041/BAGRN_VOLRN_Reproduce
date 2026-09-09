@@ -66,6 +66,32 @@ The diagnostic JSON separates `overlap`, `holdout`, `local_controls`,
 unusable common-valid footprint, insufficient holdout geometry, low-confidence
 validation, and genuine post-warp residual error.
 
+The paired stage diagnostics add `global_only_validation` and
+`stage_validation_comparison`. Both validation stages use the exact same
+reserved windows, and every common block is aligned by its reserved row and
+column rather than by list order. `rmse_improvement`, `p95_improvement`, and
+`median_improvement` are defined as global-only minus final; a positive value
+means that the selected local RBF improved the independent HOLDOUT. The
+comparison is diagnostic only and never changes the formal `quality` decision,
+which remains driven exclusively by final validation.
+
+Interpret the paired result as follows:
+
+- If global-only RMSE is larger than final RMSE, local RBF improved the
+  independent HOLDOUT, although the result may still be below PASS/WARN.
+- If global-only RMSE is smaller than final RMSE, local RBF worsened the true
+  HOLDOUT despite internal CV; investigate spatial overfit or use buffered
+  blocked CV in a later, explicitly approved round.
+- If the two stages are nearly equal and both fail, inspect the sampled applied
+  local field and HOLDOUT maps for hull fade, coverage, or controls that do not
+  represent the residual.
+
+The diagnostic command may write connected quality-FAIL results when explicitly
+invoked for diagnosis. These files are evidence only: the command still
+returns a nonzero exit code, writes JSON status `fail`, and never exposes those
+arrays as formal BAGRN/VOLRN inputs. Blocked or disconnected results continue
+to produce failure JSON without registered raster artifacts.
+
 ## Robust Estimation
 
 The pipeline uses MAD-based robust estimation instead of simple weighted average:
@@ -84,13 +110,14 @@ python scripts/diagnose_registration_pair.py \
     --scene-i 0 --scene-j 1
 ```
 
-On success, the command writes `registration_diagnostics.json`, registered
-reference and target GeoTIFFs, a red-green overlay, and a diagnostic mosaic
-beneath the requested output directory. If connectivity or the configured
-quality gate fails, it writes only a structured failure JSON record, returns a
-nonzero exit status, and does not label fallback arrays as registered. The
-default mosaic mode is `weighted`; use `--mosaic-mode source_selection` only
-when that diagnostic mode is explicitly requested.
+On success, or for an explicitly allowed connected quality-FAIL diagnosis, the
+command writes `registration_diagnostics.json`, separate global-only and final
+reference/target GeoTIFFs, two red-green overlays, a final HOLDOUT block map,
+and a diagnostic mosaic beneath the requested output directory. Connectivity
+or registration-blocked failures still write only structured failure JSON,
+return a nonzero exit status, and do not label fallback arrays as registered.
+The default mosaic mode is `weighted`; use `--mosaic-mode source_selection`
+only when that diagnostic mode is explicitly requested.
 
 ## Manual Validation Procedure
 

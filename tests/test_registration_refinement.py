@@ -141,13 +141,19 @@ def test_register_scenes_validates_final_arrays_and_all_training_controls(monkey
     )
 
     assert result["spanning_tree"] == [(0, 1)]
-    assert len(validation_calls) == 1
-    arr_ref, arr_registered, nd_ref, nd_tgt, training_points, kwargs = validation_calls[0]
-    assert np.array_equal(arr_ref, result["registered_arrays"][0][0])
-    assert np.array_equal(arr_registered, result["registered_arrays"][1][0])
-    assert not np.array_equal(arr_registered, arrays[1][0])
+    assert len(validation_calls) == 2
+    before_ref, before_target, nd_ref, nd_tgt, training_points, kwargs = validation_calls[0]
+    after_ref, after_target, *_ = validation_calls[1]
+    assert np.array_equal(before_ref, result["global_only_arrays"][0][0])
+    assert np.array_equal(after_ref, result["registered_arrays"][0][0])
+    assert not np.array_equal(before_target, arrays[1][0])
+    assert not np.array_equal(after_target, arrays[1][0])
     assert nd_ref is None and nd_tgt is None
-    assert {tuple(point) for point in training_points} == {(2.0, 2.0), (10.0, 10.0)}
+    assert {tuple(point) for point in training_points} == {(2.0, 2.0)}
+    after_training_points = np.asarray(validation_calls[1][4])
+    assert {tuple(point) for point in after_training_points} == {
+        (2.0, 2.0), (10.0, 10.0)
+    }
     assert kwargs["confidence_threshold"] == 0.6
     assert kwargs["max_residual_shift"] == 1.0
     assert kwargs["min_accepted"] == 5
@@ -787,15 +793,33 @@ def test_register_scenes_returns_actual_registration_schema(monkeypatch):
         "src.coregistration.multi_image_network_adjustment",
         lambda *a, **k: {"global_shifts": np.zeros((2, 2)), "loop_errors": []},
     )
+    warp_inputs = []
+    def fake_warp(array, *args, **kwargs):
+        warp_inputs.append(array)
+        return array.copy()
     monkeypatch.setattr(
-        "src.coregistration.validate_registration_independent_grid",
-        lambda *a, **k: {
+        "src.coregistration.warp_multiband_with_displacement_field", fake_warp,
+    )
+    validation_calls = []
+    def fake_validate(*args, **kwargs):
+        validation_calls.append((args, kwargs))
+        magnitude = 1.0 if len(validation_calls) == 1 else 0.5
+        return {
             "stats": {
-                "median": 0.1, "rmse": 0.2, "p95": 0.3,
+                "median": magnitude, "rmse": magnitude, "p95": magnitude,
                 "mean_confidence": 0.9, "n_accepted": 1,
             },
-            "blocks": [], "failure_reason": None,
-        },
+            "blocks": [{
+                "validation_row": 0, "validation_col": 0,
+                "center_x": 2.0, "center_y": 2.0,
+                "residual_dx": magnitude, "residual_dy": 0.0,
+                "residual_magnitude": magnitude,
+                "accepted": True, "reject_reason": None,
+            }],
+            "failure_reason": None,
+        }
+    monkeypatch.setattr(
+        "src.coregistration.validate_registration_independent_grid", fake_validate,
     )
 
     result = pipeline.register_scenes(scene_data, [{"idx_i": 0, "idx_j": 1}])
@@ -815,6 +839,13 @@ def test_register_scenes_returns_actual_registration_schema(monkeypatch):
     assert "rejected_edges" in result
     assert "connected_components" in result
     assert "unreachable_scenes" in result
+    assert len(validation_calls) == 2
+    assert "global_only_validation" in result
+    assert "global_only_quality" in result
+    assert result["stage_validation_comparison"]["n_blocks_common"] == 1
+    assert result["stage_validation_comparison"]["rmse_improvement"] == pytest.approx(0.5)
+    assert len(warp_inputs) == 1
+    assert warp_inputs[0] is arrays[1]
 
 
 def test_register_scenes_forwards_configured_initial_matching_controls(monkeypatch):

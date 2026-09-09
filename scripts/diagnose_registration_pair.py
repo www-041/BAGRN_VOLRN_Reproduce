@@ -54,6 +54,38 @@ def _json_safe(value):
     return value
 
 
+def _metric_text(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    return f"{value:.3f}" if np.isfinite(value) else "N/A"
+
+
+def _log_stage_validation_summary(registration):
+    """Log paired HOLDOUT metrics with the fixed before-minus-after meaning."""
+    global_quality = registration.get("global_only_quality", {}) or {}
+    final_quality = registration.get("quality", {}) or {}
+    comparison = registration.get("stage_validation_comparison", {}) or {}
+    logger.info(
+        "global-only holdout: quality=%s, median=%s, rmse=%s, p95=%s",
+        global_quality.get("quality", "unknown"),
+        _metric_text(global_quality.get("median")),
+        _metric_text(global_quality.get("rmse")),
+        _metric_text(global_quality.get("p95")),
+    )
+    logger.info(
+        "final holdout: quality=%s, median=%s, rmse=%s, p95=%s; "
+        "delta_rmse=%s, delta_p95=%s (global-only minus final; positive means improvement)",
+        final_quality.get("quality", "unknown"),
+        _metric_text(final_quality.get("median")),
+        _metric_text(final_quality.get("rmse")),
+        _metric_text(final_quality.get("p95")),
+        _metric_text(comparison.get("rmse_improvement")),
+        _metric_text(comparison.get("p95_improvement")),
+    )
+
+
 def _initial_global_shifts(registration, scene_ids):
     """Return pre-refinement shifts when the schema records them."""
     diagnostics = registration.get("diagnostics", {}) or {}
@@ -147,6 +179,14 @@ def build_diagnostic_payload(registration, scene_ids, output_dir):
         "holdout": diagnostics.get("holdout", {}),
         "local_controls": diagnostics.get("local_controls", {}),
         "local_field": diagnostics.get("local_field", {}),
+        "global_only_quality": registration.get("global_only_quality"),
+        "global_only_validation": registration.get("global_only_validation"),
+        "stage_validation_comparison": registration.get(
+            "stage_validation_comparison"
+        ),
+        "holdout_local_field_samples": registration.get(
+            "holdout_local_field_samples", {}
+        ),
         "final_validation": final_validation,
         "quality": quality,
         "quality_classification": classification,
@@ -313,7 +353,7 @@ def _save_field_png(path, field, title):
     plt.close(fig)
 
 
-def _save_validation_holdout_png(path, validation, shape):
+def _save_validation_holdout_png(path, validation, shape, title=None):
     """Draw final validation blocks and their rejection/acceptance state."""
     import matplotlib.pyplot as plt
     from matplotlib.patches import Rectangle
@@ -329,7 +369,7 @@ def _save_validation_holdout_png(path, validation, shape):
                 (block.get("validation_col", 0), block.get("validation_row", 0)),
                 size, size, fill=False, edgecolor=color, linewidth=0.5,
             ))
-    ax.set_title("Final holdout validation blocks")
+    ax.set_title(title or "Final holdout validation blocks")
     ax.set_xlabel("reference pixel x")
     ax.set_ylabel("reference pixel y")
     fig.tight_layout()
@@ -338,18 +378,24 @@ def _save_validation_holdout_png(path, validation, shape):
 
 
 def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
-                               registration_band_idx=0, mosaic_mode="weighted"):
+                               registration_band_idx=0, mosaic_mode="weighted",
+                               *, allow_quality_fail_for_diagnostics=False):
     """Write registered images, a red-green overlay, and a diagnostic mosaic."""
     quality = registration.get("quality", {}) or {}
-    if (
-        str(registration.get("status", "")).lower() == "fail"
-        or registration.get("connected") is False
-        or quality.get("quality") == "fail"
-    ):
-        raise ValueError("cannot write registered artifacts for a failed registration")
     registered = registration.get("registered_arrays")
-    if not registered or len(registered) < 2:
-        raise ValueError("registration result does not contain two registered arrays")
+    diagnostics = registration.get("diagnostics", {}) or {}
+    blocked = bool(diagnostics.get("registration_blocked"))
+    connected = registration.get("connected") is not False
+    quality_fail = quality.get("quality") == "fail"
+    has_registered = bool(registered) and len(registered) >= 2
+    if blocked or not connected or not has_registered:
+        raise ValueError(
+            "cannot write diagnostic registration rasters for blocked/disconnected result"
+        )
+    if quality_fail and not allow_quality_fail_for_diagnostics:
+        raise ValueError("quality-failed registration artifacts require diagnostic opt-in")
+
+    global_only = registration.get("global_only_arrays") or registered
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -357,24 +403,46 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
     nodatas = scene_data["nodata_values"]
     crs = scene_data["crs"]
 
+    def write_pair(prefix, arrays):
+        reference_path = output_path / f"{prefix}_reference.tif"
+        target_path = output_path / f"{prefix}_target.tif"
+        write_geotiff(str(reference_path), arrays[0], transforms[0], crs,
+                      nodata=nodatas[0], dtype="float32")
+        write_geotiff(str(target_path), arrays[1], transforms[1], crs,
+                      nodata=nodatas[1], dtype="float32")
+
+        reference_band = _registration_band(arrays[0], registration_band_idx)
+        target_band = _registration_band(arrays[1], registration_band_idx)
+        target_on_reference = _reproject_to_reference(
+            target_band, transforms[1], crs, nodatas[1], reference_band.shape,
+            transforms[0], crs,
+        )
+        reference_green = _stretch_for_overlay(reference_band, nodatas[0])
+        target_red = _stretch_for_overlay(target_on_reference, None)
+        overlay = np.stack([
+            target_red, reference_green, np.zeros_like(reference_green)
+        ], axis=0)
+        overlay_path = output_path / f"{prefix}_red_green_overlay.tif"
+        write_geotiff(str(overlay_path), overlay, transforms[0], crs,
+                      nodata=0, dtype="uint8")
+        return reference_path, target_path, overlay_path, reference_band, overlay
+
+    global_reference_path, global_target_path, global_overlay_path, _, _ = write_pair(
+        "registered_global_only", global_only
+    )
+    final_reference_path, final_target_path, final_overlay_path, reference_band, final_overlay = write_pair(
+        "registered_final", registered
+    )
+    # Keep the original artifact names as compatibility aliases for existing
+    # consumers while making the two validation stages explicit.
     reference_path = output_path / "registered_reference.tif"
     target_path = output_path / "registered_target.tif"
+    overlay_path = output_path / "registered_red_green_overlay.tif"
     write_geotiff(str(reference_path), registered[0], transforms[0], crs,
                   nodata=nodatas[0], dtype="float32")
     write_geotiff(str(target_path), registered[1], transforms[1], crs,
                   nodata=nodatas[1], dtype="float32")
-
-    reference_band = _registration_band(registered[0], registration_band_idx)
-    target_band = _registration_band(registered[1], registration_band_idx)
-    target_on_reference = _reproject_to_reference(
-        target_band, transforms[1], crs, nodatas[1], reference_band.shape,
-        transforms[0], crs,
-    )
-    reference_green = _stretch_for_overlay(reference_band, nodatas[0])
-    target_red = _stretch_for_overlay(target_on_reference, None)
-    overlay = np.stack([target_red, reference_green, np.zeros_like(reference_green)], axis=0)
-    overlay_path = output_path / "registered_red_green_overlay.tif"
-    write_geotiff(str(overlay_path), overlay, transforms[0], crs,
+    write_geotiff(str(overlay_path), final_overlay, transforms[0], crs,
                   nodata=0, dtype="uint8")
 
     mosaic_path = output_path / f"diagnostic_mosaic_{mosaic_mode}.tif"
@@ -391,7 +459,6 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         mode=mosaic_mode,
     )
 
-    diagnostics = registration.get("diagnostics", {}) or {}
     masks_by_edge = registration.get("diagnostic_masks", {}) or {}
     edge_key = next(iter(masks_by_edge), None)
     png_paths = {}
@@ -411,7 +478,23 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         filtered_path = output_path / "filtered_residual_vectors.png"
         _save_residual_vectors(str(filtered_path), robust, "Filtered residual vectors")
         png_paths["filtered_residual_vectors"] = str(filtered_path)
-        validation_path = output_path / "validation_holdout_blocks.png"
+        validation_path = output_path / "final_holdout_validation_blocks.png"
+        comparison = registration.get("stage_validation_comparison", {}) or {}
+        delta_rmse = comparison.get("rmse_improvement")
+        title = "Final holdout validation blocks"
+        try:
+            if np.isfinite(float(delta_rmse)):
+                title += f" (global to final delta RMSE={float(delta_rmse):+.3f})"
+        except (TypeError, ValueError):
+            pass
+        _save_validation_holdout_png(
+            str(validation_path), registration.get("final_validation", {}),
+            reference_band.shape, title=title,
+        )
+        png_paths["validation_holdout_blocks"] = str(validation_path)
+
+    if "validation_holdout_blocks" not in png_paths:
+        validation_path = output_path / "final_holdout_validation_blocks.png"
         _save_validation_holdout_png(
             str(validation_path), registration.get("final_validation", {}),
             reference_band.shape,
@@ -434,13 +517,20 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
             "Local displacement magnitude",
         )
         png_paths["local_displacement_magnitude"] = str(magnitude_path)
-    png_paths["global_registered_overlay"] = str(overlay_path)
-    png_paths["final_registered_overlay"] = str(overlay_path)
+    png_paths["global_registered_overlay"] = str(global_overlay_path)
+    png_paths["final_registered_overlay"] = str(final_overlay_path)
 
     return {
         "registered_reference": str(reference_path),
         "registered_target": str(target_path),
         "red_green_overlay": str(overlay_path),
+        "registered_global_only_reference": str(global_reference_path),
+        "registered_global_only_target": str(global_target_path),
+        "registered_global_only_red_green_overlay": str(global_overlay_path),
+        "registered_final_reference": str(final_reference_path),
+        "registered_final_target": str(final_target_path),
+        "registered_final_red_green_overlay": str(final_overlay_path),
+        "final_holdout_validation_blocks": str(output_path / "final_holdout_validation_blocks.png"),
         "diagnostic_mosaic": str(mosaic_path),
         "scene_ids": [scene_ids[0], scene_ids[1]],
         "mosaic_mode": mosaic_mode,
@@ -537,13 +627,30 @@ def main(argv=None):
                         f"is below required quality {required_quality!r}"
                     )
             failure = {"code": code, "reason": reason}
+        blocked = bool((registration.get("diagnostics") or {}).get(
+            "registration_blocked"
+        ))
+        has_registered = (
+            registration.get("registered_arrays") is not None
+            and len(registration.get("registered_arrays", [])) >= 2
+        )
+        if connected and not blocked and has_registered and quality_name == "fail":
+            artifacts = write_diagnostic_artifacts(
+                registration, scene_data, scene_ids, output_dir,
+                registration_band_idx=pipeline.registration_band_idx,
+                mosaic_mode=args.mosaic_mode,
+                allow_quality_fail_for_diagnostics=True,
+            )
+        else:
+            artifacts = {}
         registration_for_payload = {
             **registration,
             "status": "fail",
             "failure": failure,
-            "diagnostic_artifacts": {},
+            "diagnostic_artifacts": artifacts,
         }
         build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
+        _log_stage_validation_summary(registration)
         logger.error(
             "Registration diagnostic failed: connected=%s, quality=%s, required=%s",
             connected, quality.get("quality", "unknown"), required_quality,
@@ -562,6 +669,7 @@ def main(argv=None):
         "diagnostic_artifacts": artifacts,
     }
     build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
+    _log_stage_validation_summary(registration)
 
     logger.info("Connected: %s", registration.get("connected", False))
     logger.info("Quality: %s", quality.get("quality", "unknown"))

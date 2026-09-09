@@ -6,6 +6,7 @@ Task 1-6 of ghosting fix plan:
 - Quality classification
 """
 
+import numpy as np
 import pytest
 
 from src.experiment_config import _dict_to_config, validate_config
@@ -250,6 +251,214 @@ def test_local_smoothing_candidates_allow_zero_and_distinct_values():
 def test_local_cv_improvement_thresholds_must_be_nonnegative(key):
     cfg = _config_with_local_rbf_params({key: -0.01})
     assert any(key in error for error in validate_config(cfg, skip_file_check=True))
+
+
+def _validation_result_for_comparison(blocks, *, rmse, p95, median):
+    return {
+        "edges": [{"idx_i": 0, "idx_j": 1, "blocks": blocks}],
+        "overall": {"rmse": rmse, "p95": p95, "median": median},
+    }
+
+
+def _validation_block(row, col, magnitude, *, accepted=True, reason=None):
+    return {
+        "validation_row": row,
+        "validation_col": col,
+        "residual_dx": magnitude,
+        "residual_dy": 0.0,
+        "residual_magnitude": magnitude,
+        "accepted": accepted,
+        "reject_reason": reason,
+    }
+
+
+def test_compare_registration_validations_aligns_blocks_by_reserved_coordinates():
+    from src.multiband_pipeline import _compare_registration_validations
+
+    before = _validation_result_for_comparison(
+        [_validation_block(10, 20, 2.0), _validation_block(30, 40, 1.0)],
+        rmse=2.0, p95=2.5, median=1.5,
+    )
+    after = _validation_result_for_comparison(
+        [_validation_block(30, 40, 0.5), _validation_block(10, 20, 1.0)],
+        rmse=1.0, p95=1.5, median=0.75,
+    )
+
+    result = _compare_registration_validations(before, after)
+
+    assert result["available"] is True
+    assert result["n_blocks_common"] == 2
+    assert {(b["validation_row"], b["validation_col"]): b["magnitude_improvement"]
+            for b in result["edges"][0]["blocks"]} == {(10, 20): 1.0, (30, 40): 0.5}
+
+
+def test_compare_registration_validations_uses_before_minus_after_sign():
+    from src.multiband_pipeline import _compare_registration_validations
+
+    before = _validation_result_for_comparison(
+        [_validation_block(0, 0, 2.0)], rmse=2.0, p95=2.0, median=2.0,
+    )
+    after = _validation_result_for_comparison(
+        [_validation_block(0, 0, 0.5)], rmse=0.5, p95=0.5, median=0.5,
+    )
+
+    result = _compare_registration_validations(before, after)
+
+    assert result["rmse_improvement"] == pytest.approx(1.5)
+    assert result["p95_improvement"] == pytest.approx(1.5)
+    assert result["median_improvement"] == pytest.approx(1.5)
+    assert result["edges"][0]["blocks"][0]["magnitude_improvement"] == pytest.approx(1.5)
+
+
+def test_compare_registration_validations_preserves_rejected_blocks():
+    from src.multiband_pipeline import _compare_registration_validations
+
+    before = _validation_result_for_comparison(
+        [_validation_block(0, 0, 1.0)], rmse=1.0, p95=1.0, median=1.0,
+    )
+    after = _validation_result_for_comparison(
+        [_validation_block(0, 0, 4.74, accepted=False, reason="large_shift")],
+        rmse=None, p95=None, median=None,
+    )
+
+    result = _compare_registration_validations(before, after)
+    block = result["edges"][0]["blocks"][0]
+
+    assert result["n_blocks_common"] == 1
+    assert block["after"]["accepted"] is False
+    assert block["after"]["reject_reason"] == "large_shift"
+
+
+def test_compare_registration_validations_reports_unavailable_when_no_common_blocks():
+    from src.multiband_pipeline import _compare_registration_validations
+
+    before = _validation_result_for_comparison(
+        [_validation_block(0, 0, 1.0)], rmse=1.0, p95=1.0, median=1.0,
+    )
+    after = _validation_result_for_comparison(
+        [_validation_block(0, 64, 0.5)], rmse=0.5, p95=0.5, median=0.5,
+    )
+
+    result = _compare_registration_validations(before, after)
+
+    assert result["available"] is False
+    assert result["n_blocks_common"] == 0
+    assert result["reason"] == "no common validation blocks"
+
+
+def test_final_quality_is_still_driven_only_by_final_validation():
+    from src.coregistration import aggregate_final_validation_quality
+
+    final_quality = aggregate_final_validation_quality(
+        [{"idx_i": 0, "idx_j": 1,
+          "stats": {"median": 0.9, "rmse": 1.2, "p95": 1.8,
+                    "mean_confidence": 0.8, "n_accepted": 5},
+          "failure_reason": None}],
+        {"final_min_blocks": 5, "pass_min_mean_confidence": 0.5,
+         "pass_max_median": 0.35, "pass_max_rmse": 0.6, "pass_max_p95": 1.0,
+         "warn_min_mean_confidence": 0.45, "warn_max_median": 0.5,
+         "warn_max_rmse": 0.75, "warn_max_p95": 1.25},
+    )
+    comparison = {"available": True, "rmse_improvement": 10.0,
+                  "p95_improvement": 10.0, "median_improvement": 10.0}
+
+    assert comparison["rmse_improvement"] > 0
+    assert final_quality["quality"] == "fail"
+
+
+def test_stage_validation_comparison_is_exposed_in_registration_result_and_diagnostics():
+    from src.multiband_pipeline import _compare_registration_validations
+
+    before = _validation_result_for_comparison(
+        [_validation_block(0, 0, 1.0)], rmse=1.0, p95=1.0, median=1.0,
+    )
+    after = _validation_result_for_comparison(
+        [_validation_block(0, 0, 0.5)], rmse=0.5, p95=0.5, median=0.5,
+    )
+    comparison = _compare_registration_validations(before, after)
+
+    registration = {
+        "global_only_quality": before["overall"],
+        "global_only_validation": before,
+        "final_validation": after,
+        "quality": after["overall"],
+        "stage_validation_comparison": comparison,
+        "diagnostics": {"stage_validation_comparison": comparison},
+    }
+
+    assert registration["diagnostics"]["stage_validation_comparison"] is comparison
+    assert registration["stage_validation_comparison"]["n_blocks_common"] == 1
+
+
+def _validation_with_sample_block():
+    return {
+        "edges": [{
+            "idx_i": 0,
+            "idx_j": 1,
+            "blocks": [{
+                "validation_row": 2,
+                "validation_col": 3,
+                "center_x": 3.0,
+                "center_y": 2.0,
+                "residual_dx": 0.4,
+                "residual_dy": -0.2,
+                "residual_magnitude": 0.4472135955,
+                "accepted": True,
+                "reject_reason": None,
+            }],
+        }],
+    }
+
+
+def test_sample_local_field_uses_actual_faded_field_values():
+    from src.multiband_pipeline import _sample_local_field_at_validation_blocks
+
+    dx = np.full((6, 7), 1.25, dtype=float)
+    dy = np.full((6, 7), -0.75, dtype=float)
+    result = _sample_local_field_at_validation_blocks(
+        _validation_with_sample_block(), {1: dx}, {1: dy},
+        {"used_for_scenes": [1], "scenes": {"1": {"selected_smoothing": 0.5}}},
+    )
+
+    sample = result["edges"][0]["blocks"][0]
+    assert sample["predicted_local_dx"] == pytest.approx(1.25)
+    assert sample["predicted_local_dy"] == pytest.approx(-0.75)
+    assert sample["predicted_local_magnitude"] == pytest.approx(np.hypot(1.25, -0.75))
+    assert sample["selected_smoothing"] == 0.5
+    assert sample["field_available"] is True
+
+
+def test_sample_local_field_preserves_validation_residual_and_nearest_training_distance():
+    from src.multiband_pipeline import _sample_local_field_at_validation_blocks
+
+    validation = _validation_with_sample_block()
+    result = _sample_local_field_at_validation_blocks(
+        validation, {1: np.ones((6, 7))}, {1: np.ones((6, 7))},
+        {"used_for_scenes": [1],
+         "control_points": {"1": [[3.0, 5.0], [10.0, 10.0]]},
+         "scenes": {"1": {"selected_smoothing": 0.1}}},
+    )
+
+    sample = result["edges"][0]["blocks"][0]
+    assert sample["final_residual_dx"] == pytest.approx(0.4)
+    assert sample["final_residual_dy"] == pytest.approx(-0.2)
+    assert sample["final_residual_magnitude"] == pytest.approx(0.4472135955)
+    assert sample["nearest_training_distance"] == pytest.approx(3.0)
+
+
+def test_sample_local_field_marks_out_of_bounds_center_unavailable():
+    from src.multiband_pipeline import _sample_local_field_at_validation_blocks
+
+    validation = _validation_with_sample_block()
+    validation["edges"][0]["blocks"][0]["center_x"] = 99.0
+    result = _sample_local_field_at_validation_blocks(
+        validation, {1: np.ones((6, 7))}, {1: np.ones((6, 7))},
+        {"used_for_scenes": [1]},
+    )
+
+    sample = result["edges"][0]["blocks"][0]
+    assert sample["field_available"] is False
+    assert sample["predicted_local_dx"] is None
 
 
 @pytest.mark.parametrize(

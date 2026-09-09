@@ -695,6 +695,254 @@ def _translate_training_measurements_to_crop(
     return translated, offsets
 
 
+def _validation_block_key(block):
+    """Return the stable reserved-window key used for before/after pairing."""
+    return int(block["validation_row"]), int(block["validation_col"])
+
+
+def _compare_registration_validations(before_validation, after_validation):
+    """Compare two validations that were run on the same reserved windows."""
+    before_validation = before_validation or {}
+    after_validation = after_validation or {}
+
+    def metric(validation, name):
+        value = (validation.get("overall") or {}).get(name)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return value if np.isfinite(value) else None
+
+    before_edges = {}
+    for edge in before_validation.get("edges", []) or []:
+        try:
+            edge_key = (int(edge["idx_i"]), int(edge["idx_j"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        before_edges[edge_key] = edge
+    after_edges = {}
+    for edge in after_validation.get("edges", []) or []:
+        try:
+            edge_key = (int(edge["idx_i"]), int(edge["idx_j"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        after_edges[edge_key] = edge
+
+    comparison_edges = []
+    n_improved = 0
+    n_worsened = 0
+    n_unchanged = 0
+    n_blocks_common = 0
+    epsilon = 1e-12
+    for edge_key in sorted(set(before_edges) & set(after_edges)):
+        before_blocks = {}
+        for block in before_edges[edge_key].get("blocks", []) or []:
+            try:
+                before_blocks[_validation_block_key(block)] = block
+            except (KeyError, TypeError, ValueError):
+                continue
+        after_blocks = {}
+        for block in after_edges[edge_key].get("blocks", []) or []:
+            try:
+                after_blocks[_validation_block_key(block)] = block
+            except (KeyError, TypeError, ValueError):
+                continue
+        common_keys = sorted(set(before_blocks) & set(after_blocks))
+        if not common_keys:
+            continue
+        paired_blocks = []
+        for block_key in common_keys:
+            before_block = dict(before_blocks[block_key])
+            after_block = dict(after_blocks[block_key])
+            before_mag = before_block.get("residual_magnitude")
+            after_mag = after_block.get("residual_magnitude")
+            try:
+                before_mag = float(before_mag)
+                after_mag = float(after_mag)
+                magnitude_improvement = before_mag - after_mag
+                finite_magnitudes = np.isfinite(before_mag) and np.isfinite(after_mag)
+            except (TypeError, ValueError):
+                magnitude_improvement = None
+                finite_magnitudes = False
+            if finite_magnitudes:
+                if magnitude_improvement > epsilon:
+                    n_improved += 1
+                elif magnitude_improvement < -epsilon:
+                    n_worsened += 1
+                else:
+                    n_unchanged += 1
+            paired_blocks.append({
+                "validation_row": block_key[0],
+                "validation_col": block_key[1],
+                "before": before_block,
+                "after": after_block,
+                "magnitude_improvement": (
+                    float(magnitude_improvement) if finite_magnitudes else None
+                ),
+            })
+        n_blocks_common += len(paired_blocks)
+        comparison_edges.append({
+            "idx_i": edge_key[0],
+            "idx_j": edge_key[1],
+            "blocks": paired_blocks,
+        })
+
+    before_rmse = metric(before_validation, "rmse")
+    after_rmse = metric(after_validation, "rmse")
+    before_p95 = metric(before_validation, "p95")
+    after_p95 = metric(after_validation, "p95")
+    before_median = metric(before_validation, "median")
+    after_median = metric(after_validation, "median")
+
+    def improvement(before, after):
+        return before - after if before is not None and after is not None else None
+
+    available = n_blocks_common > 0
+    return {
+        "available": available,
+        "reason": None if available else "no common validation blocks",
+        "rmse_before": before_rmse,
+        "rmse_after": after_rmse,
+        "rmse_improvement": improvement(before_rmse, after_rmse),
+        "p95_before": before_p95,
+        "p95_after": after_p95,
+        "p95_improvement": improvement(before_p95, after_p95),
+        "median_before": before_median,
+        "median_after": after_median,
+        "median_improvement": improvement(before_median, after_median),
+        "n_blocks_common": int(n_blocks_common),
+        "n_improved": int(n_improved),
+        "n_worsened": int(n_worsened),
+        "n_unchanged": int(n_unchanged),
+        "edges": comparison_edges,
+    }
+
+
+def _sample_local_field_at_validation_blocks(
+    validation, local_dx_fields, local_dy_fields, local_refinement,
+):
+    """Sample the applied, faded local field at final HOLDOUT centers."""
+    validation = validation or {}
+    local_refinement = local_refinement or {}
+    scenes = local_refinement.get("scenes", {}) or {}
+    control_points_by_scene = local_refinement.get("control_points", {}) or {}
+    block_size = int(validation.get("validation_block_size_selected") or 192)
+
+    def get_field(fields, scene_idx):
+        if isinstance(fields, dict):
+            return fields.get(scene_idx, fields.get(str(scene_idx)))
+        try:
+            return fields[scene_idx]
+        except (IndexError, KeyError, TypeError):
+            return None
+
+    def get_points(scene_idx):
+        points = control_points_by_scene.get(
+            scene_idx, control_points_by_scene.get(str(scene_idx), [])
+        )
+        if not len(points):
+            scene = scenes.get(str(scene_idx), scenes.get(scene_idx, {})) or {}
+            points = scene.get("control_points", scene.get("training_points", []))
+        try:
+            points = np.asarray(points, dtype=float)
+            return points if points.ndim == 2 and points.shape[1] == 2 else None
+        except (TypeError, ValueError):
+            return None
+
+    sampled_edges = []
+    for edge in validation.get("edges", []) or []:
+        try:
+            idx_i = int(edge["idx_i"])
+            idx_j = int(edge["idx_j"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        scene_idx = idx_j if get_field(local_dx_fields, idx_j) is not None else idx_i
+        dx_field = get_field(local_dx_fields, scene_idx)
+        dy_field = get_field(local_dy_fields, scene_idx)
+        dx_field = np.asarray(dx_field, dtype=float) if dx_field is not None else None
+        dy_field = np.asarray(dy_field, dtype=float) if dy_field is not None else None
+        scene_result = scenes.get(str(scene_idx), scenes.get(scene_idx, {})) or {}
+        field_stats = scene_result.get("field_stats", {}) or {}
+        field_used = bool(scene_result.get("accepted")) or bool(field_stats)
+        field_used = field_used or scene_idx in set(
+            local_refinement.get("used_for_scenes", [])
+        )
+        fields_usable = (
+            dx_field is not None and dy_field is not None
+            and dx_field.ndim == 2 and dy_field.ndim == 2
+            and dx_field.shape == dy_field.shape and field_used
+        )
+        selected_smoothing = scene_result.get(
+            "selected_smoothing", field_stats.get("smoothing")
+        )
+        points = get_points(scene_idx)
+        sampled_blocks = []
+        for block in edge.get("blocks", []) or []:
+            try:
+                row = int(block["validation_row"])
+                col = int(block["validation_col"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            center_x = block.get("center_x")
+            center_y = block.get("center_y")
+            try:
+                center_x = float(center_x) if center_x is not None else col + block_size / 2.0
+                center_y = float(center_y) if center_y is not None else row + block_size / 2.0
+            except (TypeError, ValueError):
+                center_x = col + block_size / 2.0
+                center_y = row + block_size / 2.0
+            nearest_distance = None
+            if points is not None and len(points):
+                distances = np.hypot(points[:, 0] - center_x, points[:, 1] - center_y)
+                if np.all(np.isfinite(distances)):
+                    nearest_distance = float(np.min(distances))
+
+            predicted_dx = None
+            predicted_dy = None
+            field_available = False
+            if fields_usable:
+                field_row = int(round(center_y))
+                field_col = int(round(center_x))
+                if (0 <= field_row < dx_field.shape[0]
+                        and 0 <= field_col < dx_field.shape[1]):
+                    value_dx = float(dx_field[field_row, field_col])
+                    value_dy = float(dy_field[field_row, field_col])
+                    if np.isfinite(value_dx) and np.isfinite(value_dy):
+                        predicted_dx = value_dx
+                        predicted_dy = value_dy
+                        field_available = True
+            residual_dx = block.get("residual_dx")
+            residual_dy = block.get("residual_dy")
+            residual_magnitude = block.get("residual_magnitude")
+            sampled_blocks.append({
+                "validation_row": row,
+                "validation_col": col,
+                "center_x": center_x,
+                "center_y": center_y,
+                "scene_idx": scene_idx,
+                "predicted_local_dx": predicted_dx,
+                "predicted_local_dy": predicted_dy,
+                "predicted_local_magnitude": (
+                    float(np.hypot(predicted_dx, predicted_dy))
+                    if field_available else None
+                ),
+                "field_available": field_available,
+                "selected_smoothing": selected_smoothing,
+                "nearest_training_distance": nearest_distance,
+                "final_residual_dx": residual_dx,
+                "final_residual_dy": residual_dy,
+                "final_residual_magnitude": residual_magnitude,
+            })
+        sampled_edges.append({
+            "idx_i": idx_i,
+            "idx_j": idx_j,
+            "blocks": sampled_blocks,
+        })
+    result = dict(validation)
+    result["edges"] = sampled_edges
+    return result
+
+
 def _validate_final_registration_arrays(
     registered_arrays,
     registration_band_idx,
@@ -2126,23 +2374,50 @@ class MultibandPipeline:
             "fallback_scenes": [],
             "cv_results": {},
             "scenes": {},
+            "control_points": {},
             "rematch_failures": [],
         }
 
-        # Rematch only the global-only arrays generated from ORIGINAL inputs.
+        # Preserve a global-only stage from ORIGINAL inputs for the paired
+        # same-HOLDOUT causal comparison.  The reference stays unchanged;
+        # every target is warped once with the final global shift and no local
+        # field before local residual controls are built.
         global_only_arrays = []
+        for idx in range(n_images):
+            gdx, gdy = global_shifts[idx]
+            if idx == self.control_idx:
+                global_only_arrays.append(arrays[idx].copy())
+                continue
+            h, w = arrays[idx].shape[1:]
+            global_only_arrays.append(warp_multiband_with_displacement_field(
+                arrays[idx], gdx, gdy,
+                np.zeros((h, w), dtype=np.float64),
+                np.zeros((h, w), dtype=np.float64),
+                nodata_values[idx],
+            ))
+
+        global_only_quality, global_only_validation = _validate_final_registration_arrays(
+            global_only_arrays,
+            registration_band_idx,
+            transforms,
+            nodata_values,
+            spanning_tree_edges,
+            pair_measurements,
+            reg_params,
+            holdout_contexts=holdout_contexts,
+        )
+        logger.info(
+            "global-only HOLDOUT: quality=%s, median=%s, rmse=%s, p95=%s",
+            global_only_quality.get("quality"),
+            global_only_quality.get("median"),
+            global_only_quality.get("rmse"),
+            global_only_quality.get("p95"),
+        )
+
+        # Rematch only the global-only arrays generated from ORIGINAL inputs.
         post_global_pairs = []
         post_global_failures = []
         if local_enabled:
-            for idx in range(n_images):
-                gdx, gdy = global_shifts[idx]
-                h, w = arrays[idx].shape[1:]
-                global_only_arrays.append(warp_multiband_with_displacement_field(
-                    arrays[idx], gdx, gdy,
-                    np.zeros((h, w), dtype=np.float64),
-                    np.zeros((h, w), dtype=np.float64),
-                    nodata_values[idx],
-                ))
             local_confidence = float(reg_params.get("local_confidence_threshold", 0.60))
             post_global_result = _collect_post_global_residual_pairs(
                 global_only_arrays, registration_band_idx, transforms, nodata_values,
@@ -2235,6 +2510,10 @@ class MultibandPipeline:
             else:
                 controls = _empty_local_controls()
 
+            local_refinement["control_points"][str(idx)] = np.asarray(
+                controls.get("points_xy", []), dtype=float
+            ).copy()
+
             scene_failures = [
                 failure for failure in post_global_failures
                 if idx in (failure["idx_i"], failure["idx_j"])
@@ -2314,6 +2593,22 @@ class MultibandPipeline:
             reg_params,
             holdout_contexts=holdout_contexts,
         )
+        stage_validation_comparison = _compare_registration_validations(
+            global_only_validation, final_validation,
+        )
+        holdout_local_field_samples = _sample_local_field_at_validation_blocks(
+            final_validation, local_dx_fields, local_dy_fields, local_refinement,
+        )
+        logger.info(
+            "final HOLDOUT: quality=%s, median=%s, rmse=%s, p95=%s; "
+            "delta_rmse=%s, delta_p95=%s (global-only minus final)",
+            final_quality.get("quality"),
+            final_quality.get("median"),
+            final_quality.get("rmse"),
+            final_quality.get("p95"),
+            stage_validation_comparison.get("rmse_improvement"),
+            stage_validation_comparison.get("p95_improvement"),
+        )
         connected = not bool(unreachable)
         status, failure = _registration_status_and_failure(
             connected,
@@ -2351,6 +2646,7 @@ class MultibandPipeline:
 
         return {
             "registered_arrays": registered_arrays,
+            "global_only_arrays": global_only_arrays,
             "global_shifts": global_shifts,
             "local_dx_fields": local_dx_fields,
             "local_dy_fields": local_dy_fields,
@@ -2365,6 +2661,10 @@ class MultibandPipeline:
             "rejected_edges": rejected_list,
             "quality": final_quality,
             "final_validation": final_validation,
+            "global_only_quality": global_only_quality,
+            "global_only_validation": global_only_validation,
+            "stage_validation_comparison": stage_validation_comparison,
+            "holdout_local_field_samples": holdout_local_field_samples,
             "diagnostic_masks": diagnostic_masks,
             "connected_components": [sorted(c) for c in components],
             "unreachable_scenes": unreachable_ids,
@@ -2392,6 +2692,10 @@ class MultibandPipeline:
                 "holdout": holdout_diagnostics,
                 "local_controls": local_control_diagnostics,
                 "local_field": local_field_diagnostics,
+                "global_only_quality": global_only_quality,
+                "global_only_validation": global_only_validation,
+                "stage_validation_comparison": stage_validation_comparison,
+                "holdout_local_field_samples": holdout_local_field_samples,
                 "final_validation": final_validation,
                 "quality": final_quality,
                 "elapsed_sec": elapsed,
