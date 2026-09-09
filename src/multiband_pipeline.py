@@ -105,6 +105,237 @@ def _local_spatial_group_labels(points_xy, n_groups_x=4, n_groups_y=4):
     return y_bin * n_groups_x + x_bin
 
 
+def _build_local_cv_fold_plan(points_xy, params):
+    """Build one deterministic spatial fold plan shared by every candidate."""
+    params = params or {}
+    points = np.asarray(points_xy, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2:
+        points = np.empty((0, 2), dtype=float)
+    groups = _local_spatial_group_labels(points)
+    group_ids = np.unique(groups)
+    folds = []
+    for group_id in group_ids.tolist():
+        test_idx = np.flatnonzero(groups == group_id).astype(int)
+        train_idx = np.flatnonzero(groups != group_id).astype(int)
+        if len(test_idx) == 0 or len(train_idx) < 3:
+            continue
+        folds.append({
+            "group_id": int(group_id),
+            "train_idx": train_idx,
+            "test_idx": test_idx,
+        })
+
+    validation_indices = (
+        np.concatenate([fold["test_idx"] for fold in folds]).astype(int)
+        if folds else np.array([], dtype=int)
+    )
+    n_validation_controls = int(len(validation_indices))
+    min_folds = int(params.get("local_cv_min_folds", 3))
+    min_validation_controls = int(params.get(
+        "local_cv_min_validation_controls",
+        min(int(params.get("local_min_controls", 12)), len(points)),
+    ))
+    reasons = []
+    if len(folds) < min_folds:
+        reasons.append(f"validation folds {len(folds)} < {min_folds}")
+    if n_validation_controls < min_validation_controls:
+        reasons.append(
+            f"validation controls {n_validation_controls} < {min_validation_controls}"
+        )
+    return {
+        "available": not reasons,
+        "groups": groups,
+        "folds": folds,
+        "n_folds_attempted": int(len(group_ids)),
+        "n_folds": int(len(folds)),
+        "n_validation_controls": n_validation_controls,
+        "validation_indices": validation_indices,
+        "validation_coverage": float(n_validation_controls / len(points)) if len(points) else 0.0,
+        "failure_reason": "; ".join(reasons) or None,
+    }
+
+
+def _evaluate_local_rbf_smoothing_candidate(controls, fold_plan, smoothing, params):
+    """Evaluate one smoothing value on the fixed spatial folds."""
+    from src.coregistration import fit_local_rbf
+
+    points = np.asarray(controls.get("points_xy", []), dtype=float)
+    residual_dx = np.asarray(controls.get("residual_dx", []), dtype=float)
+    residual_dy = np.asarray(controls.get("residual_dy", []), dtype=float)
+    base = {
+        "smoothing": float(smoothing),
+        "available": False,
+        "candidate_rmse": None,
+        "candidate_p95": None,
+        "baseline_rmse": None,
+        "baseline_p95": None,
+        "n_folds": 0,
+        "n_folds_attempted": int(fold_plan.get("n_folds_attempted", 0)),
+        "n_validation_controls": 0,
+        "validation_coverage": 0.0,
+        "failed_group_ids": [],
+        "failure_reason": None,
+    }
+    if not fold_plan.get("available", False):
+        base["failure_reason"] = fold_plan.get(
+            "failure_reason", "spatial CV fold plan unavailable"
+        )
+        return base
+    if len(points) != len(residual_dx) or len(points) != len(residual_dy):
+        base["failure_reason"] = "control and residual arrays have mismatched lengths"
+        return base
+
+    baseline_errors = []
+    candidate_errors = []
+    failed_group_ids = []
+    for fold in fold_plan["folds"]:
+        group_id = int(fold["group_id"])
+        train_idx = np.asarray(fold["train_idx"], dtype=int)
+        test_idx = np.asarray(fold["test_idx"], dtype=int)
+        try:
+            rbf_dx, rbf_dy, coord_min, coord_max = fit_local_rbf(
+                points[train_idx], residual_dx[train_idx], residual_dy[train_idx],
+                smoothing=float(smoothing), neighbors=min(20, len(train_idx)),
+            )
+            tx = (points[test_idx, 0] - coord_min[0]) / max(
+                coord_max[0] - coord_min[0], 1e-10
+            )
+            ty = (points[test_idx, 1] - coord_min[1]) / max(
+                coord_max[1] - coord_min[1], 1e-10
+            )
+            normalized = np.column_stack([tx, ty])
+            predicted_dx = np.asarray(rbf_dx(normalized), dtype=float).reshape(-1)
+            predicted_dy = np.asarray(rbf_dy(normalized), dtype=float).reshape(-1)
+            if len(predicted_dx) != len(test_idx) or len(predicted_dy) != len(test_idx):
+                raise ValueError("prediction shape does not match validation controls")
+            if not np.all(np.isfinite(predicted_dx)) or not np.all(np.isfinite(predicted_dy)):
+                raise ValueError("non-finite local RBF predictions")
+            actual_dx = residual_dx[test_idx]
+            actual_dy = residual_dy[test_idx]
+            if not np.all(np.isfinite(actual_dx)) or not np.all(np.isfinite(actual_dy)):
+                raise ValueError("non-finite held-out residuals")
+            max_component = float(params.get(
+                "local_hard_max_component",
+                params.get("local_max_component", 2.5),
+            ))
+            predicted_dx = np.clip(predicted_dx, -max_component, max_component)
+            predicted_dy = np.clip(predicted_dy, -max_component, max_component)
+            baseline_errors.extend(np.hypot(actual_dx, actual_dy).tolist())
+            candidate_errors.extend(
+                np.hypot(actual_dx - predicted_dx, actual_dy - predicted_dy).tolist()
+            )
+        except Exception as exc:
+            failed_group_ids.append(group_id)
+            base["failure_reason"] = f"fold {group_id} failed: {exc}"
+            base["failed_group_ids"] = failed_group_ids
+            return base
+
+    baseline_errors = np.asarray(baseline_errors, dtype=float)
+    candidate_errors = np.asarray(candidate_errors, dtype=float)
+    if (len(baseline_errors) == 0 or len(baseline_errors) != len(candidate_errors)
+            or not np.all(np.isfinite(baseline_errors))
+            or not np.all(np.isfinite(candidate_errors))):
+        base["failure_reason"] = "held-out errors are incomplete or non-finite"
+        return base
+    base.update({
+        "available": True,
+        "baseline_rmse": float(np.sqrt(np.mean(baseline_errors ** 2))),
+        "candidate_rmse": float(np.sqrt(np.mean(candidate_errors ** 2))),
+        "baseline_p95": float(np.percentile(baseline_errors, 95)),
+        "candidate_p95": float(np.percentile(candidate_errors, 95)),
+        "n_folds": int(len(fold_plan["folds"])),
+        "n_validation_controls": int(len(baseline_errors)),
+        "validation_coverage": float(len(baseline_errors) / len(points)) if len(points) else 0.0,
+        "failure_reason": None,
+    })
+    return base
+
+
+def _select_local_rbf_cv_candidate(candidate_results, baseline_rmse, baseline_p95, params):
+    """Apply both held-out gates and select the deterministic best candidate."""
+    params = params or {}
+    rmse_threshold = float(params.get("local_cv_min_rmse_improvement", 0.10))
+    p95_threshold = float(params.get("local_cv_min_p95_improvement", 0.15))
+    normalized = []
+    for raw in candidate_results:
+        item = dict(raw)
+        item.setdefault("available", False)
+        item.setdefault("failed_group_ids", [])
+        item.setdefault("failure_reason", None)
+        item.setdefault("candidate_rmse", None)
+        item.setdefault("candidate_p95", None)
+        if item.get("available"):
+            try:
+                item["rmse_improvement"] = float(baseline_rmse) - float(item["candidate_rmse"])
+                item["p95_improvement"] = float(baseline_p95) - float(item["candidate_p95"])
+                item["passes_rmse_gate"] = bool(
+                    np.isfinite(item["rmse_improvement"])
+                    and item["rmse_improvement"] >= rmse_threshold
+                )
+                item["passes_p95_gate"] = bool(
+                    np.isfinite(item["p95_improvement"])
+                    and item["p95_improvement"] >= p95_threshold
+                )
+                item["passes_gate"] = bool(
+                    item["passes_rmse_gate"] and item["passes_p95_gate"]
+                )
+            except (TypeError, ValueError):
+                item["available"] = False
+                item["failure_reason"] = "candidate metrics are not finite numbers"
+        if not item.get("available"):
+            item.setdefault("rmse_improvement", None)
+            item.setdefault("p95_improvement", None)
+            item["passes_rmse_gate"] = False
+            item["passes_p95_gate"] = False
+            item["passes_gate"] = False
+        normalized.append(item)
+
+    available = [
+        item for item in normalized
+        if item.get("available") and np.isfinite(float(item["candidate_rmse"]))
+        and np.isfinite(float(item["candidate_p95"]))
+    ]
+    passing = [item for item in available if item.get("passes_gate")]
+    best = min(
+        passing or available,
+        key=lambda item: (
+            float(item["candidate_rmse"]),
+            float(item["candidate_p95"]),
+            float(item["smoothing"]),
+        ),
+    ) if (passing or available) else None
+    if passing:
+        selection_reason = "best_passing_candidate"
+        has_passing_candidate = True
+    elif available:
+        selection_reason = "best_available_but_gate_failed"
+        has_passing_candidate = False
+    else:
+        selection_reason = "no_available_candidate"
+        has_passing_candidate = False
+
+    result = {
+        "available": bool(available),
+        "baseline_rmse": float(baseline_rmse) if np.isfinite(float(baseline_rmse)) else None,
+        "baseline_p95": float(baseline_p95) if np.isfinite(float(baseline_p95)) else None,
+        "candidate_rmse": best.get("candidate_rmse") if best else None,
+        "candidate_p95": best.get("candidate_p95") if best else None,
+        "smoothing": best.get("smoothing") if best else None,
+        "selected_smoothing": best.get("smoothing") if best else None,
+        "has_passing_candidate": has_passing_candidate,
+        "selection_reason": selection_reason,
+        "candidate_results": normalized,
+    }
+    for key in ("n_folds", "n_folds_attempted", "n_validation_controls", "validation_coverage"):
+        result[key] = best.get(key) if best else 0 if key != "validation_coverage" else 0.0
+    result["failed_group_ids"] = best.get("failed_group_ids", []) if best else []
+    result["failure_reason"] = (
+        best.get("failure_reason") if best and not best.get("available")
+        else None
+    )
+    return result
+
+
 def _accept_local_rbf_candidate(controls, params, cv_result=None, rematch_failures=None):
     """Apply the local-control and held-out-CV acceptance gates."""
     params = params or {}
@@ -141,6 +372,10 @@ def _accept_local_rbf_candidate(controls, params, cv_result=None, rematch_failur
             + str(cv_result.get("failure_reason", "insufficient validation coverage"))
         )
         return result
+    if "has_passing_candidate" in cv_result and not cv_result.get("has_passing_candidate"):
+        result["reason"] = "no smoothing candidate passed held-out RMSE and P95 gates"
+        result["selected_smoothing"] = cv_result.get("selected_smoothing")
+        return result
 
     try:
         baseline_rmse = float(cv_result["baseline_rmse"])
@@ -167,99 +402,57 @@ def _accept_local_rbf_candidate(controls, params, cv_result=None, rematch_failur
 
     result["accepted"] = True
     result["reason"] = "held-out RMSE and P95 improvements passed"
+    result["selected_smoothing"] = cv_result.get("selected_smoothing", cv_result.get("smoothing"))
+    if "has_passing_candidate" in cv_result and result["selected_smoothing"] is None:
+        result["accepted"] = False
+        result["reason"] = "selected smoothing unavailable"
     return result
 
 
 def _local_holdout_cv(controls, params):
     """Compare zero-residual translation with RBF on spatially held-out controls."""
-    from src.coregistration import fit_local_rbf
-
     points = np.asarray(controls.get("points_xy", []), dtype=float)
     residual_dx = np.asarray(controls.get("residual_dx", []), dtype=float)
     residual_dy = np.asarray(controls.get("residual_dy", []), dtype=float)
-    if len(points) < 4:
-        return {
-            "available": False, "n_folds": 0, "n_folds_attempted": 0,
-            "n_validation_controls": 0, "validation_coverage": 0.0,
-            "failure_reason": "too few controls for held-out CV",
-        }
+    params = params or {}
+    plan = _build_local_cv_fold_plan(points, params)
+    validation = plan["validation_indices"]
+    if len(validation) and len(residual_dx) == len(points) and len(residual_dy) == len(points):
+        baseline_errors = np.hypot(residual_dx[validation], residual_dy[validation])
+        baseline_rmse = float(np.sqrt(np.mean(baseline_errors ** 2)))
+        baseline_p95 = float(np.percentile(baseline_errors, 95))
+    else:
+        baseline_rmse = float("nan")
+        baseline_p95 = float("nan")
 
-    groups = _local_spatial_group_labels(points)
-    attempted_folds = int(len(np.unique(groups)))
-    min_folds = int(params.get("local_cv_min_folds", 3))
-    min_validation_controls = int(params.get(
-        "local_cv_min_validation_controls",
-        min(int(params.get("local_min_controls", 12)), len(points)),
-    ))
     smoothing_values = params.get("local_smoothing_candidates", [0.1])
-    smoothing = float(smoothing_values[0]) if smoothing_values else 0.1
-    baseline_errors = []
-    candidate_errors = []
-    successful_folds = 0
-    for group_id in np.unique(groups):
-        test = groups == group_id
-        train = ~test
-        if test.sum() == 0 or train.sum() < 3:
-            continue
+    candidates = []
+    seen = set()
+    for value in smoothing_values or []:
         try:
-            rbf_dx, rbf_dy, coord_min, coord_max = fit_local_rbf(
-                points[train], residual_dx[train], residual_dy[train],
-                smoothing=smoothing, neighbors=min(20, int(train.sum())),
-            )
-            tx = (points[test, 0] - coord_min[0]) / max(coord_max[0] - coord_min[0], 1e-10)
-            ty = (points[test, 1] - coord_min[1]) / max(coord_max[1] - coord_min[1], 1e-10)
-            predicted_dx = np.asarray(rbf_dx(np.column_stack([tx, ty])), dtype=float)
-            predicted_dy = np.asarray(rbf_dy(np.column_stack([tx, ty])), dtype=float)
-        except Exception:
+            smoothing = float(value)
+        except (TypeError, ValueError):
             continue
-        successful_folds += 1
-        baseline_errors.extend(np.hypot(residual_dx[test], residual_dy[test]).tolist())
-        max_component = float(params.get(
-            "local_hard_max_component",
-            params.get("local_max_component", 2.5),
-        ))
-        predicted_dx = np.clip(predicted_dx, -max_component, max_component)
-        predicted_dy = np.clip(predicted_dy, -max_component, max_component)
-        candidate_errors.extend(
-            np.hypot(residual_dx[test] - predicted_dx, residual_dy[test] - predicted_dy).tolist()
-        )
-
-    n_validation_controls = len(baseline_errors)
-    if (not baseline_errors
-            or len(baseline_errors) != len(candidate_errors)
-            or successful_folds < min_folds
-            or n_validation_controls < min_validation_controls):
-        reasons = []
-        if successful_folds < min_folds:
-            reasons.append(f"successful folds {successful_folds} < {min_folds}")
-        if n_validation_controls < min_validation_controls:
-            reasons.append(
-                f"validation controls {n_validation_controls} < {min_validation_controls}"
-            )
-        if not baseline_errors or len(baseline_errors) != len(candidate_errors):
-            reasons.append("no complete held-out predictions")
-        return {
-            "available": False,
-            "n_folds": successful_folds,
-            "n_folds_attempted": attempted_folds,
-            "n_validation_controls": int(n_validation_controls),
-            "validation_coverage": float(n_validation_controls / len(points)),
-            "failure_reason": "; ".join(reasons),
-        }
-    baseline_errors = np.asarray(baseline_errors, dtype=float)
-    candidate_errors = np.asarray(candidate_errors, dtype=float)
-    return {
-        "available": True,
-        "baseline_rmse": float(np.sqrt(np.mean(baseline_errors ** 2))),
-        "candidate_rmse": float(np.sqrt(np.mean(candidate_errors ** 2))),
-        "baseline_p95": float(np.percentile(baseline_errors, 95)),
-        "candidate_p95": float(np.percentile(candidate_errors, 95)),
-        "n_folds": successful_folds,
-        "n_folds_attempted": attempted_folds,
-        "n_validation_controls": int(n_validation_controls),
-        "validation_coverage": float(n_validation_controls / len(points)),
-        "smoothing": smoothing,
-    }
+        if np.isfinite(smoothing) and smoothing not in seen:
+            seen.add(smoothing)
+            candidates.append(smoothing)
+    candidate_results = [
+        _evaluate_local_rbf_smoothing_candidate(controls, plan, smoothing, params)
+        for smoothing in candidates
+    ]
+    result = _select_local_rbf_cv_candidate(
+        candidate_results, baseline_rmse, baseline_p95, params
+    )
+    result.update({
+        "n_folds": int(plan["n_folds"]),
+        "n_folds_attempted": int(plan["n_folds_attempted"]),
+        "n_validation_controls": int(plan["n_validation_controls"]),
+        "validation_coverage": float(plan["validation_coverage"]),
+    })
+    if not plan["available"]:
+        result["available"] = False
+        result["failure_reason"] = plan.get("failure_reason")
+    return result
 
 
 def _collect_post_global_residual_pairs(
@@ -714,13 +907,20 @@ def _local_field_stats(field):
     }
 
 
-def _fit_local_rbf_field(controls, shape, params):
+def _fit_local_rbf_field(controls, shape, params, *, smoothing=None):
     """Fit, fade, and component-clip one target-scene local field."""
     from src.coregistration import compute_hull_fade_mask, fit_local_rbf
 
     points = np.asarray(controls["points_xy"], dtype=float)
     smoothing_values = params.get("local_smoothing_candidates", [0.1])
-    smoothing = float(smoothing_values[0]) if smoothing_values else 0.1
+    smoothing_values = [float(value) for value in smoothing_values]
+    if smoothing is None:
+        if len(smoothing_values) > 1:
+            raise ValueError(
+                "selected smoothing required when multiple candidates are configured"
+            )
+        smoothing = smoothing_values[0] if smoothing_values else 0.1
+    smoothing = float(smoothing)
     rbf_dx, rbf_dy, coord_min, coord_max = fit_local_rbf(
         points,
         np.asarray(controls["residual_dx"], dtype=float),
@@ -2055,10 +2255,21 @@ class MultibandPipeline:
             if scene_failures:
                 scene_result["rematch_failures"] = scene_failures
             local_refinement["cv_results"][str(idx)] = cv_result or {}
+            candidate_results = (cv_result or {}).get("candidate_results", [])
+            logger.info(
+                "  [%d] local RBF CV: candidates=%d, selected=%s, passing=%s, reason=%s",
+                idx,
+                len(candidate_results),
+                (cv_result or {}).get("selected_smoothing"),
+                (cv_result or {}).get("has_passing_candidate"),
+                (cv_result or {}).get("selection_reason"),
+            )
             if gate["accepted"]:
                 try:
+                    selected_smoothing = gate.get("selected_smoothing")
                     local_dx_fields[idx], local_dy_fields[idx], field_stats = _fit_local_rbf_field(
-                        controls, arrays[idx].shape[1:], reg_params
+                        controls, arrays[idx].shape[1:], reg_params,
+                        smoothing=selected_smoothing,
                     )
                     scene_result["field_stats"] = field_stats
                     local_refinement["used_for_scenes"].append(idx)

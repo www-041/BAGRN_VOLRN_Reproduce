@@ -70,6 +70,35 @@ def test_registration_diagnostic_writes_holdout_and_common_valid_fields(tmp_path
     assert payload["local_field"]["1"]["max_dx"] == 6.0
 
 
+def test_registration_diagnostic_preserves_all_local_cv_candidates(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    cv_result = {
+        "available": True,
+        "selected_smoothing": 0.1,
+        "has_passing_candidate": True,
+        "selection_reason": "best_passing_candidate",
+        "candidate_results": [
+            {"smoothing": value, "available": True, "passes_gate": value == 0.1}
+            for value in (0.01, 0.05, 0.1, 0.5, 1.0)
+        ],
+    }
+    registration = {
+        "quality": {"quality": "pass"},
+        "final_validation": {"edges": [], "overall": {"quality": "pass"}},
+        "local_refinement": {"cv_results": {"1": cv_result}},
+    }
+
+    payload = diagnose_registration_pair.build_diagnostic_payload(
+        registration, ["a", "b"], tmp_path
+    )
+
+    assert payload["local_cv_results"]["1"]["selected_smoothing"] == 0.1
+    assert [item["smoothing"] for item in payload["local_cv_results"]["1"]["candidate_results"]] == [
+        0.01, 0.05, 0.1, 0.5, 1.0
+    ]
+
+
 def test_register_scenes_preserves_raw_matches_separately(monkeypatch):
     from src import coregistration, multiband_pipeline
 

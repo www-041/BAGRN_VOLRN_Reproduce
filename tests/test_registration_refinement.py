@@ -108,7 +108,7 @@ def test_register_scenes_validates_final_arrays_and_all_training_controls(monkey
                             "candidate_p95": 0.8,
                         })
     monkeypatch.setattr(multiband_pipeline, "_fit_local_rbf_field",
-                        lambda controls, shape, params: (
+                        lambda controls, shape, params, **kwargs: (
                             np.zeros(shape), np.zeros(shape), {},
                         ))
     validation_calls = []
@@ -461,7 +461,7 @@ def _four_corner_local_controls():
     }
 
 
-def test_local_holdout_cv_reports_only_successful_folds(monkeypatch):
+def test_local_holdout_cv_rejects_candidate_when_any_planned_fold_fails(monkeypatch):
     from src import coregistration, multiband_pipeline
     original_fit = coregistration.fit_local_rbf
     calls = {"count": 0}
@@ -477,11 +477,10 @@ def test_local_holdout_cv_reports_only_successful_folds(monkeypatch):
         _four_corner_local_controls(),
         {"local_smoothing_candidates": [0.1], "local_cv_min_validation_controls": 6},
     )
-    assert result["available"] is True
+    assert result["available"] is False
     assert result["n_folds_attempted"] == 4
-    assert result["n_folds"] == 3
-    assert result["n_validation_controls"] == 9
-    assert result["validation_coverage"] == pytest.approx(0.75)
+    assert result["candidate_results"][0]["available"] is False
+    assert result["candidate_results"][0]["failed_group_ids"]
 
 
 def test_local_holdout_cv_rejects_too_few_successful_folds(monkeypatch):
@@ -500,9 +499,9 @@ def test_local_holdout_cv_rejects_too_few_successful_folds(monkeypatch):
         _four_corner_local_controls(), {"local_smoothing_candidates": [0.1]}
     )
     assert result["available"] is False
-    assert result["n_folds"] == 2
+    assert result["n_folds"] == 4
     assert result["n_folds_attempted"] == 4
-    assert result["validation_coverage"] == pytest.approx(0.5)
+    assert result["candidate_results"][0]["available"] is False
 
 
 def test_local_holdout_cv_scores_clipped_candidate_field(monkeypatch):
@@ -693,12 +692,15 @@ def test_register_scenes_excludes_affected_scene_but_processes_surviving_edge(mo
         lambda *args, **kwargs: {
             "available": True, "baseline_rmse": 1.0, "candidate_rmse": 0.5,
             "baseline_p95": 1.2, "candidate_p95": 0.8,
+            "selected_smoothing": 0.5, "has_passing_candidate": True,
         },
     )
+    fitted_smoothing = []
     monkeypatch.setattr(
         multiband_pipeline, "_fit_local_rbf_field",
-        lambda controls, shape, params: (
-            np.zeros(shape), np.zeros(shape), {"dx": {}, "dy": {}, "clipping": {}},
+        lambda controls, shape, params, **kwargs: (
+            fitted_smoothing.append(kwargs.get("smoothing"))
+            or (np.zeros(shape), np.zeros(shape), {"dx": {}, "dy": {}, "clipping": {}})
         ),
     )
 
@@ -717,6 +719,7 @@ def test_register_scenes_excludes_affected_scene_but_processes_surviving_edge(mo
 
     diagnostics = result["diagnostics"]["local_refinement"]
     assert diagnostics["used_for_scenes"] == [2]
+    assert fitted_smoothing == [0.5]
     assert diagnostics["fallback_scenes"] == [1]
     assert diagnostics["scenes"]["1"]["reason"] == (
         "global-only fallback: required post-global rematch failed"

@@ -42,6 +42,17 @@ merely because every pixel is not common-valid. The separate
 the reserved validation union, and the phase-correlation fallback uses the
 same train-only exclusion.
 
+For local RBF refinement, the pipeline creates one deterministic spatial
+cross-validation fold plan from the local controls and evaluates every value
+in `local_smoothing_candidates` on exactly those folds. A candidate is
+eligible only when all planned folds complete with finite predictions. The
+selected value is the best candidate that clears both the existing held-out
+RMSE and P95 improvement gates, ordered by candidate RMSE, candidate P95, and
+then smoothing. If no available candidate clears both gates, the local field
+is not enabled; the best available result is retained only as a diagnostic.
+The final field fit receives that selected smoothing explicitly, so the
+diagnostic `field_stats.smoothing` always identifies the model actually used.
+
 Every required validation edge must also have no `failure_reason` and at least
 `final_min_blocks` accepted blocks. A passing pooled summary cannot mask a
 failed or under-sampled required edge. If no candidate block size can provide

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
+import numpy as np
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +286,40 @@ def validate_config(config: ExperimentConfig, skip_file_check: bool = False) -> 
         if rq not in ("pass", "warn", "fail"):
             errors.append(f"registration_params.required_quality 必须是 'pass'/'warn'/'fail'，当前: '{rq}'")
         rp = config.registration_params
+        smoothing_candidates = rp.get("local_smoothing_candidates", [0.1])
+        if (not isinstance(smoothing_candidates, (list, tuple))
+                or not smoothing_candidates):
+            errors.append(
+                "registration_params.local_smoothing_candidates 必须是非空列表"
+            )
+        else:
+            converted_smoothing = []
+            for value in smoothing_candidates:
+                try:
+                    smoothing = float(value)
+                except (TypeError, ValueError):
+                    errors.append(
+                        "registration_params.local_smoothing_candidates 必须包含有限数值"
+                    )
+                    continue
+                if not np.isfinite(smoothing) or smoothing < 0:
+                    errors.append(
+                        "registration_params.local_smoothing_candidates 必须为非负有限数值"
+                    )
+                converted_smoothing.append(smoothing)
+            if len(set(converted_smoothing)) != len(converted_smoothing):
+                errors.append(
+                    "registration_params.local_smoothing_candidates 转换为浮点数后不得重复"
+                )
+        for key in ("local_cv_min_rmse_improvement", "local_cv_min_p95_improvement"):
+            try:
+                improvement = float(rp.get(key, 0.0))
+            except (TypeError, ValueError):
+                improvement = -1.0
+            if not np.isfinite(improvement) or improvement < 0:
+                errors.append(
+                    f"registration_params.{key} 必须为非负有限数值"
+                )
         holdout_fraction = float(rp.get("holdout_fraction", 0.20))
         if not 0.0 < holdout_fraction < 0.5:
             errors.append("registration_params.holdout_fraction 必须在 (0, 0.5) 内")

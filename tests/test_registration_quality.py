@@ -215,6 +215,43 @@ def test_default_registration_params_exist():
     assert cfg.registration_params["required_quality"] == "pass"
 
 
+def _config_with_local_rbf_params(params):
+    return _dict_to_config({
+        "experiment_name": "registration-test",
+        "selected_bands": ["B14"],
+        "registration_band": "B14",
+        "scenes": [
+            {"id": "a", "bands": {"B14": "a.tif"}},
+            {"id": "b", "bands": {"B14": "b.tif"}},
+        ],
+        "registration_params": params,
+    })
+
+
+@pytest.mark.parametrize(
+    "candidates",
+    [[], [-0.1], [float("nan")], [float("inf")], [0.1, 0.10000000000000001]],
+)
+def test_local_smoothing_candidates_reject_invalid_values(candidates):
+    cfg = _config_with_local_rbf_params({"local_smoothing_candidates": candidates})
+    assert any("local_smoothing_candidates" in error
+               for error in validate_config(cfg, skip_file_check=True))
+
+
+def test_local_smoothing_candidates_allow_zero_and_distinct_values():
+    cfg = _config_with_local_rbf_params({"local_smoothing_candidates": [0.0, 0.1]})
+    assert not any("local_smoothing_candidates" in error
+                   for error in validate_config(cfg, skip_file_check=True))
+
+
+@pytest.mark.parametrize(
+    "key", ["local_cv_min_rmse_improvement", "local_cv_min_p95_improvement"]
+)
+def test_local_cv_improvement_thresholds_must_be_nonnegative(key):
+    cfg = _config_with_local_rbf_params({key: -0.01})
+    assert any(key in error for error in validate_config(cfg, skip_file_check=True))
+
+
 @pytest.mark.parametrize(
     ("actual", "required", "expected"),
     [
