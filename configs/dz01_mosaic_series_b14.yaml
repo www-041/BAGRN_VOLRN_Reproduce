@@ -86,13 +86,17 @@ registration_params:
   robust_min_inliers: 5
   robust_min_inlier_ratio: 0.35
   global_refine_block_size: 384
-  global_refine_max_iterations: 2
+  global_refine_max_iterations: 3
   global_refine_stop_magnitude: 0.15
   global_refine_max_correction: 5.0
   enable_local_refinement: true
   local_block_size: 256
   local_confidence_threshold: 0.60
   local_max_residual_shift: 3.0
+  local_search_max_shift: 12.0
+  local_outlier_mad_scale: 3.0
+  local_hard_max_component: 8.0
+  local_neighbor_k: 8
   local_min_controls: 12
   local_min_spatial_groups: 3
   local_max_component: 2.5
@@ -100,9 +104,17 @@ registration_params:
   local_cv_min_rmse_improvement: 0.10
   local_cv_min_p95_improvement: 0.15
   local_smoothing_candidates: [0.01, 0.05, 0.1, 0.5, 1.0]
+  enable_spatial_holdout: true
+  holdout_fraction: 0.20
+  holdout_seed: 42
+  holdout_block_size: 384
+  min_holdout_cells: 2
+  holdout_buffer_pixels: 0
   validation_block_size: 384
+  validation_block_size_candidates: [384, 256, 192]
   validation_confidence_threshold: 0.45
   validation_max_residual_shift: 3.0
+  validation_required_candidate_count: 5
   final_min_blocks: 5
   pass_min_mean_confidence: 0.50
   pass_max_median: 0.35

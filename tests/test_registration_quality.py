@@ -137,6 +137,28 @@ def test_validation_grid_params_are_schema_backed_and_preserved():
     assert cfg.registration_params["validation_min_distance_from_training"] == 48
 
 
+def test_dz01_adaptation_params_are_schema_backed_and_validated():
+    cfg = _dict_to_config({
+        "experiment_name": "registration-test",
+        "selected_bands": ["B14"],
+        "registration_band": "B14",
+        "scenes": [
+            {"id": "a", "bands": {"B14": "a.tif"}},
+            {"id": "b", "bands": {"B14": "b.tif"}},
+        ],
+        "registration_params": {
+            "enable_spatial_holdout": True,
+            "holdout_fraction": 0.20,
+            "validation_block_size_candidates": [384, 256, 192],
+            "local_search_max_shift": 12.0,
+            "local_hard_max_component": 8.0,
+        },
+    })
+    assert cfg.registration_params["enable_spatial_holdout"] is True
+    assert cfg.registration_params["validation_block_size_candidates"] == [384, 256, 192]
+    assert validate_config(cfg, skip_file_check=True) == []
+
+
 def test_registration_params_load_and_preserve_strict_quality():
     """registration_params should load from YAML/dict and preserve values."""
     cfg = _dict_to_config({

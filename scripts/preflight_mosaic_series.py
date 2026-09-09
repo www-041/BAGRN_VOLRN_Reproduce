@@ -48,16 +48,16 @@ def main():
         for check, passed in results['checks'].items():
             if isinstance(passed, dict):
                 for n, ok in passed.items():
-                    status = "✓ PASS" if ok else "✗ FAIL"
+                    status = "PASS" if ok else "FAIL"
                     print(f"  {check} (N={n}): {status}")
             else:
-                status = "✓ PASS" if passed else "✗ FAIL"
+                status = "PASS" if passed else "FAIL"
                 print(f"  {check}: {status}")
         print("=" * 60)
         return 0
         
     except Exception as e:
-        print(f"\n✗ PREFLIGHT FAILED: {e}", file=sys.stderr)
+        print(f"\nPREFLIGHT FAILED: {e}", file=sys.stderr)
         return 1
 
 

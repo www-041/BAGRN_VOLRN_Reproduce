@@ -214,7 +214,10 @@ def _local_holdout_cv(controls, params):
             continue
         successful_folds += 1
         baseline_errors.extend(np.hypot(residual_dx[test], residual_dy[test]).tolist())
-        max_component = float(params.get("local_max_component", 2.5))
+        max_component = float(params.get(
+            "local_hard_max_component",
+            params.get("local_max_component", 2.5),
+        ))
         predicted_dx = np.clip(predicted_dx, -max_component, max_component)
         predicted_dy = np.clip(predicted_dy, -max_component, max_component)
         candidate_errors.extend(
@@ -261,7 +264,7 @@ def _local_holdout_cv(controls, params):
 
 def _collect_post_global_residual_pairs(
     global_only_arrays, registration_band_idx, transforms, nodata_values,
-    matching_edges, params, rematch_fn,
+    matching_edges, params, rematch_fn, holdout_contexts=None,
 ):
     """Rematch global-only arrays while converting failures to diagnostics."""
     params = params or {}
@@ -270,15 +273,20 @@ def _collect_post_global_residual_pairs(
     block_size = int(params.get("local_block_size", 256))
     confidence = float(params.get("local_confidence_threshold", 0.60))
     max_shift = float(params.get("local_max_residual_shift", 3.0))
+    search_max_shift = float(params.get("local_search_max_shift", 12.0))
     for i, j in matching_edges:
         try:
+            context = (holdout_contexts or {}).get((i, j))
             rematch = rematch_fn(
                 global_only_arrays[i][registration_band_idx],
                 global_only_arrays[j][registration_band_idx],
                 transforms[i], transforms[j], nodata_values[i], nodata_values[j],
                 max_residual_shift=max_shift,
+                local_search_max_shift=search_max_shift,
                 block_size=block_size,
                 confidence_threshold=confidence,
+                allowed_mask=(context or {}).get("train_sampling_mask")
+                if context and context.get("available") else None,
             )
         except Exception as exc:
             failures.append({
@@ -322,6 +330,85 @@ def _training_points_for_edge(pair_measurements, idx_i, idx_j):
     if not points:
         return np.empty((0, 2), dtype=float)
     return np.unique(np.asarray(points, dtype=float).reshape((-1, 2)), axis=0)
+
+
+def _build_pair_holdout_context(
+    arr_ref, tr_ref, arr_tgt, tr_tgt, nodata_ref, nodata_tgt, params,
+):
+    """Build common-valid TRAIN/HOLDOUT masks in reference-patch pixels."""
+    from rasterio.transform import array_bounds
+    from src.coregistration import (
+        build_common_valid_mask,
+        build_spatial_train_holdout_split,
+    )
+
+    win = get_overlap_window(
+        array_bounds(*arr_ref.shape, tr_ref), tr_ref,
+        array_bounds(*arr_tgt.shape, tr_tgt), tr_tgt,
+    )
+    if win is None:
+        return {"available": False, "failure_reason": "No geographic overlap"}
+
+    (ri_s, ri_e, ci_s, ci_e), (rj_s, rj_e, cj_s, cj_e) = win
+    ref_patch = arr_ref[ri_s:ri_e, ci_s:ci_e]
+    tgt_patch = arr_tgt[rj_s:rj_e, cj_s:cj_e]
+    common_h = min(ref_patch.shape[0], tgt_patch.shape[0])
+    common_w = min(ref_patch.shape[1], tgt_patch.shape[1])
+    ref_patch = ref_patch[:common_h, :common_w]
+    tgt_patch = tgt_patch[:common_h, :common_w]
+    common_valid = build_common_valid_mask(
+        ref_patch, tgt_patch, nodata_ref, nodata_tgt,
+    )
+
+    block_size = int(params.get(
+        "holdout_block_size", params.get("global_block_size", 512)
+    ))
+    split = build_spatial_train_holdout_split(
+        common_valid,
+        block_size=block_size,
+        seed=int(params.get("holdout_seed", 42)),
+        holdout_fraction=float(params.get("holdout_fraction", 0.20)),
+        min_holdout_cells=int(params.get("min_holdout_cells", 2)),
+        buffer_pixels=int(params.get("holdout_buffer_pixels", 0)),
+    )
+    split.update({
+        "patch_window_ref": (ri_s, ri_s + common_h, ci_s, ci_s + common_w),
+        "patch_window_tgt": (rj_s, rj_s + common_h, cj_s, cj_s + common_w),
+        "common_valid_pixels": int(common_valid.sum()),
+        "common_valid_ratio": float(common_valid.mean()),
+        "common_valid_mask": common_valid,
+    })
+    return split
+
+
+def _public_holdout_summary(context):
+    """Return JSON-safe holdout metadata without serializing large masks."""
+    if not context:
+        return None
+    return {
+        "available": bool(context.get("available", False)),
+        "candidate_cells": len(context.get("candidate_cells", [])),
+        "train_cells": len(context.get("train_cells", [])),
+        "holdout_cells": len(context.get("holdout_cells", [])),
+        "buffer_pixels": int(context.get("buffer_pixels", 0)),
+        "common_valid_pixels": int(context.get("common_valid_pixels", 0)),
+        "common_valid_ratio": float(context.get("common_valid_ratio", 0.0)),
+        "failure_reason": context.get("failure_reason"),
+    }
+
+
+def _percentiles(values):
+    """Return compact percentiles for a local-control diagnostic array."""
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return {"p50": None, "p90": None, "p95": None, "p100": None}
+    return {
+        "p50": float(np.percentile(values, 50)),
+        "p90": float(np.percentile(values, 90)),
+        "p95": float(np.percentile(values, 95)),
+        "p100": float(np.max(values)),
+    }
 
 
 def _translate_training_measurements_to_crop(
@@ -384,6 +471,7 @@ def _validate_final_registration_arrays(
     validation_edges,
     training_measurements,
     params,
+    holdout_contexts=None,
 ):
     """Validate the exact arrays that will be used by the quality gate."""
     from src.coregistration import (
@@ -407,11 +495,26 @@ def _validate_final_registration_arrays(
         params.get("validation_max_residual_shift", 3.0)
     )
     validation_min_blocks = int(params.get("final_min_blocks", 5))
+    validation_candidates = params.get(
+        "validation_block_size_candidates", [validation_block_size]
+    )
+    required_candidate_count = int(params.get(
+        "validation_required_candidate_count", max(1, 2 * validation_min_blocks)
+    ))
 
     for idx_i, idx_j in validation_edges:
         training_points = _training_points_for_edge(
             training_measurements, idx_i, idx_j,
         )
+        context = (holdout_contexts or {}).get((idx_i, idx_j))
+        reserved_mask = None
+        if bool(params.get("enable_spatial_holdout", False)):
+            if context and context.get("available"):
+                reserved_mask = context.get("holdout_region_full_mask")
+            if reserved_mask is None:
+                reserved_mask = np.zeros_like(
+                    registered_arrays[idx_i][registration_band_idx], dtype=bool
+                )
         try:
             validation = validate_registration_independent_grid(
                 registered_arrays[idx_i][registration_band_idx], transforms[idx_i],
@@ -425,6 +528,11 @@ def _validate_final_registration_arrays(
                 confidence_threshold=validation_confidence,
                 max_residual_shift=validation_max_shift,
                 min_accepted=validation_min_blocks,
+                reserved_holdout_mask=reserved_mask,
+                validation_block_size_candidates=validation_candidates
+                if reserved_mask is not None else None,
+                required_candidate_count=required_candidate_count
+                if reserved_mask is not None else None,
             )
         except Exception as exc:
             logger.warning(
@@ -436,6 +544,8 @@ def _validate_final_registration_arrays(
             }
         validation["idx_i"] = idx_i
         validation["idx_j"] = idx_j
+        if context:
+            validation["holdout"] = _public_holdout_summary(context)
         validation_results.append(validation)
 
     aggregate_quality = aggregate_final_validation_quality(
@@ -588,17 +698,31 @@ def _fit_local_rbf_field(controls, shape, params):
     )
     faded_dx = raw_dx * fade
     faded_dy = raw_dy * fade
-    max_component = float(params.get("local_max_component", 2.5))
+    max_component = float(params.get(
+        "local_hard_max_component",
+        params.get("local_max_component", 2.5),
+    ))
     clipped_dx = int(np.count_nonzero(np.abs(faded_dx) > max_component))
     clipped_dy = int(np.count_nonzero(np.abs(faded_dy) > max_component))
     field_dx = np.clip(faded_dx, -max_component, max_component)
     field_dy = np.clip(faded_dy, -max_component, max_component)
+    magnitude = np.hypot(field_dx, field_dy)
+    grad_dx = np.gradient(field_dx)
+    grad_dy = np.gradient(field_dy)
+    spatial_gradient = np.maximum(
+        np.hypot(grad_dx[0], grad_dx[1]),
+        np.hypot(grad_dy[0], grad_dy[1]),
+    )
     return field_dx, field_dy, {
         "smoothing": smoothing,
         "clipping": {"dx": clipped_dx, "dy": clipped_dy, "total": clipped_dx + clipped_dy},
         "fade": {"min": float(fade.min()), "max": float(fade.max())},
         "local_dx": _local_field_stats(field_dx),
         "local_dy": _local_field_stats(field_dy),
+        "max_dx": float(np.max(np.abs(field_dx))),
+        "max_dy": float(np.max(np.abs(field_dy))),
+        "p95_magnitude": float(np.percentile(magnitude, 95)),
+        "max_spatial_gradient": float(np.max(spatial_gradient)),
     }
 
 
@@ -1233,6 +1357,7 @@ class MultibandPipeline:
         min_pixels = 1000 if not self.smoke else 100
 
         overlaps: List[dict] = []
+        from src.coregistration import build_common_valid_mask
 
         for i in range(n_images):
             for j in range(i + 1, n_images):
@@ -1244,10 +1369,24 @@ class MultibandPipeline:
                     continue
 
                 (ri_s, ri_e, ci_s, ci_e), (rj_s, rj_e, cj_s, cj_e) = win
-                pix = (ri_e - ri_s) * (ci_e - ci_s)
+                bbox_pixels = (ri_e - ri_s) * (ci_e - ci_s)
 
-                if pix < min_pixels:
+                if bbox_pixels < min_pixels:
                     continue
+
+                ref_patch = arrays[i][self.registration_band_idx, ri_s:ri_e, ci_s:ci_e]
+                tgt_patch = arrays[j][self.registration_band_idx, rj_s:rj_e, cj_s:cj_e]
+                common_h = min(ref_patch.shape[0], tgt_patch.shape[0])
+                common_w = min(ref_patch.shape[1], tgt_patch.shape[1])
+                common_valid = build_common_valid_mask(
+                    ref_patch[:common_h, :common_w],
+                    tgt_patch[:common_h, :common_w],
+                    nodata_values[i], nodata_values[j],
+                )
+                common_valid_pixels = int(common_valid.sum())
+                common_area = max(common_valid.size, 1)
+                rows_with_common = np.flatnonzero(common_valid.any(axis=1))
+                cols_with_common = np.flatnonzero(common_valid.any(axis=0))
 
                 # 计算重叠区逐波段统计
                 per_band_stats = {}
@@ -1282,7 +1421,19 @@ class MultibandPipeline:
                     "idx_j": j,
                     "window_i": (ri_s, ri_e, ci_s, ci_e),
                     "window_j": (rj_s, rj_e, cj_s, cj_e),
-                    "pixel_count": pix,
+                    "pixel_count": bbox_pixels,
+                    "bbox_overlap_pixels": bbox_pixels,
+                    "common_valid_pixels": common_valid_pixels,
+                    "common_valid_ratio": float(common_valid_pixels / common_area),
+                    "common_valid_shape": (common_h, common_w),
+                    "common_valid_row_span": (
+                        int(rows_with_common[-1] - rows_with_common[0] + 1)
+                        if len(rows_with_common) else 0
+                    ),
+                    "common_valid_col_span": (
+                        int(cols_with_common[-1] - cols_with_common[0] + 1)
+                        if len(cols_with_common) else 0
+                    ),
                     "per_band_stats": per_band_stats,
                 })
 
@@ -1416,6 +1567,7 @@ class MultibandPipeline:
         pair_measurements: List[dict] = []
         raw_block_matches: List[dict] = []
         rejected_edges: List[dict] = []
+        holdout_contexts: Dict[Tuple[int, int], dict] = {}
         global_block_size = int(reg_params.get("global_block_size", 512))
         max_global_shift = float(reg_params.get("max_global_shift", 40.0))
         global_confidence_threshold = float(
@@ -1428,6 +1580,23 @@ class MultibandPipeline:
             nd_i = nodata_values[i]  # Keep None as None, don't convert to 0
             nd_j = nodata_values[j]  # Keep None as None, don't convert to 0
 
+            sampling_mask = None
+            if bool(reg_params.get("enable_spatial_holdout", False)):
+                holdout_context = _build_pair_holdout_context(
+                    arr_i_reg, transforms[i], arr_j_reg, transforms[j],
+                    nd_i, nd_j, reg_params,
+                )
+                if holdout_context.get("available"):
+                    ri_s, ri_e, ci_s, ci_e = holdout_context["patch_window_ref"]
+                    full_holdout = np.zeros(arr_i_reg.shape, dtype=bool)
+                    full_holdout[ri_s:ri_e, ci_s:ci_e] = holdout_context[
+                        "holdout_region_mask"
+                    ]
+                    holdout_context["holdout_region_full_mask"] = full_holdout
+                holdout_contexts[(i, j)] = holdout_context
+                if holdout_context.get("available"):
+                    sampling_mask = holdout_context["train_sampling_mask"]
+
             # 尝试1: 块匹配
             matches, screening = collect_block_matches(
                 arr_i_reg, transforms[i],
@@ -1436,6 +1605,7 @@ class MultibandPipeline:
                 block_size=global_block_size,
                 max_global_shift=max_global_shift,
                 confidence_threshold=global_confidence_threshold,
+                **({"allowed_mask": sampling_mask} if sampling_mask is not None else {}),
             )
             raw_matches = [dict(match) for match in matches]
             raw_block_matches.append({
@@ -1460,6 +1630,9 @@ class MultibandPipeline:
                         "raw_matches": raw_matches,
                         "screening": robust_pair["screening"],
                         "method": "block_match",
+                        "holdout": _public_holdout_summary(
+                            holdout_contexts.get((i, j))
+                        ),
                     })
                     logger.info(
                         "  [%d]-[%d] block_match: dx=%.4f, dy=%.4f, conf=%.3f, "
@@ -1495,6 +1668,9 @@ class MultibandPipeline:
                     "matches": [], "raw_matches": raw_matches,
                     "screening": screening,
                     "method": "overlap_phase_correlation",
+                    "holdout": _public_holdout_summary(
+                        holdout_contexts.get((i, j))
+                    ),
                 })
                 logger.info(
                     "  [%d]-[%d] overlap_phase_correlation: dx=%.4f, dy=%.4f, conf=%.3f",
@@ -1628,6 +1804,11 @@ class MultibandPipeline:
             nodata_values,
             matching_edges,
             refine_params,
+            sampling_masks={
+                edge: context.get("train_sampling_mask")
+                for edge, context in holdout_contexts.items()
+                if context.get("available")
+            },
         )
         global_shifts = refine_result["global_shifts"]
         logger.info(
@@ -1678,6 +1859,7 @@ class MultibandPipeline:
             post_global_result = _collect_post_global_residual_pairs(
                 global_only_arrays, registration_band_idx, transforms, nodata_values,
                 matching_edges, reg_params, rematch_pair_on_registered,
+                holdout_contexts=holdout_contexts,
             )
             post_global_pairs = post_global_result["pairs"]
             post_global_failures = post_global_result["failures"]
@@ -1701,6 +1883,9 @@ class MultibandPipeline:
                 parent_control = build_parent_based_local_controls(
                     idx, parent_idx, post_global_pairs, global_shifts,
                     confidence_threshold=local_confidence, min_points=1,
+                    mad_scale=float(reg_params.get("local_outlier_mad_scale", 3.0)),
+                    hard_max_shift=float(reg_params.get("local_hard_max_component", 8.0)),
+                    neighbor_radius=int(reg_params.get("local_neighbor_k", 8)),
                 )
                 if parent_control.get("n_valid", 0) > 0:
                     edge_controls.append(parent_control)
@@ -1728,6 +1913,9 @@ class MultibandPipeline:
                 controls = build_local_residual_controls(
                     oriented_matches, 0.0, 0.0,
                     confidence_threshold=local_confidence, min_points=1,
+                    mad_scale=float(reg_params.get("local_outlier_mad_scale", 3.0)),
+                    hard_max_shift=float(reg_params.get("local_hard_max_component", 8.0)),
+                    neighbor_radius=int(reg_params.get("local_neighbor_k", 8)),
                 )
                 if controls.get("n_valid", 0) > 0:
                     edge_controls.append(controls)
@@ -1768,6 +1956,14 @@ class MultibandPipeline:
                 controls, reg_params, cv_result, rematch_failures=scene_failures
             )
             scene_result.update(gate)
+            scene_result["local_controls"] = {
+                "n_raw": int(controls.get("n_raw", controls.get("n_valid", 0))),
+                "n_confidence": int(controls.get("n_confidence", controls.get("n_valid", 0))),
+                "n_spatial_consistent": int(controls.get("n_spatial_consistent", controls.get("n_valid", 0))),
+                "n_rejected_gross": int(controls.get("n_rejected_gross", 0)),
+                "residual_dx_percentiles": _percentiles(controls.get("residual_dx", [])),
+                "residual_dy_percentiles": _percentiles(controls.get("residual_dy", [])),
+            }
             if scene_failures:
                 scene_result["rematch_failures"] = scene_failures
             local_refinement["cv_results"][str(idx)] = cv_result or {}
@@ -1817,6 +2013,7 @@ class MultibandPipeline:
             spanning_tree_edges,
             [*pair_measurements, *post_global_pairs],
             reg_params,
+            holdout_contexts=holdout_contexts,
         )
         connected = not bool(unreachable)
         status, failure = _registration_status_and_failure(
@@ -1827,6 +2024,30 @@ class MultibandPipeline:
 
         elapsed = time.time() - t0
         logger.info("配准完成, 耗时 %.1fs", elapsed)
+
+        holdout_diagnostics = {
+            f"{i}-{j}": _public_holdout_summary(context)
+            for (i, j), context in holdout_contexts.items()
+        }
+        local_control_diagnostics = {
+            str(idx): scene.get("local_controls", {})
+            for idx, scene in local_refinement.get("scenes", {}).items()
+            if scene.get("local_controls")
+        }
+        local_field_diagnostics = {
+            str(idx): scene.get("field_stats", {})
+            for idx, scene in local_refinement.get("scenes", {}).items()
+            if scene.get("field_stats")
+        }
+        diagnostic_masks = {
+            f"{i}-{j}": {
+                "common_valid_mask": context.get("common_valid_mask", np.zeros((0, 0), dtype=bool)),
+                "holdout_region_mask": context.get("holdout_region_mask", np.zeros((0, 0), dtype=bool)),
+                "train_sampling_mask": context.get("train_sampling_mask", np.zeros((0, 0), dtype=bool)),
+            }
+            for (i, j), context in holdout_contexts.items()
+            if context.get("available")
+        }
 
         return {
             "registered_arrays": registered_arrays,
@@ -1844,6 +2065,7 @@ class MultibandPipeline:
             "rejected_edges": rejected_list,
             "quality": final_quality,
             "final_validation": final_validation,
+            "diagnostic_masks": diagnostic_masks,
             "connected_components": [sorted(c) for c in components],
             "unreachable_scenes": unreachable_ids,
             "diagnostics": {
@@ -1857,6 +2079,19 @@ class MultibandPipeline:
                 "global_refinement_history": refine_result["history"],
                 "global_refinement_warnings": refine_result["warnings"],
                 "local_refinement": local_refinement,
+                "overlap": {
+                    f"{ov['idx_i']}-{ov['idx_j']}": {
+                        "bbox_pixels": int(ov.get("bbox_overlap_pixels", ov.get("pixel_count", 0))),
+                        "common_valid_pixels": int(ov.get("common_valid_pixels", 0)),
+                        "common_valid_ratio": float(ov.get("common_valid_ratio", 0.0)),
+                        "common_valid_row_span": int(ov.get("common_valid_row_span", 0)),
+                        "common_valid_col_span": int(ov.get("common_valid_col_span", 0)),
+                    }
+                    for ov in overlaps
+                },
+                "holdout": holdout_diagnostics,
+                "local_controls": local_control_diagnostics,
+                "local_field": local_field_diagnostics,
                 "final_validation": final_validation,
                 "quality": final_quality,
                 "elapsed_sec": elapsed,

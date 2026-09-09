@@ -2,7 +2,7 @@
 
 ## Overview
 
-The registration quality gate prevents low-quality geometric alignment from entering the time-consuming BAGRN/VOLRN pipeline. It uses robust shift estimation for registration and an independent validation pass on the final registered arrays for the quality decision.
+The registration quality gate prevents low-quality geometric alignment from entering the time-consuming BAGRN/VOLRN pipeline. It uses common-valid overlap sampling, a spatial holdout reserved before any control extraction, robust shift estimation, and an independent validation pass on the final registered arrays for the quality decision.
 
 ## Quality Thresholds
 
@@ -32,11 +32,18 @@ For the DZ01V B14 N=2→4→6 experiment series, `required_quality: pass` is set
 
 ## Registration and final evidence
 
-The initial block matches, robust pair measurements, and network-adjustment shifts are training and registration diagnostics. They are not final quality evidence. After global and optional gated local refinement, the pipeline builds the final registered arrays from the ORIGINAL arrays and runs an independent validation grid on those arrays. The resulting `final_validation` and `quality` dictionaries are the authoritative quality evidence used by the gate.
+The initial block matches, robust pair measurements, and network-adjustment shifts are training and registration diagnostics. They are not final quality evidence. Each pair first builds a common-valid mask and reserves blocked spatial HOLDOUT cells. Global matching, global residual refinement, and local residual controls are restricted to TRAIN cells; the local RBF remains behind an internal spatial cross-validation gate. After global and optional gated local refinement, the pipeline builds the final registered arrays from the ORIGINAL arrays and runs bounded residual phase correlation only on the reserved HOLDOUT cells. Validation block size is selected from `[384, 256, 192]` using geometric candidate counts, never by residual quality. The resulting `final_validation` and `quality` dictionaries are the authoritative quality evidence used by the gate.
 
 Every required validation edge must also have no `failure_reason` and at least
 `final_min_blocks` accepted blocks. A passing pooled summary cannot mask a
-failed or under-sampled required edge.
+failed or under-sampled required edge. If no candidate block size can provide
+enough holdout geometry, the result is explicitly reported as insufficient
+geometry and remains FAIL; PASS thresholds are never reduced to compensate.
+
+The diagnostic JSON separates `overlap`, `holdout`, `local_controls`,
+`local_field`, and `final_validation`. This lets a failed run distinguish an
+unusable common-valid footprint, insufficient holdout geometry, low-confidence
+validation, and genuine post-warp residual error.
 
 ## Robust Estimation
 
@@ -70,7 +77,7 @@ After the code is merged, the user should:
 
 1. Run preflight check
 2. Run registration diagnostic for each scene pair
-3. Verify the independent final-validation metrics meet PASS thresholds
+3. Verify the reserved HOLDOUT has enough accepted blocks and its final metrics meet PASS thresholds
 4. Only then run full N=2 experiment
 
 ## References

@@ -19,6 +19,161 @@ import os, glob, json
 logger = logging.getLogger(__name__)
 
 
+def build_common_valid_mask(
+    ref_array,
+    tgt_array,
+    ref_nodata=None,
+    tgt_nodata=None,
+):
+    """Return pixels valid in both arrays on a common pixel grid.
+
+    Validity is deliberately independent from radiometry: finite zero values
+    remain valid unless zero is explicitly supplied as that scene's NoData.
+    The caller is responsible for putting both arrays on the same geographic
+    grid before calling this helper.
+    """
+    ref = np.asarray(ref_array)
+    tgt = np.asarray(tgt_array)
+    if ref.shape != tgt.shape:
+        raise ValueError(
+            "common-valid mask requires arrays on the same grid and shape"
+        )
+    if ref.ndim != 2:
+        raise ValueError("common-valid mask requires 2D arrays")
+
+    valid_ref = np.isfinite(ref)
+    valid_tgt = np.isfinite(tgt)
+    if ref_nodata is not None:
+        valid_ref &= ref != ref_nodata
+    if tgt_nodata is not None:
+        valid_tgt &= tgt != tgt_nodata
+    return valid_ref & valid_tgt
+
+
+def build_spatial_train_holdout_split(
+    common_valid_mask,
+    block_size,
+    seed,
+    holdout_fraction,
+    min_holdout_cells,
+    buffer_pixels=None,
+    min_common_valid_ratio=0.15,
+):
+    """Reserve spatially separated holdout blocks before matching controls.
+
+    Blocks are non-overlapping tiles of ``common_valid_mask``.  Holdout tiles
+    are selected deterministically and their buffer is removed from TRAIN so
+    a training block footprint cannot touch a reserved validation region.
+    The returned masks are in the same pixel coordinates as the input mask.
+    """
+    mask = np.asarray(common_valid_mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError("common_valid_mask must be a 2D boolean array")
+    block_size = int(block_size)
+    if block_size <= 0:
+        raise ValueError("block_size must be positive")
+    if not 0 < float(holdout_fraction) < 0.5:
+        raise ValueError("holdout_fraction must be between 0 and 0.5")
+    min_holdout_cells = int(min_holdout_cells)
+    if min_holdout_cells <= 0:
+        raise ValueError("min_holdout_cells must be positive")
+
+    # A whole block is already excluded from TRAIN.  Keep the default buffer
+    # zero so narrow overlaps retain usable training cells; callers can opt
+    # into a larger physical safety margin through the explicit argument.
+    buffer_pixels = 0 if buffer_pixels is None else int(buffer_pixels)
+    if buffer_pixels < 0:
+        raise ValueError("buffer_pixels must be non-negative")
+
+    candidates = []
+    for row in range(0, mask.shape[0] - block_size + 1, block_size):
+        for col in range(0, mask.shape[1] - block_size + 1, block_size):
+            block = mask[row:row + block_size, col:col + block_size]
+            if block.mean() >= float(min_common_valid_ratio):
+                candidates.append((row, col))
+
+    result = {
+        "available": False,
+        "train_mask": mask.copy(),
+        "train_sampling_mask": np.ones_like(mask, dtype=bool),
+        "holdout_mask": np.zeros_like(mask, dtype=bool),
+        "holdout_region_mask": np.zeros_like(mask, dtype=bool),
+        "holdout_buffer_mask": np.zeros_like(mask, dtype=bool),
+        "train_cells": [],
+        "holdout_cells": [],
+        "candidate_cells": candidates,
+        "buffer_pixels": buffer_pixels,
+        "failure_reason": None,
+    }
+    if not candidates:
+        result["failure_reason"] = "No geometrically usable block cells"
+        return result
+
+    target_count = max(
+        min_holdout_cells,
+        int(np.ceil(len(candidates) * float(holdout_fraction))),
+    )
+    rng = np.random.RandomState(int(seed))
+    order = rng.permutation(len(candidates))
+    selected = []
+    selected_grid = set()
+    for index in order:
+        row, col = candidates[int(index)]
+        grid_cell = (row // block_size, col // block_size)
+        if any(
+            abs(grid_cell[0] - other[0]) <= 1
+            and abs(grid_cell[1] - other[1]) <= 1
+            for other in selected_grid
+        ):
+            continue
+        selected.append((row, col))
+        selected_grid.add(grid_cell)
+        if len(selected) >= target_count:
+            break
+
+    if len(selected) < min_holdout_cells:
+        result["failure_reason"] = (
+            f"Only {len(selected)} spatially separated holdout cells "
+            f"(need {min_holdout_cells})"
+        )
+        return result
+
+    holdout = np.zeros_like(mask, dtype=bool)
+    holdout_region = np.zeros_like(mask, dtype=bool)
+    buffer = np.zeros_like(mask, dtype=bool)
+    for row, col in selected:
+        holdout_region[row:row + block_size, col:col + block_size] = True
+        holdout[row:row + block_size, col:col + block_size] |= mask[
+            row:row + block_size, col:col + block_size
+        ]
+        r0 = max(0, row - buffer_pixels)
+        c0 = max(0, col - buffer_pixels)
+        r1 = min(mask.shape[0], row + block_size + buffer_pixels)
+        c1 = min(mask.shape[1], col + block_size + buffer_pixels)
+        buffer[r0:r1, c0:c1] = True
+
+    train = mask & ~buffer
+    train_cells = []
+    for row, col in candidates:
+        if (row, col) in selected:
+            continue
+        block = train[row:row + block_size, col:col + block_size]
+        if block.shape == (block_size, block_size) and block.all():
+            train_cells.append((row, col))
+
+    result.update({
+        "available": True,
+        "train_mask": train,
+        "train_sampling_mask": ~buffer,
+        "holdout_mask": holdout,
+        "holdout_region_mask": holdout_region,
+        "holdout_buffer_mask": buffer,
+        "train_cells": train_cells,
+        "holdout_cells": selected,
+    })
+    return result
+
+
 def structural_image(img, valid):
     """生成梯度结构影像，用于对辐射差异鲁棒的配准。
 
@@ -259,8 +414,12 @@ def compute_shifts_from_overlap(arr_ref, tr_ref, arr_tgt, tr_tgt,
         return 0.0, 0.0, 0.0, {}
 
     # 生成梯度结构影像（对辐射差异鲁棒）
-    valid_ref_patch = np.isfinite(patch_ref) & (patch_ref != nodata_ref)
-    valid_tgt_patch = np.isfinite(patch_tgt) & (patch_tgt != nodata_tgt)
+    valid_ref_patch = np.isfinite(patch_ref)
+    valid_tgt_patch = np.isfinite(patch_tgt)
+    if nodata_ref is not None:
+        valid_ref_patch &= patch_ref != nodata_ref
+    if nodata_tgt is not None:
+        valid_tgt_patch &= patch_tgt != nodata_tgt
     struct_ref = structural_image(patch_ref, valid_ref_patch)
     struct_tgt = structural_image(patch_tgt, valid_tgt_patch)
 
@@ -395,7 +554,8 @@ def compute_shifts_from_overlap(arr_ref, tr_ref, arr_tgt, tr_tgt,
 
 def collect_block_matches(arr_ref, tr_ref, arr_tgt, tr_tgt,
                           nodata_ref=0, nodata_tgt=0, block_size=512,
-                          max_global_shift=40, confidence_threshold=0.5):
+                          max_global_shift=40, confidence_threshold=0.5,
+                          allowed_mask=None):
     """收集所有合格匹配块的控制点，用于后续仿射拟合。
 
     Parameters
@@ -467,13 +627,23 @@ def collect_block_matches(arr_ref, tr_ref, arr_tgt, tr_tgt,
     ph, pw = patch_ref.shape
     matches = []
     screening = {'total': 0, 'low_valid': 0, 'low_texture': 0,
-                 'low_conf': 0, 'large_shift': 0, 'accepted': 0}
+                 'low_conf': 0, 'large_shift': 0, 'outside_sampling': 0,
+                 'accepted': 0}
 
     for br in range(0, ph - block_size + 1, block_size // 2):
         for bc in range(0, pw - block_size + 1, block_size // 2):
             br2 = min(br + block_size, ph)
             bc2 = min(bc + block_size, pw)
             screening['total'] += 1
+
+            if allowed_mask is not None:
+                allowed = np.asarray(allowed_mask, dtype=bool)
+                if allowed.shape[0] < br2 or allowed.shape[1] < bc2:
+                    screening['outside_sampling'] += 1
+                    continue
+                if not np.all(allowed[br:br2, bc:bc2]):
+                    screening['outside_sampling'] += 1
+                    continue
 
             v_ref = valid_ref_patch[br:br2, bc:bc2]
             v_tgt = valid_tgt_patch[br:br2, bc:bc2]
@@ -712,8 +882,114 @@ def warp_affine_once(arr, model, tr_orig, crs, nodata, output_path):
     return warped
 
 
+def score_spatial_residual_consistency(controls, k_neighbors=8):
+    """Score residuals against a robust spatial neighbourhood.
+
+    Scores are in ``[0, 1]``.  A smooth spatial field has a high score even
+    when its absolute residual is large; an isolated phase-correlation peak
+    has a low score.
+    """
+    points = np.asarray(controls.get("points_xy", []), dtype=float)
+    dx = np.asarray(controls.get("residual_dx", []), dtype=float)
+    dy = np.asarray(controls.get("residual_dy", []), dtype=float)
+    n = len(points)
+    scores = np.zeros(n, dtype=float)
+    if n == 0:
+        return {"scores": scores, "n_scored": 0}
+    if n == 1:
+        scores[0] = 1.0
+        return {"scores": scores, "n_scored": 1}
+
+    from scipy.spatial import cKDTree
+
+    tree = cKDTree(points)
+    k = min(max(int(k_neighbors), 1) + 1, n)
+    _, neighbours = tree.query(points, k=k)
+    if k == 1:
+        neighbours = neighbours[:, np.newaxis]
+    for idx in range(n):
+        neighbour_idx = np.asarray(neighbours[idx]).reshape(-1)
+        neighbour_idx = neighbour_idx[neighbour_idx != idx]
+        if len(neighbour_idx) == 0:
+            scores[idx] = 1.0
+            continue
+        med_dx = float(np.median(dx[neighbour_idx]))
+        med_dy = float(np.median(dy[neighbour_idx]))
+        distances = np.hypot(dx[neighbour_idx] - med_dx, dy[neighbour_idx] - med_dy)
+        scale = max(3.0, 1.4826 * float(np.median(np.abs(distances - np.median(distances)))))
+        residual_distance = float(np.hypot(dx[idx] - med_dx, dy[idx] - med_dy))
+        scores[idx] = float(np.exp(-residual_distance / scale))
+    return {"scores": scores, "n_scored": n}
+
+
+def filter_local_residual_controls(
+    controls,
+    confidence_threshold,
+    mad_scale,
+    hard_max_shift,
+    neighbor_radius,
+    min_consistency_score=0.5,
+):
+    """Filter local controls by confidence, safety bounds and spatial support."""
+    points = np.asarray(controls.get("points_xy", []), dtype=float)
+    dx = np.asarray(controls.get("residual_dx", []), dtype=float)
+    dy = np.asarray(controls.get("residual_dy", []), dtype=float)
+    conf = np.asarray(controls.get("confidence", []), dtype=float)
+    n = min(len(points), len(dx), len(dy), len(conf))
+    points, dx, dy, conf = points[:n], dx[:n], dy[:n], conf[:n]
+    reasons = [None] * n
+    valid = np.ones(n, dtype=bool)
+    for idx in range(n):
+        if conf[idx] < float(confidence_threshold):
+            valid[idx] = False
+            reasons[idx] = "low_confidence"
+        elif (abs(dx[idx]) > float(hard_max_shift)
+              or abs(dy[idx]) > float(hard_max_shift)):
+            valid[idx] = False
+            reasons[idx] = "gross_residual"
+
+    consistency = score_spatial_residual_consistency(
+        {"points_xy": points, "residual_dx": dx, "residual_dy": dy},
+        k_neighbors=max(2, int(neighbor_radius)),
+    )["scores"]
+    for idx in range(n):
+        if valid[idx] and consistency[idx] < float(min_consistency_score):
+            valid[idx] = False
+            reasons[idx] = "spatial_inconsistency"
+
+    # A component-wise MAD check catches a compact gross cluster without
+    # deleting a gradual spatial field whose neighbouring values are coherent.
+    candidate_idx = np.flatnonzero(valid)
+    if len(candidate_idx) >= 3:
+        for values, name in ((dx, "dx"), (dy, "dy")):
+            med = float(np.median(values[candidate_idx]))
+            mad = max(float(np.median(np.abs(values[candidate_idx] - med))), 0.5)
+            limit = float(mad_scale) * 1.4826 * mad
+            for idx in candidate_idx:
+                if abs(values[idx] - med) > limit:
+                    valid[idx] = False
+                    reasons[idx] = "robust_outlier"
+
+    return {
+        "points_xy": points[valid],
+        "residual_dx": dx[valid],
+        "residual_dy": dy[valid],
+        "confidence": conf[valid],
+        "valid_mask": valid,
+        "spatial_consistency_score": consistency,
+        "reject_reasons": reasons,
+        "n_raw": int(n),
+        "n_confidence": int(np.count_nonzero(conf >= float(confidence_threshold))),
+        "n_spatial_consistent": int(np.count_nonzero(valid)),
+        "n_rejected_gross": int(sum(reason == "gross_residual" for reason in reasons)),
+        "n_valid": int(np.count_nonzero(valid)),
+    }
+
+
 def build_local_residual_controls(matches, global_dx, global_dy,
-                                   confidence_threshold=0.75, min_points=10):
+                                   confidence_threshold=0.75, min_points=10,
+                                   mad_scale=3.0, hard_max_shift=8.0,
+                                   neighbor_radius=8):
     """从块匹配中构建局部残差控制点。
 
     Parameters
@@ -743,43 +1019,28 @@ def build_local_residual_controls(matches, global_dx, global_dy,
     residual_dx = shift_dx - global_dx
     residual_dy = shift_dy - global_dy
 
-    # 置信度筛选
-    valid = conf >= confidence_threshold
-
-    if valid.sum() < min_points:
-        return {'points_xy': np.empty((0, 2)), 'residual_dx': np.array([]),
-                'residual_dy': np.array([]), 'confidence': np.array([]),
-                'valid_mask': np.array([], dtype=bool), 'n_valid': 0}
-
-    # 联合MAD异常点筛选
-    res_dx_v = residual_dx[valid]
-    res_dy_v = residual_dy[valid]
-    res_norm = np.hypot(res_dx_v, res_dy_v)
-
-    med_norm = np.median(res_norm)
-    mad_norm = np.median(np.abs(res_norm - med_norm))
-
-    outlier_mask = res_norm > med_norm + 3 * mad_norm
-    # 在 valid 内部去除 outlier
-    valid_indices = np.where(valid)[0]
-    for idx in valid_indices[outlier_mask]:
-        valid[idx] = False
-
-    points_xy = np.column_stack([src_x[valid], src_y[valid]])
-
-    return {
-        'points_xy': points_xy,
-        'residual_dx': residual_dx[valid],
-        'residual_dy': residual_dy[valid],
-        'confidence': conf[valid],
-        'valid_mask': valid,
-        'n_valid': int(valid.sum()),
-    }
+    filtered = filter_local_residual_controls(
+        {"points_xy": np.column_stack([src_x, src_y]),
+         "residual_dx": residual_dx, "residual_dy": residual_dy,
+         "confidence": conf},
+        confidence_threshold=confidence_threshold,
+        mad_scale=mad_scale,
+        hard_max_shift=hard_max_shift,
+        neighbor_radius=neighbor_radius,
+    )
+    if filtered["n_valid"] < min_points:
+        filtered.update({
+            "points_xy": np.empty((0, 2)), "residual_dx": np.array([]),
+            "residual_dy": np.array([]), "confidence": np.array([]),
+            "n_valid": 0,
+        })
+    return filtered
 
 
 def build_parent_based_local_controls(image_idx, parent_idx, pair_measurements,
                                        global_shifts, confidence_threshold=0.5,
-                                       min_points=10):
+                                       min_points=10, mad_scale=3.0,
+                                       hard_max_shift=8.0, neighbor_radius=8):
     """基于父子关系构建局部RBF控制点。
 
     自动判断 pair 记录方向，确保控制点坐标始终在 image_idx 像素坐标系中。
@@ -874,43 +1135,30 @@ def build_parent_based_local_controls(image_idx, parent_idx, pair_measurements,
         residual_dx = shift_dx_arr - parent_rel_dx
         residual_dy = shift_dy_arr - parent_rel_dy
 
-    # 置信度筛选
-    valid = conf_arr >= confidence_threshold
-
-    if valid.sum() < min_points:
-        return {'points_xy': np.empty((0, 2)), 'residual_dx': np.array([]),
-                'residual_dy': np.array([]), 'confidence': np.array([]),
-                'valid_mask': np.array([], dtype=bool), 'n_valid': 0}
-
-    # 联合MAD异常点筛选
-    res_dx_v = residual_dx[valid]
-    res_dy_v = residual_dy[valid]
-    res_norm = np.hypot(res_dx_v, res_dy_v)
-
-    med_norm = np.median(res_norm)
-    mad_norm = np.median(np.abs(res_norm - med_norm))
-
-    outlier_mask = res_norm > med_norm + 3 * mad_norm
-    valid_indices = np.where(valid)[0]
-    for idx in valid_indices[outlier_mask]:
-        valid[idx] = False
-
-    points_xy = np.column_stack([pts_x[valid], pts_y[valid]])
-
-    return {
-        'points_xy': points_xy,
-        'residual_dx': residual_dx[valid],
-        'residual_dy': residual_dy[valid],
-        'confidence': conf_arr[valid],
-        'valid_mask': valid,
-        'n_valid': int(valid.sum()),
-    }
+    filtered = filter_local_residual_controls(
+        {"points_xy": np.column_stack([pts_x, pts_y]),
+         "residual_dx": residual_dx, "residual_dy": residual_dy,
+         "confidence": conf_arr},
+        confidence_threshold=confidence_threshold,
+        mad_scale=mad_scale,
+        hard_max_shift=hard_max_shift,
+        neighbor_radius=neighbor_radius,
+    )
+    if filtered["n_valid"] < min_points:
+        filtered.update({
+            "points_xy": np.empty((0, 2)), "residual_dx": np.array([]),
+            "residual_dy": np.array([]), "confidence": np.array([]),
+            "n_valid": 0,
+        })
+    return filtered
 
 
 def rematch_pair_on_registered(arr_ref, arr_tgt, tr_ref, tr_tgt,
                                 nd_ref, nd_tgt,
                                 max_residual_shift=5, block_size=512,
-                                confidence_threshold=0.5):
+                                confidence_threshold=0.5,
+                                local_search_max_shift=None,
+                                allowed_mask=None):
     """对已全局配准的两景影像重新匹配，获取局部残余位移。
 
     两次完整匹配：第一次用 confidence_threshold，不足20块时第二次用 0.4。
@@ -921,11 +1169,17 @@ def rematch_pair_on_registered(arr_ref, arr_tgt, tr_ref, tr_tgt,
     dict with ... , used_confidence_threshold
     or None
     """
-    # 第一次匹配
+    search_bound = (
+        float(max_residual_shift)
+        if local_search_max_shift is None
+        else float(local_search_max_shift)
+    )
+    # 第一次匹配：搜索上限与后续局部模型的 component cap 分离。
     matches1, screening1 = collect_block_matches(
         arr_ref, tr_ref, arr_tgt, tr_tgt, nd_ref, nd_tgt,
-        block_size=block_size, max_global_shift=max_residual_shift,
-        confidence_threshold=confidence_threshold)
+        block_size=block_size, max_global_shift=search_bound,
+        confidence_threshold=confidence_threshold,
+        allowed_mask=allowed_mask)
 
     good1 = [m for m in matches1 if m['confidence'] >= confidence_threshold] if matches1 else []
     result1 = _build_rematch_result(good1, screening1, confidence_threshold) if len(good1) >= 5 else None
@@ -938,8 +1192,8 @@ def rematch_pair_on_registered(arr_ref, arr_tgt, tr_ref, tr_tgt,
     if confidence_threshold > 0.4:
         matches2, screening2 = collect_block_matches(
             arr_ref, tr_ref, arr_tgt, tr_tgt, nd_ref, nd_tgt,
-            block_size=block_size, max_global_shift=max_residual_shift,
-            confidence_threshold=0.4)
+            block_size=block_size, max_global_shift=search_bound,
+            confidence_threshold=0.4, allowed_mask=allowed_mask)
         good2 = [m for m in matches2 if m['confidence'] >= 0.4] if matches2 else []
         result2 = _build_rematch_result(good2, screening2, 0.4) if len(good2) >= 5 else None
     else:
@@ -983,7 +1237,8 @@ def _build_rematch_result(matches, screening, used_confidence_threshold):
 
 def refine_global_residual_shifts_from_original(original_arrays, global_shifts,
                                                 transforms, nodatas,
-                                                rematch_edges, params):
+                                                rematch_edges, params,
+                                                sampling_masks=None):
     """Refine global shifts from post-warp residual measurements.
 
     Each iteration warps the original arrays with the current global shifts,
@@ -1030,6 +1285,7 @@ def refine_global_residual_shifts_from_original(original_arrays, global_shifts,
                     max_residual_shift=max_residual_shift,
                     block_size=block_size,
                     confidence_threshold=confidence_threshold,
+                    allowed_mask=(sampling_masks or {}).get((i, j)),
                 )
             except Exception as exc:
                 warning = f'rematch failed for edge ({i}, {j}): {exc}'
@@ -1487,9 +1743,10 @@ def compute_hull_fade_mask(points_xy, h, w, buffer=128):
     mask = np.zeros((h, w), dtype=np.float64)
     mask[in_hull] = 1.0
     outside = ~in_hull
-    mask[outside] = np.clip(
-        1.0 - dist_outside[outside] / float(buffer),
-        0.0, 1.0)
+    if int(buffer) > 0:
+        mask[outside] = np.clip(
+            1.0 - dist_outside[outside] / float(buffer),
+            0.0, 1.0)
 
     return mask
 
@@ -2731,6 +2988,50 @@ def coregister_pair(ref_path, target_path, output_path, nodata=0):
     return {'shift_y': shift_y, 'shift_x': shift_x, 'confidence': conf}
 
 
+def select_validation_block_size(
+    common_valid_mask,
+    holdout_region_mask,
+    candidates,
+    required_candidate_count,
+    step,
+    offset_row=0,
+    offset_col=0,
+    min_common_valid_ratio=0.30,
+):
+    """Choose the first validation size with enough geometric candidates."""
+    common = np.asarray(common_valid_mask, dtype=bool)
+    holdout = np.asarray(holdout_region_mask, dtype=bool)
+    if common.shape != holdout.shape:
+        raise ValueError("common-valid and holdout masks must have the same shape")
+    counts = {}
+    selected = None
+    for size in candidates:
+        size = int(size)
+        if size <= 0:
+            raise ValueError("validation block sizes must be positive")
+        count = 0
+        for row in range(int(offset_row), common.shape[0] - size + 1, int(step)):
+            for col in range(int(offset_col), common.shape[1] - size + 1, int(step)):
+                common_block = common[row:row + size, col:col + size]
+                holdout_block = holdout[row:row + size, col:col + size]
+                if (common_block.shape == (size, size)
+                        and common_block.mean() >= float(min_common_valid_ratio)
+                        and holdout_block.all()):
+                    count += 1
+        counts[size] = count
+        if selected is None and count >= int(required_candidate_count):
+            selected = size
+    return {
+        "selected_block_size": selected,
+        "candidate_counts": counts,
+        "required_candidate_count": int(required_candidate_count),
+        "failure_reason": (
+            None if selected is not None
+            else "insufficient holdout geometry for all validation block sizes"
+        ),
+    }
+
+
 def validate_registration_independent_grid(
     arr_ref, tr_ref, arr_registered, tr_registered,
     nodata_ref, nodata_tgt,
@@ -2741,6 +3042,9 @@ def validate_registration_independent_grid(
     confidence_threshold=0.5,
     max_residual_shift=10,
     min_accepted=20,
+    reserved_holdout_mask=None,
+    validation_block_size_candidates=None,
+    required_candidate_count=None,
 ):
     """严格独立偏移网格验证。
 
@@ -2779,8 +3083,12 @@ def validate_registration_independent_grid(
     h_ref, w_ref = arr_ref.shape
     h_reg, w_reg = arr_registered.shape
 
-    valid_ref = np.isfinite(arr_ref) & (arr_ref != nodata_ref)
-    valid_reg = np.isfinite(arr_registered) & (arr_registered != nodata_tgt)
+    valid_ref = np.isfinite(arr_ref)
+    valid_reg = np.isfinite(arr_registered)
+    if nodata_ref is not None:
+        valid_ref &= arr_ref != nodata_ref
+    if nodata_tgt is not None:
+        valid_reg &= arr_registered != nodata_tgt
 
     struct_ref = structural_image(arr_ref, valid_ref)
     struct_reg = structural_image(arr_registered, valid_reg)
@@ -2798,9 +3106,44 @@ def validate_registration_independent_grid(
     c0, c1 = max(0, c0), min(w_ref, c1)
     overlap_h, overlap_w = r1 - r0, c1 - c0
 
-    if overlap_h < block_size or overlap_w < block_size:
+    common_valid = valid_ref & valid_reg
+    selected_block_size = int(block_size)
+    size_selection = None
+    if reserved_holdout_mask is not None:
+        reserved_holdout_mask = np.asarray(reserved_holdout_mask, dtype=bool)
+        if reserved_holdout_mask.shape != arr_ref.shape:
+            return {
+                'blocks': [], 'stats': None, 'coverage': None,
+                'failure_reason': 'reserved holdout mask shape mismatch',
+            }
+        candidates = validation_block_size_candidates or [block_size]
+        required_count = int(
+            required_candidate_count
+            if required_candidate_count is not None
+            else max(1, 2 * int(min_accepted))
+        )
+        size_selection = select_validation_block_size(
+            common_valid[r0:r1, c0:c1],
+            reserved_holdout_mask[r0:r1, c0:c1],
+            candidates, required_count, step=step,
+            offset_row=offset_row, offset_col=offset_col,
+        )
+        if size_selection['selected_block_size'] is None:
+            return {
+                'blocks': [], 'stats': None,
+                'coverage': {'covered_cells': 0, 'total_cells': 0,
+                             'coverage_ratio': 0.0},
+                'failure_reason': size_selection['failure_reason'],
+                'validation_block_size_selected': None,
+                'validation_candidate_counts': size_selection['candidate_counts'],
+            }
+        selected_block_size = int(size_selection['selected_block_size'])
+
+    if overlap_h < selected_block_size or overlap_w < selected_block_size:
         return {'blocks': [], 'stats': None, 'coverage': None,
-                'failure_reason': f'Overlap too small ({overlap_h}x{overlap_w}) for block_size={block_size}'}
+                'failure_reason': f'Overlap too small ({overlap_h}x{overlap_w}) for block_size={selected_block_size}',
+                'validation_block_size_selected': selected_block_size,
+                'validation_candidate_counts': (size_selection or {}).get('candidate_counts', {})}
 
     train_xy = np.array(training_points_xy) if len(training_points_xy) > 0 else np.empty((0, 2))
 
@@ -2813,14 +3156,15 @@ def validate_registration_independent_grid(
     n_conf = 0
     n_near_train = 0
     n_shift_limit = 0
+    n_outside_holdout = 0
 
-    grid_rows = list(range(r0 + offset_row, r1 - block_size + 1, step))
-    grid_cols = list(range(c0 + offset_col, c1 - block_size + 1, step))
+    grid_rows = list(range(r0 + offset_row, r1 - selected_block_size + 1, step))
+    grid_cols = list(range(c0 + offset_col, c1 - selected_block_size + 1, step))
 
     for br in grid_rows:
         for bc in grid_cols:
-            br2, bc2 = br + block_size, bc + block_size
-            cx, cy = bc + block_size // 2, br + block_size // 2
+            br2, bc2 = br + selected_block_size, bc + selected_block_size
+            cx, cy = bc + selected_block_size // 2, br + selected_block_size // 2
             n_total += 1
 
             nearest_dist = float('inf')
@@ -2828,7 +3172,21 @@ def validate_registration_independent_grid(
                 dists = np.hypot(train_xy[:, 0] - cx, train_xy[:, 1] - cy)
                 nearest_dist = float(np.min(dists))
 
-            if nearest_dist < actual_min_dist:
+            if (reserved_holdout_mask is not None
+                    and not reserved_holdout_mask[br:br2, bc:bc2].all()):
+                n_outside_holdout += 1
+                blocks.append({
+                    'validation_row': br, 'validation_col': bc,
+                    'center_x': cx, 'center_y': cy,
+                    'residual_dy': None, 'residual_dx': None,
+                    'residual_magnitude': None, 'confidence': None,
+                    'valid_ratio': None, 'texture_std': None,
+                    'nearest_training_distance': nearest_dist,
+                    'accepted': False, 'reject_reason': 'outside_holdout',
+                })
+                continue
+
+            if reserved_holdout_mask is None and nearest_dist < actual_min_dist:
                 n_near_train += 1
                 blocks.append({
                     'validation_row': br, 'validation_col': bc,
@@ -2844,7 +3202,7 @@ def validate_registration_independent_grid(
             v_ref = valid_ref[br:br2, bc:bc2]
             v_reg = valid_reg[br:br2, bc:bc2]
             joint = v_ref & v_reg
-            valid_ratio = joint.sum() / (block_size * block_size)
+            valid_ratio = joint.sum() / (selected_block_size * selected_block_size)
 
             if valid_ratio < 0.3:
                 n_nodata += 1
@@ -2933,6 +3291,7 @@ def validate_registration_independent_grid(
             'n_rejected_texture': n_texture,
             'n_rejected_confidence': n_conf,
             'n_rejected_shift_limit': n_shift_limit,
+            'n_rejected_outside_holdout': n_outside_holdout,
             'median': float(np.median(mags)),
             'mean': float(np.mean(mags)),
             'rmse': float(np.sqrt(np.mean(mags**2))),
@@ -2943,8 +3302,8 @@ def validate_registration_independent_grid(
             'min_distance_used': actual_min_dist,
         }
 
-    grid_n_rows = max(1, (overlap_h - block_size) // step + 1)
-    grid_n_cols = max(1, (overlap_w - block_size) // step + 1)
+    grid_n_rows = max(1, (overlap_h - selected_block_size) // step + 1)
+    grid_n_cols = max(1, (overlap_w - selected_block_size) // step + 1)
     total_cells = grid_n_rows * grid_n_cols
     covered = set()
     for b in accepted:
@@ -2968,6 +3327,8 @@ def validate_registration_independent_grid(
         'stats': stats,
         'coverage': coverage,
         'failure_reason': failure_reason,
+        'validation_block_size_selected': selected_block_size,
+        'validation_candidate_counts': (size_selection or {}).get('candidate_counts', {}),
     }
 
 

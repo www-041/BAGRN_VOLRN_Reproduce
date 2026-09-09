@@ -44,6 +44,32 @@ def test_registration_diagnostic_distinguishes_raw_and_robust_pair_matches(tmp_p
     ][0]["matches"]
 
 
+def test_registration_diagnostic_writes_holdout_and_common_valid_fields(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = {
+        "quality": {"quality": "fail"},
+        "final_validation": {"edges": [], "overall": {"quality": "fail"}},
+        "diagnostics": {
+            "overlap": {"0-1": {"bbox_pixels": 100,
+                                  "common_valid_pixels": 60,
+                                  "common_valid_ratio": 0.6}},
+            "holdout": {"0-1": {"holdout_cells": 2}},
+            "local_controls": {"1": {"n_raw": 10}},
+            "local_field": {"1": {"max_dx": 6.0}},
+        },
+    }
+
+    payload = diagnose_registration_pair.build_diagnostic_payload(
+        registration, ["a", "b"], tmp_path
+    )
+
+    assert payload["overlap"]["0-1"]["common_valid_ratio"] == 0.6
+    assert payload["holdout"]["0-1"]["holdout_cells"] == 2
+    assert payload["local_controls"]["1"]["n_raw"] == 10
+    assert payload["local_field"]["1"]["max_dx"] == 6.0
+
+
 def test_register_scenes_preserves_raw_matches_separately(monkeypatch):
     from src import coregistration, multiband_pipeline
 

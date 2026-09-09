@@ -143,6 +143,10 @@ def build_diagnostic_payload(registration, scene_ids, output_dir):
         "local_refinement": local_refinement,
         "local_cv_results": local_refinement.get("cv_results", {}),
         "local_field_diagnostics": _local_field_diagnostics(registration),
+        "overlap": diagnostics.get("overlap", {}),
+        "holdout": diagnostics.get("holdout", {}),
+        "local_controls": diagnostics.get("local_controls", {}),
+        "local_field": diagnostics.get("local_field", {}),
         "final_validation": final_validation,
         "quality": quality,
         "quality_classification": classification,
@@ -260,6 +264,79 @@ def _reproject_to_reference(array, src_transform, src_crs, nodata, shape,
     return destination
 
 
+def _save_mask_png(path, common_mask, train_mask, holdout_mask):
+    """Save a compact RGB map of common-valid, TRAIN and HOLDOUT regions."""
+    import matplotlib.pyplot as plt
+
+    common = np.asarray(common_mask, dtype=bool)
+    train = np.asarray(train_mask, dtype=bool)
+    holdout = np.asarray(holdout_mask, dtype=bool)
+    rgb = np.zeros((*common.shape, 3), dtype=float)
+    rgb[..., 2] = common.astype(float) * 0.35
+    rgb[..., 1] = train.astype(float)
+    rgb[..., 0] = holdout.astype(float)
+    plt.imsave(path, np.clip(rgb, 0.0, 1.0))
+
+
+def _save_residual_vectors(path, matches, title):
+    """Save residual vectors without changing registration data."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7, 5), dpi=140)
+    points = [m for m in matches if all(k in m for k in ("ref_x", "ref_y", "shift_dx", "shift_dy"))]
+    if points:
+        x = np.asarray([m["ref_x"] for m in points])
+        y = np.asarray([m["ref_y"] for m in points])
+        u = np.asarray([m["shift_dx"] for m in points])
+        v = np.asarray([m["shift_dy"] for m in points])
+        ax.quiver(x, y, u, v, angles="xy", scale_units="xy", scale=1, width=0.003)
+        ax.scatter(x, y, s=8, c="black")
+    ax.set_title(title)
+    ax.set_xlabel("reference pixel x")
+    ax.set_ylabel("reference pixel y")
+    ax.invert_yaxis()
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def _save_field_png(path, field, title):
+    """Save one local displacement field as a heatmap."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7, 5), dpi=140)
+    image = ax.imshow(np.asarray(field, dtype=float), cmap="coolwarm")
+    ax.set_title(title)
+    fig.colorbar(image, ax=ax, shrink=0.8)
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def _save_validation_holdout_png(path, validation, shape):
+    """Draw final validation blocks and their rejection/acceptance state."""
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    fig, ax = plt.subplots(figsize=(7, 5), dpi=140)
+    ax.set_xlim(0, shape[1])
+    ax.set_ylim(shape[0], 0)
+    for edge in validation.get("edges", []) or []:
+        for block in edge.get("blocks", []) or []:
+            color = "lime" if block.get("accepted") else "red"
+            size = int(validation.get("validation_block_size_selected") or 192)
+            ax.add_patch(Rectangle(
+                (block.get("validation_col", 0), block.get("validation_row", 0)),
+                size, size, fill=False, edgecolor=color, linewidth=0.5,
+            ))
+    ax.set_title("Final holdout validation blocks")
+    ax.set_xlabel("reference pixel x")
+    ax.set_ylabel("reference pixel y")
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+
 def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
                                registration_band_idx=0, mosaic_mode="weighted"):
     """Write registered images, a red-green overlay, and a diagnostic mosaic."""
@@ -314,6 +391,52 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         mode=mosaic_mode,
     )
 
+    diagnostics = registration.get("diagnostics", {}) or {}
+    masks_by_edge = registration.get("diagnostic_masks", {}) or {}
+    edge_key = next(iter(masks_by_edge), None)
+    png_paths = {}
+    if edge_key:
+        masks = masks_by_edge[edge_key]
+        mask_path = output_path / "train_holdout_map.png"
+        _save_mask_png(
+            str(mask_path), masks["common_valid_mask"],
+            masks["train_sampling_mask"], masks["holdout_region_mask"],
+        )
+        png_paths["train_holdout_map"] = str(mask_path)
+        raw = (diagnostics.get("raw_block_matches", [{}])[0] or {}).get("matches", [])
+        raw_path = output_path / "raw_residual_vectors.png"
+        _save_residual_vectors(str(raw_path), raw, "Raw residual vectors")
+        png_paths["raw_residual_vectors"] = str(raw_path)
+        robust = (registration.get("pair_matches", [{}])[0] or {}).get("matches", [])
+        filtered_path = output_path / "filtered_residual_vectors.png"
+        _save_residual_vectors(str(filtered_path), robust, "Filtered residual vectors")
+        png_paths["filtered_residual_vectors"] = str(filtered_path)
+        validation_path = output_path / "validation_holdout_blocks.png"
+        _save_validation_holdout_png(
+            str(validation_path), registration.get("final_validation", {}),
+            reference_band.shape,
+        )
+        png_paths["validation_holdout_blocks"] = str(validation_path)
+
+    local_dx_fields = registration.get("local_dx_fields", []) or []
+    local_dy_fields = registration.get("local_dy_fields", []) or []
+    if len(local_dx_fields) > 1:
+        for key, field, title in (
+            ("local_displacement_dx", local_dx_fields[1], "Local displacement dx"),
+            ("local_displacement_dy", local_dy_fields[1], "Local displacement dy"),
+        ):
+            field_path = output_path / f"{key}.png"
+            _save_field_png(str(field_path), field, title)
+            png_paths[key] = str(field_path)
+        magnitude_path = output_path / "local_displacement_magnitude.png"
+        _save_field_png(
+            str(magnitude_path), np.hypot(local_dx_fields[1], local_dy_fields[1]),
+            "Local displacement magnitude",
+        )
+        png_paths["local_displacement_magnitude"] = str(magnitude_path)
+    png_paths["global_registered_overlay"] = str(overlay_path)
+    png_paths["final_registered_overlay"] = str(overlay_path)
+
     return {
         "registered_reference": str(reference_path),
         "registered_target": str(target_path),
@@ -321,6 +444,7 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         "diagnostic_mosaic": str(mosaic_path),
         "scene_ids": [scene_ids[0], scene_ids[1]],
         "mosaic_mode": mosaic_mode,
+        **png_paths,
     }
 
 

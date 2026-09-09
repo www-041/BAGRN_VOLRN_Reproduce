@@ -38,6 +38,10 @@ _DEFAULT_REGISTRATION_PARAMS: Dict[str, Any] = {
     "local_block_size": 256,
     "local_confidence_threshold": 0.60,
     "local_max_residual_shift": 3.0,
+    "local_search_max_shift": 12.0,
+    "local_outlier_mad_scale": 3.0,
+    "local_hard_max_component": 8.0,
+    "local_neighbor_k": 8,
     "local_min_controls": 12,
     "local_min_spatial_groups": 3,
     "local_max_component": 2.5,
@@ -46,10 +50,18 @@ _DEFAULT_REGISTRATION_PARAMS: Dict[str, Any] = {
     "local_cv_min_p95_improvement": 0.15,
     "local_smoothing_candidates": [0.01, 0.05, 0.1, 0.5, 1.0],
     "validation_block_size": 384,
+    "validation_block_size_candidates": [384, 256, 192],
     "validation_step": 256,
     "validation_offset_row": 128,
     "validation_offset_col": 128,
     "validation_min_distance_from_training": 256,
+    "enable_spatial_holdout": False,
+    "holdout_fraction": 0.20,
+    "holdout_seed": 42,
+    "holdout_block_size": 512,
+    "min_holdout_cells": 2,
+    "holdout_buffer_pixels": 0,
+    "validation_required_candidate_count": 10,
     "validation_confidence_threshold": 0.45,
     "validation_max_residual_shift": 3.0,
     "final_min_blocks": 5,
@@ -267,6 +279,20 @@ def validate_config(config: ExperimentConfig, skip_file_check: bool = False) -> 
         rq = config.registration_params.get("required_quality", "pass")
         if rq not in ("pass", "warn", "fail"):
             errors.append(f"registration_params.required_quality 必须是 'pass'/'warn'/'fail'，当前: '{rq}'")
+        rp = config.registration_params
+        holdout_fraction = float(rp.get("holdout_fraction", 0.20))
+        if not 0.0 < holdout_fraction < 0.5:
+            errors.append("registration_params.holdout_fraction 必须在 (0, 0.5) 内")
+        sizes = rp.get("validation_block_size_candidates", [384, 256, 192])
+        if (not isinstance(sizes, list) or not sizes
+                or any(int(size) <= 0 for size in sizes)
+                or len({int(size) for size in sizes}) != len(sizes)):
+            errors.append(
+                "registration_params.validation_block_size_candidates 必须是非空正整数且不重复"
+            )
+        for key in ("local_search_max_shift", "local_hard_max_component"):
+            if float(rp.get(key, 0.0)) <= 0:
+                errors.append(f"registration_params.{key} 必须大于 0")
 
     # ---- 基本字段 ----
     if not config.experiment_name.strip():
