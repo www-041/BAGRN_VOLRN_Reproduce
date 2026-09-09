@@ -53,6 +53,16 @@ is not enabled; the best available result is retained only as a diagnostic.
 The final field fit receives that selected smoothing explicitly, so the
 diagnostic `field_stats.smoothing` always identifies the model actually used.
 
+When `local_cv_buffer_pixels` is configured, each blocked fold removes every
+candidate training control within that Euclidean distance of the held-out
+controls in scene-pixel coordinates. The buffer is applied to one fixed fold
+plan shared by all smoothing candidates; it is not tuned from final HOLDOUT
+residuals. Each fold records its pre/post-buffer training counts and minimum
+train/test distance. If buffering leaves too few training controls or usable
+folds, the CV result is unavailable and registration falls back to the
+global-only local stage. The general default remains `0`; the DZ01V B14
+configuration uses `256` pixels.
+
 Every required validation edge must also have no `failure_reason` and at least
 `final_min_blocks` accepted blocks. A passing pooled summary cannot mask a
 failed or under-sampled required edge. If no candidate block size can provide
@@ -65,6 +75,15 @@ The diagnostic JSON separates `overlap`, `holdout`, `local_controls`,
 `local_field`, and `final_validation`. This lets a failed run distinguish an
 unusable common-valid footprint, insufficient holdout geometry, low-confidence
 validation, and genuine post-warp residual error.
+
+For each reserved HOLDOUT block, the diagnostic command also writes
+`holdout_local_field_samples.csv`. Its `reference_center_*` columns are in
+the validation reference grid, while `field_center_*` columns are in the
+scene grid where the applied local field was sampled. The CSV records whether
+the mapping succeeded, the actual faded-field value and hull support, nearest
+local-control distance, predicted local correction, and final HOLDOUT
+residual. This is diagnostic evidence only and does not participate in model
+selection or quality gating.
 
 The paired stage diagnostics add `global_only_validation` and
 `stage_validation_comparison`. Both validation stages use the exact same
@@ -80,8 +99,8 @@ Interpret the paired result as follows:
 - If global-only RMSE is larger than final RMSE, local RBF improved the
   independent HOLDOUT, although the result may still be below PASS/WARN.
 - If global-only RMSE is smaller than final RMSE, local RBF worsened the true
-  HOLDOUT despite internal CV; investigate spatial overfit or use buffered
-  blocked CV in a later, explicitly approved round.
+  HOLDOUT despite internal buffered CV; investigate spatial overfit or local
+  controls that do not represent the residual.
 - If the two stages are nearly equal and both fail, inspect the sampled applied
   local field and HOLDOUT maps for hull fade, coverage, or controls that do not
   represent the residual.
