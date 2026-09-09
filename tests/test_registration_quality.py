@@ -215,6 +215,7 @@ def test_default_registration_params_exist():
     
     assert "registration_params" in dir(cfg)
     assert cfg.registration_params["required_quality"] == "pass"
+    assert cfg.registration_params["local_cv_buffer_pixels"] == 0
 
 
 def _config_with_local_rbf_params(params):
@@ -252,6 +253,26 @@ def test_local_smoothing_candidates_allow_zero_and_distinct_values():
 def test_local_cv_improvement_thresholds_must_be_nonnegative(key):
     cfg = _config_with_local_rbf_params({key: -0.01})
     assert any(key in error for error in validate_config(cfg, skip_file_check=True))
+
+
+def test_local_cv_buffer_pixels_is_schema_backed():
+    cfg = _config_with_local_rbf_params({"local_cv_buffer_pixels": 256})
+
+    assert not any(
+        "local_cv_buffer_pixels" in error
+        for error in validate_config(cfg, skip_file_check=True)
+    )
+    assert cfg.registration_params["local_cv_buffer_pixels"] == 256
+
+
+@pytest.mark.parametrize("value", [-1, float("nan"), float("inf"), "256"])
+def test_local_cv_buffer_pixels_rejects_invalid_values(value):
+    cfg = _config_with_local_rbf_params({"local_cv_buffer_pixels": value})
+
+    assert any(
+        "local_cv_buffer_pixels" in error
+        for error in validate_config(cfg, skip_file_check=True)
+    )
 
 
 def _validation_result_for_comparison(blocks, *, rmse, p95, median):

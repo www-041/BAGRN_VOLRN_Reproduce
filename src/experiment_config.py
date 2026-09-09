@@ -49,6 +49,7 @@ _DEFAULT_REGISTRATION_PARAMS: Dict[str, Any] = {
     "local_hull_buffer": 128,
     "local_cv_min_rmse_improvement": 0.10,
     "local_cv_min_p95_improvement": 0.15,
+    "local_cv_buffer_pixels": 0,
     "local_smoothing_candidates": [0.01, 0.05, 0.1, 0.5, 1.0],
     "validation_block_size": 384,
     "validation_block_size_candidates": [384, 256, 192],
@@ -319,6 +320,20 @@ def validate_config(config: ExperimentConfig, skip_file_check: bool = False) -> 
             if not np.isfinite(improvement) or improvement < 0:
                 errors.append(
                     f"registration_params.{key} 必须为非负有限数值"
+                )
+        buffer_pixels = rp.get("local_cv_buffer_pixels", 0)
+        if (
+            isinstance(buffer_pixels, bool)
+            or not isinstance(buffer_pixels, (int, float, np.integer, np.floating))
+        ):
+            errors.append(
+                "registration_params.local_cv_buffer_pixels 必须是非负有限数值"
+            )
+        else:
+            buffer_pixels = float(buffer_pixels)
+            if not np.isfinite(buffer_pixels) or buffer_pixels < 0:
+                errors.append(
+                    "registration_params.local_cv_buffer_pixels 必须是非负有限数值"
                 )
         holdout_fraction = float(rp.get("holdout_fraction", 0.20))
         if not 0.0 < holdout_fraction < 0.5:

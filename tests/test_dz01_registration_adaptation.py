@@ -40,3 +40,11 @@ def test_random_large_phase_peak_is_rejected():
 
     assert result["reject_reasons"][12] == "gross_residual"
     assert result["n_rejected_gross"] == 1
+
+
+def test_dz01_b14_config_uses_256px_buffered_local_cv():
+    from src.experiment_config import load_config
+
+    config = load_config("configs/dz01_mosaic_series_b14.yaml")
+
+    assert config.registration_params["local_cv_buffer_pixels"] == 256
