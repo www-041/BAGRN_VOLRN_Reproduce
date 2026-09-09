@@ -3780,6 +3780,7 @@ def build_robust_pair_measurement(matches, params=None):
         threshold = max(mad_scale * mad, residual_floor)
         next_inlier_mask = conf_mask & (residuals <= threshold)
         if next_inlier_mask.sum() < min_inliers:
+            inlier_mask = next_inlier_mask
             break
         if np.array_equal(next_inlier_mask, inlier_mask):
             break

@@ -2545,16 +2545,18 @@ class MultibandPipeline:
         required_quality = getattr(
             self.config, "registration_params", {}
         ).get("required_quality", "pass")
+        registration_status = str(registration.get("status", "fail")).lower()
         final_quality = registration.get("quality", {}).get("quality", "fail")
         registration_quality_ok = (
-            registration_connected
+            registration_status == "pass"
+            and registration_connected
             and registration_quality_meets_requirement(final_quality, required_quality)
         )
         if not registration_quality_ok:
             skipped_outputs.append("registration_quality_gate")
             logger.error(
-                "注册质量门控失败: connected=%s, final_quality=%s, required_quality=%s",
-                registration_connected, final_quality, required_quality,
+                "注册质量门控失败: status=%s, connected=%s, final_quality=%s, required_quality=%s",
+                registration_status, registration_connected, final_quality, required_quality,
             )
             return {
                 "config": self.config,

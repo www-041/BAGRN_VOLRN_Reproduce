@@ -321,6 +321,30 @@ def test_robust_pair_measurement_repeats_mad_filter_until_stable():
     assert all(match["shift_dy"] > -9.0 for match in result["matches"])
 
 
+def test_robust_pair_measurement_fails_when_mad_filter_drops_below_minimum():
+    matches = [
+        {"shift_dx": 2.0, "shift_dy": -1.0, "confidence": 0.9},
+        {"shift_dx": 2.1, "shift_dy": -1.0, "confidence": 0.9},
+        {"shift_dx": 1.9, "shift_dy": -1.0, "confidence": 0.9},
+        {"shift_dx": 2.0, "shift_dy": -0.9, "confidence": 0.9},
+        {"shift_dx": 15.0, "shift_dy": 12.0, "confidence": 0.9},
+    ]
+
+    result = build_robust_pair_measurement(
+        matches,
+        {
+            "global_confidence_threshold": 0.5,
+            "robust_mad_scale": 3.0,
+            "robust_residual_floor": 0.75,
+            "robust_min_inliers": 5,
+            "robust_min_inlier_ratio": 0.35,
+        },
+    )
+
+    assert result["status"] == "fail"
+    assert result["n_blocks_inlier"] == 4
+
+
 def test_n2_pair_uses_block_samples_not_one_pair_sample():
     matches = [{"shift_dx": 4.0 + dx, "shift_dy": 1.5 + dy, "confidence": 0.8}
                for dx, dy in [(0.0, 0.0), (0.1, 0.0), (-0.1, 0.0),
