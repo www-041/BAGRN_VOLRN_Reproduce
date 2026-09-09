@@ -127,7 +127,7 @@ def test_register_scenes_reserves_holdout_before_matching(monkeypatch):
     ]
 
     def fake_collect(*args, **kwargs):
-        seen["allowed_mask"] = kwargs.get("allowed_mask")
+        seen["holdout_exclusion_mask"] = kwargs.get("holdout_exclusion_mask")
         return matches, {"total": 4, "accepted": 4}
 
     monkeypatch.setattr(coregistration, "collect_block_matches", fake_collect)
@@ -178,7 +178,7 @@ def test_register_scenes_reserves_holdout_before_matching(monkeypatch):
 
     result = pipeline.register_scenes(scene_data, [{"idx_i": 0, "idx_j": 1}])
 
-    assert seen["allowed_mask"] is not None
+    assert seen["holdout_exclusion_mask"] is not None
     assert seen["holdout_contexts"][(0, 1)]["available"] is True
     assert seen["holdout_contexts"][(0, 1)]["holdout_region_full_mask"].any()
     reservation = seen["holdout_contexts"][(0, 1)]["validation_reservation"]

@@ -440,6 +440,7 @@ def phase_correlation_from_overlap(
     tr_tgt,
     nodata_ref=None,
     nodata_tgt=None,
+    holdout_exclusion_mask=None,
 ):
     """Phase correlation using geographic overlap only.
 
@@ -459,37 +460,24 @@ def phase_correlation_from_overlap(
     -------
     shift_y, shift_x, confidence : float
     """
-    from rasterio.transform import array_bounds
-    from src.overlap import get_overlap_window
-
-    # Get bounds
-    bounds_ref = array_bounds(arr_ref.shape[0], arr_ref.shape[1], tr_ref)
-    bounds_tgt = array_bounds(arr_tgt.shape[0], arr_tgt.shape[1], tr_tgt)
-
-    # Get overlap window
-    overlap = get_overlap_window(bounds_ref, tr_ref, bounds_tgt, tr_tgt)
-    if overlap is None:
+    context = build_pair_overlap_context(
+        arr_ref, tr_ref, arr_tgt, tr_tgt, nodata_ref, nodata_tgt,
+    )
+    if not context.get("available"):
         return 0.0, 0.0, 0.0
 
-    (row_start_ref, row_end_ref, col_start_ref, col_end_ref),     (row_start_tgt, row_end_tgt, col_start_tgt, col_end_tgt) = overlap
-
-    # Extract patches
-    patch_ref = arr_ref[row_start_ref:row_end_ref, col_start_ref:col_end_ref]
-    patch_tgt = arr_tgt[row_start_tgt:row_end_tgt, col_start_tgt:col_end_tgt]
-
-    # Crop to same size (defensive for rounding)
-    h = min(patch_ref.shape[0], patch_tgt.shape[0])
-    w = min(patch_ref.shape[1], patch_tgt.shape[1])
-    patch_ref = patch_ref[:h, :w]
-    patch_tgt = patch_tgt[:h, :w]
-
-    # Build masks
-    valid_ref = np.isfinite(patch_ref)
-    valid_tgt = np.isfinite(patch_tgt)
-    if nodata_ref is not None:
-        valid_ref &= (patch_ref != nodata_ref)
-    if nodata_tgt is not None:
-        valid_tgt &= (patch_tgt != nodata_tgt)
+    patch_ref = context["ref_overlap"]
+    patch_tgt = context["tgt_overlap"]
+    valid_ref = context["ref_valid"].copy()
+    valid_tgt = context["tgt_valid"].copy()
+    if holdout_exclusion_mask is not None:
+        exclusion = np.asarray(holdout_exclusion_mask, dtype=bool)
+        if exclusion.shape == np.asarray(arr_ref).shape:
+            row_start, row_end, col_start, col_end = context["ref_window"]
+            exclusion = exclusion[row_start:row_end, col_start:col_end]
+        if exclusion.shape != patch_ref.shape:
+            raise ValueError("holdout exclusion mask shape mismatch")
+        valid_ref &= exclusion
 
     # Call phase_correlation
     return phase_correlation(patch_ref, patch_tgt, valid_ref, valid_tgt)
@@ -696,7 +684,7 @@ def compute_shifts_from_overlap(arr_ref, tr_ref, arr_tgt, tr_tgt,
 def collect_block_matches(arr_ref, tr_ref, arr_tgt, tr_tgt,
                           nodata_ref=0, nodata_tgt=0, block_size=512,
                           max_global_shift=40, confidence_threshold=0.5,
-                          allowed_mask=None):
+                          allowed_mask=None, holdout_exclusion_mask=None):
     """收集所有合格匹配块的控制点，用于后续仿射拟合。
 
     Parameters
@@ -714,6 +702,11 @@ def collect_block_matches(arr_ref, tr_ref, arr_tgt, tr_tgt,
         块筛选统计
     """
     from scipy.ndimage import sobel, gaussian_filter
+
+    if holdout_exclusion_mask is None:
+        # ``allowed_mask`` is retained as a compatibility alias. It must
+        # describe only reserved-HOLDOUT exclusion, never common validity.
+        holdout_exclusion_mask = allowed_mask
 
     h_ref, w_ref = arr_ref.shape
     h_tgt, w_tgt = arr_tgt.shape
@@ -777,8 +770,8 @@ def collect_block_matches(arr_ref, tr_ref, arr_tgt, tr_tgt,
             bc2 = min(bc + block_size, pw)
             screening['total'] += 1
 
-            if allowed_mask is not None:
-                allowed = np.asarray(allowed_mask, dtype=bool)
+            if holdout_exclusion_mask is not None:
+                allowed = np.asarray(holdout_exclusion_mask, dtype=bool)
                 if allowed.shape[0] < br2 or allowed.shape[1] < bc2:
                     screening['outside_sampling'] += 1
                     continue
@@ -1299,7 +1292,8 @@ def rematch_pair_on_registered(arr_ref, arr_tgt, tr_ref, tr_tgt,
                                 max_residual_shift=5, block_size=512,
                                 confidence_threshold=0.5,
                                 local_search_max_shift=None,
-                                allowed_mask=None):
+                                allowed_mask=None,
+                                holdout_exclusion_mask=None):
     """对已全局配准的两景影像重新匹配，获取局部残余位移。
 
     两次完整匹配：第一次用 confidence_threshold，不足20块时第二次用 0.4。
@@ -1310,6 +1304,8 @@ def rematch_pair_on_registered(arr_ref, arr_tgt, tr_ref, tr_tgt,
     dict with ... , used_confidence_threshold
     or None
     """
+    if holdout_exclusion_mask is None:
+        holdout_exclusion_mask = allowed_mask
     search_bound = (
         float(max_residual_shift)
         if local_search_max_shift is None
@@ -1320,7 +1316,7 @@ def rematch_pair_on_registered(arr_ref, arr_tgt, tr_ref, tr_tgt,
         arr_ref, tr_ref, arr_tgt, tr_tgt, nd_ref, nd_tgt,
         block_size=block_size, max_global_shift=search_bound,
         confidence_threshold=confidence_threshold,
-        allowed_mask=allowed_mask)
+        holdout_exclusion_mask=holdout_exclusion_mask)
 
     good1 = [m for m in matches1 if m['confidence'] >= confidence_threshold] if matches1 else []
     result1 = _build_rematch_result(good1, screening1, confidence_threshold) if len(good1) >= 5 else None
@@ -1334,7 +1330,8 @@ def rematch_pair_on_registered(arr_ref, arr_tgt, tr_ref, tr_tgt,
         matches2, screening2 = collect_block_matches(
             arr_ref, tr_ref, arr_tgt, tr_tgt, nd_ref, nd_tgt,
             block_size=block_size, max_global_shift=search_bound,
-            confidence_threshold=0.4, allowed_mask=allowed_mask)
+            confidence_threshold=0.4,
+            holdout_exclusion_mask=holdout_exclusion_mask)
         good2 = [m for m in matches2 if m['confidence'] >= 0.4] if matches2 else []
         result2 = _build_rematch_result(good2, screening2, 0.4) if len(good2) >= 5 else None
     else:
@@ -1426,7 +1423,7 @@ def refine_global_residual_shifts_from_original(original_arrays, global_shifts,
                     max_residual_shift=max_residual_shift,
                     block_size=block_size,
                     confidence_threshold=confidence_threshold,
-                    allowed_mask=(sampling_masks or {}).get((i, j)),
+                    holdout_exclusion_mask=(sampling_masks or {}).get((i, j)),
                 )
             except Exception as exc:
                 warning = f'rematch failed for edge ({i}, {j}): {exc}'
@@ -3221,6 +3218,8 @@ def reserve_validation_windows(
     seed=42,
     reservation_margin=2,
     buffer_pixels=0,
+    training_block_sizes=None,
+    min_training_windows=None,
 ):
     """Reserve exact independent validation windows before registration.
 
@@ -3243,6 +3242,31 @@ def reserve_validation_windows(
     if buffer_pixels < 0:
         raise ValueError("buffer_pixels must be non-negative")
 
+    if training_block_sizes is None:
+        training_sizes = []
+    else:
+        training_sizes = sorted({int(size) for size in training_block_sizes})
+        if any(size <= 0 for size in training_sizes):
+            raise ValueError("training block sizes must be positive")
+    if min_training_windows is None:
+        training_requirements = {}
+    elif hasattr(min_training_windows, "get"):
+        training_requirements = {
+            int(size): int(min_training_windows.get(size, 1))
+            for size in training_sizes
+        }
+        for size in training_sizes:
+            if str(size) in min_training_windows:
+                training_requirements[size] = int(min_training_windows[str(size)])
+    else:
+        values = [int(value) for value in min_training_windows]
+        training_requirements = {
+            size: values[idx] if idx < len(values) else 1
+            for idx, size in enumerate(training_sizes)
+        }
+    if any(value < 0 for value in training_requirements.values()):
+        raise ValueError("minimum training window counts must be non-negative")
+
     candidate_by_size = {}
     candidate_counts = {}
     for size in sizes:
@@ -3262,7 +3286,44 @@ def reserve_validation_windows(
             or b["col"] + b["width"] + buffer_pixels <= a["col"]
         )
 
-    def spatially_select(candidates):
+    def training_feasibility(selected_windows):
+        """Count geometry-valid training windows after holdout reservation."""
+        if not training_sizes:
+            return {}
+        exclusion = np.ones_like(common, dtype=bool)
+        for item in selected_windows:
+            row, col = item["row"], item["col"]
+            height, width = item["height"], item["width"]
+            r0 = max(0, row - buffer_pixels)
+            c0 = max(0, col - buffer_pixels)
+            r1 = min(common.shape[0], row + height + buffer_pixels)
+            c1 = min(common.shape[1], col + width + buffer_pixels)
+            exclusion[r0:r1, c0:c1] = False
+
+        feasibility = {}
+        for size in training_sizes:
+            candidates = enumerate_validation_windows(
+                common, size, step=max(1, size // 2),
+                offset_row=0, offset_col=0,
+                min_common_valid_ratio=min_common_valid_ratio,
+            )
+            available = [
+                item for item in candidates
+                if exclusion[
+                    item["row"]:item["row"] + item["height"],
+                    item["col"]:item["col"] + item["width"],
+                ].all()
+            ]
+            required = int(training_requirements.get(size, 1))
+            feasibility[size] = {
+                "candidate_windows": int(len(candidates)),
+                "available_windows": int(len(available)),
+                "required_windows": required,
+                "feasible": bool(len(available) >= required),
+            }
+        return feasibility
+
+    def spatially_select(candidates, training_checker=None):
         if not candidates:
             return []
         centers = np.asarray([
@@ -3279,7 +3340,17 @@ def reserve_validation_windows(
 
         remaining = set(range(len(candidates)))
         selected_indices = []
-        first = min(remaining, key=lambda idx: (projection[idx], idx))
+        first_candidates = sorted(remaining, key=lambda idx: (projection[idx], idx))
+        first = next(
+            (
+                idx for idx in first_candidates
+                if training_checker is None
+                or all(item["feasible"] for item in training_checker([candidates[idx]]).values())
+            ),
+            None,
+        )
+        if first is None:
+            return []
         selected_indices.append(first)
         remaining.remove(first)
         while remaining:
@@ -3296,7 +3367,22 @@ def reserve_validation_windows(
                     for chosen in selected_indices
                 ]
                 return (min(distances), projection[idx], -idx)
-            chosen = max(compatible, key=score)
+            ordered = sorted(compatible, key=score, reverse=True)
+            chosen = next(
+                (
+                    idx for idx in ordered
+                    if training_checker is None
+                    or all(
+                        item["feasible"]
+                        for item in training_checker(
+                            [candidates[item_idx] for item_idx in selected_indices + [idx]]
+                        ).values()
+                    )
+                ),
+                None,
+            )
+            if chosen is None:
+                break
             selected_indices.append(chosen)
             remaining.remove(chosen)
         return [candidates[idx] for idx in selected_indices]
@@ -3308,8 +3394,14 @@ def reserve_validation_windows(
     for size in sizes:
         candidates = candidate_by_size[size]
         candidates_before_filter = len(candidates)
-        trial = spatially_select(candidates)
-        if len(trial) >= minimum:
+        trial = spatially_select(
+            candidates,
+            training_checker=training_feasibility if training_sizes else None,
+        )
+        feasibility = training_feasibility(trial)
+        if len(trial) >= minimum and all(
+            item["feasible"] for item in feasibility.values()
+        ):
             selected_size = size
             selected = trial[:max(minimum, minimum + int(reservation_margin))]
             unused = [item for item in candidates if item not in selected]
@@ -3317,7 +3409,11 @@ def reserve_validation_windows(
 
     if selected_size is None:
         all_candidates = candidate_by_size[sizes[-1]]
-        trial = spatially_select(all_candidates)
+        trial = spatially_select(
+            all_candidates,
+            training_checker=training_feasibility if training_sizes else None,
+        )
+        failure_feasibility = training_feasibility(trial)
         holdout_region = np.zeros_like(common, dtype=bool)
         holdout_buffer = np.zeros_like(common, dtype=bool)
         for item in trial:
@@ -3351,8 +3447,10 @@ def reserve_validation_windows(
             "holdout_buffer_mask": holdout_buffer,
             "train_mask": common & ~holdout_buffer,
             "train_sampling_mask": common & ~holdout_buffer,
+            "holdout_exclusion_mask": ~holdout_buffer,
             "buffer_pixels": buffer_pixels,
             "failure_reason": "insufficient independent validation geometry",
+            "training_feasibility": failure_feasibility,
         }
 
     holdout_region = np.zeros_like(common, dtype=bool)
@@ -3367,18 +3465,16 @@ def reserve_validation_windows(
         c1 = min(common.shape[1], col + width + buffer_pixels)
         holdout_buffer[r0:r1, c0:c1] = True
 
-    train_cells = []
-    for row in range(0, common.shape[0] - selected_size + 1, selected_size):
-        for col in range(0, common.shape[1] - selected_size + 1, selected_size):
-            block = common[row:row + selected_size, col:col + selected_size]
-            candidate = {
-                "row": row, "col": col,
-                "height": selected_size, "width": selected_size,
-            }
-            if block.all() and not any(
-                overlaps_with_buffer(candidate, item) for item in selected
-            ):
-                train_cells.append((row, col))
+    train_candidates = enumerate_validation_windows(
+        common, selected_size, step=max(1, selected_size // 2),
+        offset_row=0, offset_col=0,
+        min_common_valid_ratio=min_common_valid_ratio,
+    )
+    train_cells = [
+        (item["row"], item["col"])
+        for item in train_candidates
+        if not any(overlaps_with_buffer(item, reserved) for reserved in selected)
+    ]
 
     return {
         "available": True,
@@ -3402,8 +3498,10 @@ def reserve_validation_windows(
         "holdout_buffer_mask": holdout_buffer,
         "train_mask": common & ~holdout_buffer,
         "train_sampling_mask": common & ~holdout_buffer,
+        "holdout_exclusion_mask": ~holdout_buffer,
         "buffer_pixels": buffer_pixels,
         "failure_reason": None,
+        "training_feasibility": training_feasibility(selected),
     }
 
 

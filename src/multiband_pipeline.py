@@ -285,7 +285,7 @@ def _collect_post_global_residual_pairs(
                 local_search_max_shift=search_max_shift,
                 block_size=block_size,
                 confidence_threshold=confidence,
-                allowed_mask=(context or {}).get("train_sampling_mask")
+                holdout_exclusion_mask=(context or {}).get("holdout_exclusion_mask")
                 if context and context.get("available") else None,
             )
         except Exception as exc:
@@ -360,6 +360,16 @@ def _build_pair_holdout_context(
             1,
             min(int(params.get("validation_step", 256)), min(block_sizes) // 2),
         )
+    reservation_kwargs = {}
+    if "validation_training_block_sizes" in params:
+        training_block_sizes = params["validation_training_block_sizes"]
+        reservation_kwargs["training_block_sizes"] = [
+            int(size) for size in training_block_sizes
+        ]
+    if "validation_min_training_windows" in params:
+        reservation_kwargs["min_training_windows"] = params[
+            "validation_min_training_windows"
+        ]
     split = reserve_validation_windows(
         common_valid,
         block_size_candidates=block_sizes,
@@ -373,6 +383,7 @@ def _build_pair_holdout_context(
         seed=int(params.get("holdout_seed", 42)),
         reservation_margin=int(params.get("validation_reservation_margin", 2)),
         buffer_pixels=int(params.get("holdout_buffer_pixels", 0)),
+        **reservation_kwargs,
     )
     split.update({
         "patch_window_ref": pair_grid["ref_window"],
@@ -410,6 +421,9 @@ def _public_holdout_summary(context):
             "unused_cells": list(reservation.get("unused_cells", [])),
             "unused_count": int(len(reservation.get("unused_cells", []))),
             "candidate_counts": dict(reservation.get("candidate_counts", {})),
+            "training_feasibility": dict(
+                reservation.get("training_feasibility", {})
+            ),
             "buffer_pixels": int(reservation.get("buffer_pixels", 0)),
             "failure_reason": reservation.get("failure_reason"),
         }
@@ -1669,7 +1683,7 @@ class MultibandPipeline:
             if holdout_enabled:
                 holdout_context = holdout_contexts[(i, j)]
                 if holdout_context.get("available"):
-                    sampling_mask = holdout_context["train_sampling_mask"]
+                    sampling_mask = holdout_context["holdout_exclusion_mask"]
 
             # 尝试1: 块匹配
             matches, screening = collect_block_matches(
@@ -1679,7 +1693,8 @@ class MultibandPipeline:
                 block_size=global_block_size,
                 max_global_shift=max_global_shift,
                 confidence_threshold=global_confidence_threshold,
-                **({"allowed_mask": sampling_mask} if sampling_mask is not None else {}),
+                **({"holdout_exclusion_mask": sampling_mask}
+                   if sampling_mask is not None else {}),
             )
             raw_matches = [dict(match) for match in matches]
             raw_block_matches.append({
@@ -1725,6 +1740,9 @@ class MultibandPipeline:
                     arr_i_reg, transforms[i],
                     arr_j_reg, transforms[j],
                     nodata_ref=nd_i, nodata_tgt=nd_j,
+                    holdout_exclusion_mask=(holdout_contexts.get((i, j)) or {}).get(
+                        "holdout_exclusion_mask"
+                    ) if holdout_enabled else None,
                 )
             except Exception as exc:
                 logger.warning("  [%d]-[%d] phase correlation 异常: %s", i, j, exc)
@@ -1879,7 +1897,7 @@ class MultibandPipeline:
             matching_edges,
             refine_params,
             sampling_masks={
-                edge: context.get("train_sampling_mask")
+                edge: context.get("holdout_exclusion_mask")
                 for edge, context in holdout_contexts.items()
                 if context.get("available")
             },
@@ -2118,6 +2136,7 @@ class MultibandPipeline:
                 "common_valid_mask": context.get("common_valid_mask", np.zeros((0, 0), dtype=bool)),
                 "holdout_region_mask": context.get("holdout_region_mask", np.zeros((0, 0), dtype=bool)),
                 "train_sampling_mask": context.get("train_sampling_mask", np.zeros((0, 0), dtype=bool)),
+                "holdout_exclusion_mask": context.get("holdout_exclusion_mask", np.zeros((0, 0), dtype=bool)),
             }
             for (i, j), context in holdout_contexts.items()
             if context.get("available")

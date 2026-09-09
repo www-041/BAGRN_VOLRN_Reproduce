@@ -136,6 +136,32 @@ def test_final_validation_reuses_exact_reserved_windows(monkeypatch):
     }
 
 
+def test_overlap_phase_correlation_fallback_excludes_reserved_holdout(monkeypatch):
+    from src import coregistration
+
+    ref = np.arange(64 * 64, dtype=float).reshape(64, 64)
+    tgt = ref.copy()
+    exclusion = np.ones_like(ref, dtype=bool)
+    exclusion[:32, :32] = False
+    seen = {}
+
+    def fake_phase(ref_array, tgt_array, valid_ref=None, valid_tgt=None):
+        seen["valid_ref"] = np.asarray(valid_ref, dtype=bool)
+        seen["valid_tgt"] = np.asarray(valid_tgt, dtype=bool)
+        return 0.0, 0.0, 0.9
+
+    monkeypatch.setattr(coregistration, "phase_correlation", fake_phase)
+    result = coregistration.phase_correlation_from_overlap(
+        ref, from_origin(0, 64, 1, 1),
+        tgt, from_origin(0, 64, 1, 1),
+        None, None, holdout_exclusion_mask=exclusion,
+    )
+
+    assert result == (0.0, 0.0, 0.9)
+    assert not seen["valid_ref"][:32, :32].any()
+    assert seen["valid_ref"][32:, 32:].all()
+
+
 def test_bad_holdout_rmse_or_p95_remains_fail():
     from src.coregistration import aggregate_final_validation_quality
 
