@@ -113,16 +113,44 @@ def _build_local_cv_fold_plan(points_xy, params):
         points = np.empty((0, 2), dtype=float)
     groups = _local_spatial_group_labels(points)
     group_ids = np.unique(groups)
+    buffer_pixels = float(params.get("local_cv_buffer_pixels", 0.0))
+    min_train_controls = int(params.get("local_min_controls", 12))
     folds = []
+    dropped_folds = []
     for group_id in group_ids.tolist():
         test_idx = np.flatnonzero(groups == group_id).astype(int)
-        train_idx = np.flatnonzero(groups != group_id).astype(int)
-        if len(test_idx) == 0 or len(train_idx) < 3:
+        candidate_train_idx = np.flatnonzero(groups != group_id).astype(int)
+        if len(test_idx) == 0:
+            continue
+        min_distance = None
+        train_idx = candidate_train_idx
+        if len(candidate_train_idx) and len(test_idx):
+            distances = np.linalg.norm(
+                points[candidate_train_idx, None, :]
+                - points[test_idx][None, :, :], axis=2,
+            )
+            if np.all(np.isfinite(distances)):
+                min_distance = float(np.min(distances))
+            if buffer_pixels > 0:
+                keep = distances.min(axis=1) >= buffer_pixels
+                train_idx = candidate_train_idx[keep]
+        if len(train_idx) < min_train_controls:
+            dropped_folds.append({
+                "group_id": int(group_id),
+                "reason": (
+                    f"train controls {len(train_idx)} < "
+                    f"{min_train_controls} after buffer"
+                ),
+                "n_train_after_buffer": int(len(train_idx)),
+            })
             continue
         folds.append({
             "group_id": int(group_id),
             "train_idx": train_idx,
             "test_idx": test_idx,
+            "n_train_before_buffer": int(len(candidate_train_idx)),
+            "n_train_after_buffer": int(len(train_idx)),
+            "min_train_test_distance_px": min_distance,
         })
 
     validation_indices = (
@@ -151,6 +179,8 @@ def _build_local_cv_fold_plan(points_xy, params):
         "n_validation_controls": n_validation_controls,
         "validation_indices": validation_indices,
         "validation_coverage": float(n_validation_controls / len(points)) if len(points) else 0.0,
+        "buffer_pixels": buffer_pixels,
+        "dropped_folds": dropped_folds,
         "failure_reason": "; ".join(reasons) or None,
     }
 
