@@ -275,6 +275,64 @@ def test_local_cv_buffer_pixels_rejects_invalid_values(value):
     )
 
 
+def test_local_rbf_gate_falls_back_when_buffered_cv_unavailable():
+    from src import multiband_pipeline
+
+    points = np.asarray([
+        [0.0, 0.0], [0.5, 0.0], [0.0, 0.5], [0.5, 0.5],
+        [20.0, 0.0], [20.5, 0.0], [20.0, 0.5], [20.5, 0.5],
+        [0.0, 20.0], [0.5, 20.0], [0.0, 20.5], [0.5, 20.5],
+        [20.0, 20.0], [20.5, 20.0], [20.0, 20.5], [20.5, 20.5],
+    ])
+    controls = {
+        "points_xy": points, "residual_dx": np.ones(len(points)),
+        "residual_dy": np.zeros(len(points)), "confidence": np.ones(len(points)),
+        "n_valid": len(points),
+    }
+    params = {
+        "local_min_controls": 3, "local_min_spatial_groups": 3,
+        "local_cv_buffer_pixels": 100, "local_smoothing_candidates": [0.1],
+    }
+    cv_result = multiband_pipeline._local_holdout_cv(controls, params)
+    result = multiband_pipeline._accept_local_rbf_candidate(
+        controls, params, cv_result=cv_result,
+    )
+
+    assert cv_result["available"] is False
+    assert result["accepted"] is False
+    assert "unavailable" in result["reason"]
+
+
+def test_local_rbf_gate_still_requires_both_rmse_and_p95_after_buffering():
+    from src import multiband_pipeline
+
+    points = np.asarray([
+        [x, y] for y in (0.0, 10.0, 20.0, 30.0)
+        for x in (0.0, 10.0, 20.0, 30.0)
+    ])
+    controls = {
+        "points_xy": points, "residual_dx": np.ones(len(points)),
+        "residual_dy": np.zeros(len(points)), "confidence": np.ones(len(points)),
+        "n_valid": len(points),
+    }
+    result = multiband_pipeline._accept_local_rbf_candidate(
+        controls,
+        {"local_min_controls": 12, "local_min_spatial_groups": 3,
+         "local_cv_buffer_pixels": 0,
+         "local_cv_min_rmse_improvement": 0.10,
+         "local_cv_min_p95_improvement": 0.15},
+        cv_result={
+            "available": True, "has_passing_candidate": True,
+            "baseline_rmse": 1.0, "candidate_rmse": 0.8,
+            "baseline_p95": 2.0, "candidate_p95": 1.9,
+            "selected_smoothing": 0.1,
+        },
+    )
+
+    assert result["accepted"] is False
+    assert "P95" in result["reason"]
+
+
 def _validation_result_for_comparison(blocks, *, rmse, p95, median):
     return {
         "edges": [{"idx_i": 0, "idx_j": 1, "blocks": blocks}],

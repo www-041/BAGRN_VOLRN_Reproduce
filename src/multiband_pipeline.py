@@ -170,6 +170,8 @@ def _build_local_cv_fold_plan(points_xy, params):
         reasons.append(
             f"validation controls {n_validation_controls} < {min_validation_controls}"
         )
+    if dropped_folds:
+        reasons.extend(item["reason"] for item in dropped_folds)
     return {
         "available": not reasons,
         "groups": groups,
@@ -203,6 +205,10 @@ def _evaluate_local_rbf_smoothing_candidate(controls, fold_plan, smoothing, para
         "n_folds_attempted": int(fold_plan.get("n_folds_attempted", 0)),
         "n_validation_controls": 0,
         "validation_coverage": 0.0,
+        "cv_strategy": "buffered_spatial_group",
+        "buffer_pixels": float(fold_plan.get("buffer_pixels", 0.0)),
+        "fold_diagnostics": [],
+        "dropped_folds": list(fold_plan.get("dropped_folds", [])),
         "failed_group_ids": [],
         "failure_reason": None,
     }
@@ -276,6 +282,16 @@ def _evaluate_local_rbf_smoothing_candidate(controls, fold_plan, smoothing, para
         "n_folds": int(len(fold_plan["folds"])),
         "n_validation_controls": int(len(baseline_errors)),
         "validation_coverage": float(len(baseline_errors) / len(points)) if len(points) else 0.0,
+        "fold_diagnostics": [
+            {
+                "group_id": int(fold["group_id"]),
+                "n_train_before_buffer": int(fold["n_train_before_buffer"]),
+                "n_train_after_buffer": int(fold["n_train_after_buffer"]),
+                "n_test": int(len(fold["test_idx"])),
+                "min_train_test_distance_px": fold["min_train_test_distance_px"],
+            }
+            for fold in fold_plan["folds"]
+        ],
         "failure_reason": None,
     })
     return base
@@ -474,10 +490,23 @@ def _local_holdout_cv(controls, params):
         candidate_results, baseline_rmse, baseline_p95, params
     )
     result.update({
+        "cv_strategy": "buffered_spatial_group",
+        "buffer_pixels": float(plan["buffer_pixels"]),
         "n_folds": int(plan["n_folds"]),
         "n_folds_attempted": int(plan["n_folds_attempted"]),
         "n_validation_controls": int(plan["n_validation_controls"]),
         "validation_coverage": float(plan["validation_coverage"]),
+        "fold_diagnostics": [
+            {
+                "group_id": int(fold["group_id"]),
+                "n_train_before_buffer": int(fold["n_train_before_buffer"]),
+                "n_train_after_buffer": int(fold["n_train_after_buffer"]),
+                "n_test": int(len(fold["test_idx"])),
+                "min_train_test_distance_px": fold["min_train_test_distance_px"],
+            }
+            for fold in plan["folds"]
+        ],
+        "dropped_folds": list(plan["dropped_folds"]),
     })
     if not plan["available"]:
         result["available"] = False

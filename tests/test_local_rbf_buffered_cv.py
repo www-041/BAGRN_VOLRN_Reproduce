@@ -120,3 +120,85 @@ def test_every_retained_train_point_is_at_least_buffer_pixels_from_test_points()
         test = points[fold["test_idx"]]
         distances = np.linalg.norm(train[:, None, :] - test[None, :, :], axis=2)
         assert np.all(distances.min(axis=1) >= buffer_pixels)
+
+
+def test_all_smoothing_candidates_receive_identical_buffered_fold_plan(monkeypatch):
+    from src import multiband_pipeline
+
+    points = _grouped_points()
+    controls = {
+        "points_xy": points,
+        "residual_dx": np.zeros(len(points)),
+        "residual_dy": np.zeros(len(points)),
+        "confidence": np.ones(len(points)),
+        "n_valid": len(points),
+    }
+    plans = []
+
+    def fake_evaluate(controls, fold_plan, smoothing, params):
+        plans.append(fold_plan)
+        return {
+            "smoothing": smoothing, "available": True,
+            "candidate_rmse": 0.1, "candidate_p95": 0.2,
+            "n_folds": fold_plan["n_folds"],
+            "n_folds_attempted": fold_plan["n_folds_attempted"],
+            "n_validation_controls": fold_plan["n_validation_controls"],
+            "validation_coverage": fold_plan["validation_coverage"],
+            "failed_group_ids": [], "failure_reason": None,
+        }
+
+    monkeypatch.setattr(
+        multiband_pipeline, "_evaluate_local_rbf_smoothing_candidate", fake_evaluate
+    )
+    result = multiband_pipeline._local_holdout_cv(
+        controls, {"local_min_controls": 3, "local_cv_buffer_pixels": 5,
+                   "local_smoothing_candidates": [0.1, 0.5]}
+    )
+
+    assert len(plans) == 2
+    assert plans[0] is plans[1]
+    assert result["cv_strategy"] == "buffered_spatial_group"
+    assert result["buffer_pixels"] == 5.0
+
+
+def test_local_holdout_cv_reports_buffered_strategy_metadata():
+    from src import multiband_pipeline
+
+    points = _grouped_points()
+    controls = {
+        "points_xy": points,
+        "residual_dx": np.zeros(len(points)),
+        "residual_dy": np.zeros(len(points)),
+        "confidence": np.ones(len(points)),
+        "n_valid": len(points),
+    }
+    result = multiband_pipeline._local_holdout_cv(
+        controls, {"local_min_controls": 3, "local_cv_buffer_pixels": 5,
+                   "local_smoothing_candidates": []}
+    )
+
+    assert result["cv_strategy"] == "buffered_spatial_group"
+    assert result["buffer_pixels"] == 5.0
+    assert result["fold_diagnostics"]
+    assert result["dropped_folds"] == []
+
+
+def test_local_holdout_cv_unavailable_when_buffer_starves_required_folds():
+    from src import multiband_pipeline
+
+    points = _grouped_points()
+    controls = {
+        "points_xy": points,
+        "residual_dx": np.zeros(len(points)),
+        "residual_dy": np.zeros(len(points)),
+        "confidence": np.ones(len(points)),
+        "n_valid": len(points),
+    }
+    result = multiband_pipeline._local_holdout_cv(
+        controls, {"local_min_controls": 3, "local_cv_buffer_pixels": 100,
+                   "local_smoothing_candidates": [0.1]}
+    )
+
+    assert result["available"] is False
+    assert result["dropped_folds"]
+    assert "after buffer" in result["failure_reason"]
