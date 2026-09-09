@@ -18,6 +18,10 @@ import os, glob, json
 
 logger = logging.getLogger(__name__)
 
+_MIN_ROBUST_INLIERS = 5
+_MIN_REMATCH_GOOD_BLOCKS = 5
+_MIN_LOCAL_CONTROLS = 12
+
 
 def build_common_valid_mask(
     ref_array,
@@ -1319,7 +1323,10 @@ def rematch_pair_on_registered(arr_ref, arr_tgt, tr_ref, tr_tgt,
         holdout_exclusion_mask=holdout_exclusion_mask)
 
     good1 = [m for m in matches1 if m['confidence'] >= confidence_threshold] if matches1 else []
-    result1 = _build_rematch_result(good1, screening1, confidence_threshold) if len(good1) >= 5 else None
+    result1 = (
+        _build_rematch_result(good1, screening1, confidence_threshold)
+        if len(good1) >= _MIN_REMATCH_GOOD_BLOCKS else None
+    )
 
     # 如果0.5阈值下>=20块，直接返回
     if result1 is not None and result1['n_blocks'] >= 20:
@@ -1333,7 +1340,10 @@ def rematch_pair_on_registered(arr_ref, arr_tgt, tr_ref, tr_tgt,
             confidence_threshold=0.4,
             holdout_exclusion_mask=holdout_exclusion_mask)
         good2 = [m for m in matches2 if m['confidence'] >= 0.4] if matches2 else []
-        result2 = _build_rematch_result(good2, screening2, 0.4) if len(good2) >= 5 else None
+        result2 = (
+            _build_rematch_result(good2, screening2, 0.4)
+            if len(good2) >= _MIN_REMATCH_GOOD_BLOCKS else None
+        )
     else:
         result2 = None
 
@@ -3207,6 +3217,46 @@ def enumerate_validation_windows(
     return candidates
 
 
+def derive_training_window_requirements(params=None):
+    """Derive geometry minima from the downstream registration contract.
+
+    The reservation must leave enough geometry for the actual fitting stages,
+    not merely one illustrative training window.  Keep these values derived
+    from the same parameters used by robust global fitting, post-global
+    rematching, and local control filtering so the reservation cannot silently
+    under-provision a later stage.
+    """
+    params = params or {}
+    robust_min = max(
+        _MIN_ROBUST_INLIERS,
+        int(params.get("robust_min_inliers", _MIN_ROBUST_INLIERS)),
+    )
+    local_min = max(
+        _MIN_LOCAL_CONTROLS,
+        int(params.get("local_min_controls", _MIN_LOCAL_CONTROLS)),
+    )
+    contracts = [
+        (
+            int(params.get("global_block_size", 512)),
+            robust_min,
+        ),
+        (
+            int(params.get("global_refine_block_size", 384)),
+            max(robust_min, _MIN_REMATCH_GOOD_BLOCKS),
+        ),
+        (
+            int(params.get("local_block_size", 256)),
+            local_min,
+        ),
+    ]
+    requirements = {}
+    for size, minimum in contracts:
+        if size <= 0:
+            raise ValueError("registration block sizes must be positive")
+        requirements[size] = max(requirements.get(size, 0), int(minimum))
+    return requirements
+
+
 def reserve_validation_windows(
     common_valid_mask,
     block_size_candidates,
@@ -3278,6 +3328,15 @@ def reserve_validation_windows(
         candidate_by_size[size] = candidates
         candidate_counts[size] = len(candidates)
 
+    training_candidate_by_size = {
+        size: enumerate_validation_windows(
+            common, size, step=max(1, size // 2),
+            offset_row=0, offset_col=0,
+            min_common_valid_ratio=min_common_valid_ratio,
+        )
+        for size in training_sizes
+    }
+
     def overlaps_with_buffer(a, b):
         return not (
             a["row"] + a["height"] + buffer_pixels <= b["row"]
@@ -3302,11 +3361,7 @@ def reserve_validation_windows(
 
         feasibility = {}
         for size in training_sizes:
-            candidates = enumerate_validation_windows(
-                common, size, step=max(1, size // 2),
-                offset_row=0, offset_col=0,
-                min_common_valid_ratio=min_common_valid_ratio,
-            )
+            candidates = training_candidate_by_size[size]
             available = [
                 item for item in candidates
                 if exclusion[

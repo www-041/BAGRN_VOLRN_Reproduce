@@ -338,6 +338,7 @@ def _build_pair_holdout_context(
     """Build common-valid TRAIN/HOLDOUT masks in reference-patch pixels."""
     from src.coregistration import (
         build_pair_overlap_context,
+        derive_training_window_requirements,
         reserve_validation_windows,
     )
 
@@ -360,16 +361,11 @@ def _build_pair_holdout_context(
             1,
             min(int(params.get("validation_step", 256)), min(block_sizes) // 2),
         )
-    reservation_kwargs = {}
-    if "validation_training_block_sizes" in params:
-        training_block_sizes = params["validation_training_block_sizes"]
-        reservation_kwargs["training_block_sizes"] = [
-            int(size) for size in training_block_sizes
-        ]
-    if "validation_min_training_windows" in params:
-        reservation_kwargs["min_training_windows"] = params[
-            "validation_min_training_windows"
-        ]
+    training_requirements = derive_training_window_requirements(params)
+    reservation_kwargs = {
+        "training_block_sizes": list(training_requirements),
+        "min_training_windows": training_requirements,
+    }
     split = reserve_validation_windows(
         common_valid,
         block_size_candidates=block_sizes,

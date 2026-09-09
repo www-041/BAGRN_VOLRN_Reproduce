@@ -66,8 +66,6 @@ _DEFAULT_REGISTRATION_PARAMS: Dict[str, Any] = {
     "validation_reservation_offset_col": 0,
     "validation_reservation_margin": 2,
     "validation_min_common_valid_ratio": 0.30,
-    "validation_training_block_sizes": [512, 384, 256],
-    "validation_min_training_windows": {512: 1, 384: 2, 256: 3},
     "validation_required_candidate_count": 10,
     "validation_confidence_threshold": 0.45,
     "validation_max_residual_shift": 3.0,

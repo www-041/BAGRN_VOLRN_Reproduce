@@ -163,15 +163,17 @@ def test_register_scenes_reserves_holdout_before_matching(monkeypatch):
         "enable_local_refinement": False,
         "enable_spatial_holdout": True,
         "global_block_size": 16,
+        "global_refine_block_size": 16,
+        "local_block_size": 16,
         "holdout_block_size": 16,
         "holdout_fraction": 0.20,
         "min_holdout_cells": 2,
         "validation_block_size_candidates": [16],
     })
-    arr = np.arange(64 * 64, dtype=float).reshape(1, 64, 64)
+    arr = np.arange(128 * 128, dtype=float).reshape(1, 128, 128)
     scene_data = {
         "arrays": [arr, arr.copy()],
-        "transforms": [from_origin(0, 64, 1, 1), from_origin(0, 64, 1, 1)],
+        "transforms": [from_origin(0, 128, 1, 1), from_origin(0, 128, 1, 1)],
         "nodata_values": [None, None],
         "scene_ids": ["a", "b"],
     }

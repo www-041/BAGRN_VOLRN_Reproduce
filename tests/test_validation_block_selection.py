@@ -79,22 +79,34 @@ def test_holdout_diagnostics_account_for_all_candidate_cells():
 
 
 def test_validation_reservation_checks_global_refine_and_local_training_windows():
-    from src.coregistration import reserve_validation_windows
+    from src.coregistration import (
+        derive_training_window_requirements,
+        reserve_validation_windows,
+    )
 
     yy, xx = np.mgrid[:2644, :1104]
-    common = np.abs(yy - (0.45 * xx + 700.0)) <= 180.0
+    common = np.abs(xx - (0.20 * yy + 100.0)) <= 180.0
+    training_requirements = derive_training_window_requirements({
+        "global_block_size": 512,
+        "global_refine_block_size": 384,
+        "local_block_size": 256,
+        "robust_min_inliers": 5,
+        "local_min_controls": 12,
+    })
+    assert training_requirements == {512: 5, 384: 5, 256: 12}
     result = reserve_validation_windows(
         common, [384, 256, 192], final_min_blocks=5, step=64,
         offset_row=0, offset_col=0, min_common_valid_ratio=0.30,
-        reservation_margin=2, training_block_sizes=[512, 384, 256],
-        min_training_windows={512: 1, 384: 2, 256: 3},
+        reservation_margin=2,
+        training_block_sizes=list(training_requirements),
+        min_training_windows=training_requirements,
     )
 
     assert result["available"] is True
     assert result["reserved_count"] >= 5
-    assert result["training_feasibility"][512]["available_windows"] >= 1
-    assert result["training_feasibility"][384]["available_windows"] >= 2
-    assert result["training_feasibility"][256]["available_windows"] >= 3
+    assert result["training_feasibility"][512]["available_windows"] >= 5
+    assert result["training_feasibility"][384]["available_windows"] >= 5
+    assert result["training_feasibility"][256]["available_windows"] >= 12
 
 
 def test_training_block_with_partial_common_validity_reaches_joint_ratio_filter(monkeypatch):
