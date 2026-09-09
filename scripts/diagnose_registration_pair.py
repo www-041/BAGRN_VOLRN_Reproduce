@@ -15,6 +15,7 @@ import os
 import sys
 import argparse
 import json
+import csv
 import logging
 from pathlib import Path
 import numpy as np
@@ -86,6 +87,76 @@ def _log_stage_validation_summary(registration):
     )
 
 
+_HOLDOUT_LOCAL_FIELD_COLUMNS = [
+    "idx_i", "idx_j", "validation_row", "validation_col",
+    "reference_center_x", "reference_center_y", "field_center_x",
+    "field_center_y", "scene_idx", "coordinate_mapping_available",
+    "coordinate_mapping_reason", "predicted_local_dx", "predicted_local_dy",
+    "predicted_local_magnitude", "fade_value", "inside_control_hull",
+    "distance_outside_hull_px", "nearest_local_control_distance_px",
+    "final_residual_dx", "final_residual_dy", "final_residual_magnitude",
+    "accepted", "reject_reason", "selected_smoothing",
+]
+
+
+def _iter_holdout_local_field_samples(registration):
+    """Yield one flattened row per reserved HOLDOUT validation block."""
+    samples = (registration.get("holdout_local_field_samples", {}) or {})
+    for edge in samples.get("edges", []) or []:
+        for block in edge.get("blocks", []) or []:
+            row = {
+                "idx_i": edge.get("idx_i"),
+                "idx_j": edge.get("idx_j"),
+            }
+            row.update({key: block.get(key) for key in _HOLDOUT_LOCAL_FIELD_COLUMNS
+                        if key not in row})
+            yield row
+
+
+def _write_holdout_local_field_csv(registration, output_dir):
+    """Write mapped local-field samples without changing registration state."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "holdout_local_field_samples.csv"
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_HOLDOUT_LOCAL_FIELD_COLUMNS)
+        writer.writeheader()
+        for row in _iter_holdout_local_field_samples(registration):
+            writer.writerow({
+                key: _json_safe(row.get(key))
+                for key in _HOLDOUT_LOCAL_FIELD_COLUMNS
+            })
+    return str(csv_path)
+
+
+def _log_holdout_local_field_summary(registration):
+    """Log mapped-field coverage and applied correction magnitudes."""
+    rows = list(_iter_holdout_local_field_samples(registration))
+    mapped = [row for row in rows if row.get("coordinate_mapping_available")]
+    available = [row for row in rows if row.get("field_available")]
+    inside = [row for row in rows if row.get("inside_control_hull")]
+    fade_positive = [
+        row for row in rows
+        if row.get("fade_value") is not None
+        and float(row["fade_value"]) > 0.0
+    ]
+    logger.info(
+        "local-field HOLDOUT mapping: total=%d, mapped=%d, field_available=%d, "
+        "inside_hull=%d, fade_positive=%d",
+        len(rows), len(mapped), len(available), len(inside), len(fade_positive),
+    )
+    magnitudes = np.asarray([
+        row.get("predicted_local_magnitude") for row in rows
+        if row.get("predicted_local_magnitude") is not None
+    ], dtype=float)
+    magnitudes = magnitudes[np.isfinite(magnitudes)]
+    median = float(np.median(magnitudes)) if len(magnitudes) else None
+    p95 = float(np.percentile(magnitudes, 95)) if len(magnitudes) else None
+    maximum = float(np.max(magnitudes)) if len(magnitudes) else None
+    logger.info(
+        "local-field HOLDOUT correction magnitude: median=%s, p95=%s, max=%s",
+        _metric_text(median), _metric_text(p95), _metric_text(maximum),
+    )
 def _initial_global_shifts(registration, scene_ids):
     """Return pre-refinement shifts when the schema records them."""
     diagnostics = registration.get("diagnostics", {}) or {}
@@ -396,6 +467,10 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         raise ValueError("quality-failed registration artifacts require diagnostic opt-in")
 
     global_only = registration.get("global_only_arrays") or registered
+    holdout_local_field_csv = _write_holdout_local_field_csv(
+        registration, output_dir
+    )
+    _log_holdout_local_field_summary(registration)
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -531,6 +606,7 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         "registered_final_target": str(final_target_path),
         "registered_final_red_green_overlay": str(final_overlay_path),
         "final_holdout_validation_blocks": str(output_path / "final_holdout_validation_blocks.png"),
+        "holdout_local_field_samples": holdout_local_field_csv,
         "diagnostic_mosaic": str(mosaic_path),
         "scene_ids": [scene_ids[0], scene_ids[1]],
         "mosaic_mode": mosaic_mode,

@@ -496,6 +496,85 @@ def test_diagnostic_payload_does_not_serialize_large_global_only_arrays(tmp_path
     assert "global_only_arrays" not in payload
 
 
+def _mapped_holdout_samples():
+    return {
+        "edges": [{
+            "idx_i": 0,
+            "idx_j": 1,
+            "blocks": [{
+                "validation_row": 10,
+                "validation_col": 20,
+                "reference_center_x": 22.5,
+                "reference_center_y": 12.5,
+                "field_center_x": 19.5,
+                "field_center_y": 15.5,
+                "scene_idx": 1,
+                "coordinate_mapping_available": True,
+                "coordinate_mapping_reason": None,
+                "predicted_local_dx": 0.4,
+                "predicted_local_dy": -0.2,
+                "predicted_local_magnitude": 0.4472136,
+                "fade_value": 0.75,
+                "inside_control_hull": False,
+                "distance_outside_hull_px": 2.0,
+                "nearest_local_control_distance_px": 12.0,
+                "final_residual_dx": 0.1,
+                "final_residual_dy": 0.0,
+                "final_residual_magnitude": 0.1,
+                "accepted": True,
+                "reject_reason": None,
+                "selected_smoothing": 0.5,
+            }],
+        }],
+    }
+
+
+def test_holdout_local_field_csv_contains_mapped_coordinate_columns(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = {"holdout_local_field_samples": _mapped_holdout_samples()}
+    path = diagnose_registration_pair._write_holdout_local_field_csv(
+        registration, tmp_path
+    )
+
+    header = Path(path).read_text(encoding="utf-8").splitlines()[0]
+    assert "reference_center_x" in header
+    assert "field_center_x" in header
+    assert "coordinate_mapping_available" in header
+    assert "fade_value" in header
+    assert "inside_control_hull" in header
+    assert "nearest_local_control_distance_px" in header
+
+
+def test_quality_fail_diagnostic_still_writes_holdout_local_field_csv(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = {
+        "holdout_local_field_samples": _mapped_holdout_samples(),
+        "quality": {"quality": "fail"},
+    }
+    path = diagnose_registration_pair._write_holdout_local_field_csv(
+        registration, tmp_path
+    )
+
+    assert Path(path).name == "holdout_local_field_samples.csv"
+    assert Path(path).exists()
+    assert "0.4" in Path(path).read_text(encoding="utf-8")
+
+
+def test_holdout_local_field_summary_logs_mapping_counts(caplog):
+    from scripts import diagnose_registration_pair
+
+    with caplog.at_level("INFO"):
+        diagnose_registration_pair._log_holdout_local_field_summary({
+            "holdout_local_field_samples": _mapped_holdout_samples(),
+        })
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "local-field HOLDOUT mapping: total=1, mapped=1" in messages
+    assert "local-field HOLDOUT correction magnitude" in messages
+
+
 def test_identity_gain_has_zero_rms():
     """When a=1 (identity gain), RMS should be 0, not 1."""
     # Identity transform: a=1, b=0
