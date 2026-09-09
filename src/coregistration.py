@@ -1876,22 +1876,12 @@ def balance_edge_controls(ctrl_list, max_total=60, grid_size=256,
     return balanced
 
 
-def compute_hull_fade_mask(points_xy, h, w, buffer=128):
-    """计算凸包 + 缓冲带衰减掩膜。
+def compute_hull_fade_support(points_xy, h, w, buffer=128):
+    """Return the support arrays used by local RBF hull fading.
 
-    - 凸包内部: 1.0
-    - 凸包外 buffer 像素内: 线性衰减到 0.0
-    - 更远区域: 0.0
-
-    Parameters
-    ----------
-    points_xy : ndarray (N, 2)
-    h, w : int, 输出影像尺寸
-    buffer : int, 缓冲带宽度（像素）
-
-    Returns
-    -------
-    mask : ndarray (h, w), float64
+    The distance is measured in scene-pixel coordinates.  Pixels inside the
+    control-point hull have unit fade and zero outside distance; pixels in
+    the optional buffer fade linearly to zero.
     """
     from scipy.spatial import Delaunay
     from scipy.ndimage import distance_transform_edt
@@ -1912,16 +1902,25 @@ def compute_hull_fade_mask(points_xy, h, w, buffer=128):
     # 凸包外像素到凸包边界的距离
     dist_outside = distance_transform_edt(~in_hull)
 
-    # 衰减掩膜：凸包内=1，凸包外128px内线性衰减，更远=0
-    mask = np.zeros((h, w), dtype=np.float64)
-    mask[in_hull] = 1.0
+    # 衰减掩膜：凸包内=1，凸包外 buffer px 内线性衰减，更远=0。
+    fade_mask = np.zeros((h, w), dtype=np.float64)
+    fade_mask[in_hull] = 1.0
     outside = ~in_hull
     if int(buffer) > 0:
-        mask[outside] = np.clip(
+        fade_mask[outside] = np.clip(
             1.0 - dist_outside[outside] / float(buffer),
             0.0, 1.0)
 
-    return mask
+    return {
+        "fade_mask": fade_mask,
+        "inside_hull_mask": in_hull,
+        "distance_outside_hull": dist_outside.astype(np.float64),
+    }
+
+
+def compute_hull_fade_mask(points_xy, h, w, buffer=128):
+    """Compatibility wrapper returning only the local RBF fade mask."""
+    return compute_hull_fade_support(points_xy, h, w, buffer)["fade_mask"]
 
 
 def fit_local_rbf(points_xy, residual_dx, residual_dy, smoothing, neighbors=20):

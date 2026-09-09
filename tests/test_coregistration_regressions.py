@@ -11,6 +11,45 @@ import rasterio
 from rasterio.transform import from_origin
 
 
+def _fade_test_points():
+    return np.asarray([[4.0, 4.0], [4.0, 12.0], [12.0, 12.0], [12.0, 4.0]])
+
+
+def test_compute_hull_fade_support_matches_legacy_mask():
+    from src.coregistration import compute_hull_fade_mask, compute_hull_fade_support
+
+    legacy = compute_hull_fade_mask(_fade_test_points(), 20, 20, buffer=4)
+    support = compute_hull_fade_support(_fade_test_points(), 20, 20, buffer=4)
+
+    assert np.allclose(support["fade_mask"], legacy)
+
+
+def test_compute_hull_fade_support_inside_hull_is_one():
+    from src.coregistration import compute_hull_fade_support
+
+    support = compute_hull_fade_support(_fade_test_points(), 20, 20, buffer=4)
+
+    assert support["inside_hull_mask"][8, 8]
+    assert support["fade_mask"][8, 8] == 1.0
+
+
+def test_compute_hull_fade_support_outside_buffer_is_zero():
+    from src.coregistration import compute_hull_fade_support
+
+    support = compute_hull_fade_support(_fade_test_points(), 20, 20, buffer=4)
+
+    assert not support["inside_hull_mask"][0, 0]
+    assert support["fade_mask"][0, 0] == 0.0
+
+
+def test_compute_hull_fade_support_distance_is_zero_inside_hull():
+    from src.coregistration import compute_hull_fade_support
+
+    support = compute_hull_fade_support(_fade_test_points(), 20, 20, buffer=4)
+
+    assert support["distance_outside_hull"][8, 8] == 0.0
+
+
 def test_rowcol_returns_row_col_order():
     """rasterio.transform.rowcol returns (row, col), not (col, row)."""
     # Use non-square resolution to distinguish row from col
