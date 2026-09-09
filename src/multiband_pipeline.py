@@ -818,15 +818,42 @@ def _compare_registration_validations(before_validation, after_validation):
     }
 
 
+def _sample_field_bilinear(field, x, y):
+    """Sample one finite field value at a scene-pixel center."""
+    from scipy.ndimage import map_coordinates
+
+    values = np.asarray(field, dtype=float)
+    if values.ndim != 2 or not np.isfinite(x) or not np.isfinite(y):
+        return None
+    if x < 0.0 or y < 0.0 or x > values.shape[1] - 1 or y > values.shape[0] - 1:
+        return None
+    sampled = map_coordinates(
+        values, np.asarray([[y], [x]], dtype=float), order=1,
+        mode="constant", cval=np.nan, prefilter=False,
+    )
+    value = float(sampled[0])
+    return value if np.isfinite(value) else None
+
+
 def _sample_local_field_at_validation_blocks(
-    validation, local_dx_fields, local_dy_fields, local_refinement,
+    validation,
+    local_dx_fields,
+    local_dy_fields,
+    local_refinement,
+    transforms,
+    params,
 ):
-    """Sample the applied, faded local field at final HOLDOUT centers."""
+    """Sample the applied local field after mapping HOLDOUT centers to it."""
+    from src.coregistration import compute_hull_fade_support, map_pixel_center_between_grids
+
     validation = validation or {}
     local_refinement = local_refinement or {}
+    params = params or {}
     scenes = local_refinement.get("scenes", {}) or {}
     control_points_by_scene = local_refinement.get("control_points", {}) or {}
     block_size = int(validation.get("validation_block_size_selected") or 192)
+    used_for_scenes = set(local_refinement.get("used_for_scenes", []) or [])
+    support_cache = {}
 
     def get_field(fields, scene_idx):
         if isinstance(fields, dict):
@@ -840,7 +867,7 @@ def _sample_local_field_at_validation_blocks(
         points = control_points_by_scene.get(
             scene_idx, control_points_by_scene.get(str(scene_idx), [])
         )
-        if not len(points):
+        if points is None or len(points) == 0:
             scene = scenes.get(str(scene_idx), scenes.get(scene_idx, {})) or {}
             points = scene.get("control_points", scene.get("training_points", []))
         try:
@@ -849,6 +876,30 @@ def _sample_local_field_at_validation_blocks(
         except (TypeError, ValueError):
             return None
 
+    def scene_result(scene_idx):
+        return scenes.get(str(scene_idx), scenes.get(scene_idx, {})) or {}
+
+    def field_is_used(scene_idx):
+        result = scene_result(scene_idx)
+        return bool(result.get("accepted")) or bool(result.get("field_stats")) \
+            or scene_idx in used_for_scenes
+
+    def get_support(scene_idx, points, shape):
+        if scene_idx in support_cache:
+            return support_cache[scene_idx]
+        if points is None or len(points) < 3:
+            support_cache[scene_idx] = None
+            return None
+        try:
+            support = compute_hull_fade_support(
+                points, shape[0], shape[1],
+                buffer=int(params.get("local_hull_buffer", 128)),
+            )
+        except Exception:
+            support = None
+        support_cache[scene_idx] = support
+        return support
+
     sampled_edges = []
     for edge in validation.get("edges", []) or []:
         try:
@@ -856,26 +907,33 @@ def _sample_local_field_at_validation_blocks(
             idx_j = int(edge["idx_j"])
         except (KeyError, TypeError, ValueError):
             continue
-        scene_idx = idx_j if get_field(local_dx_fields, idx_j) is not None else idx_i
+        candidate_scenes = [idx_j, idx_i]
+        scene_idx = next(
+            (candidate for candidate in candidate_scenes
+             if get_field(local_dx_fields, candidate) is not None
+             and field_is_used(candidate)),
+            next((candidate for candidate in candidate_scenes
+                  if get_field(local_dx_fields, candidate) is not None), idx_j),
+        )
         dx_field = get_field(local_dx_fields, scene_idx)
         dy_field = get_field(local_dy_fields, scene_idx)
         dx_field = np.asarray(dx_field, dtype=float) if dx_field is not None else None
         dy_field = np.asarray(dy_field, dtype=float) if dy_field is not None else None
-        scene_result = scenes.get(str(scene_idx), scenes.get(scene_idx, {})) or {}
-        field_stats = scene_result.get("field_stats", {}) or {}
-        field_used = bool(scene_result.get("accepted")) or bool(field_stats)
-        field_used = field_used or scene_idx in set(
-            local_refinement.get("used_for_scenes", [])
-        )
+        scene_info = scene_result(scene_idx)
+        field_stats = scene_info.get("field_stats", {}) or {}
+        field_used = field_is_used(scene_idx)
         fields_usable = (
             dx_field is not None and dy_field is not None
             and dx_field.ndim == 2 and dy_field.ndim == 2
             and dx_field.shape == dy_field.shape and field_used
         )
-        selected_smoothing = scene_result.get(
+        selected_smoothing = scene_info.get(
             "selected_smoothing", field_stats.get("smoothing")
         )
         points = get_points(scene_idx)
+        support = get_support(
+            scene_idx, points, dx_field.shape if fields_usable else None
+        ) if fields_usable else None
         sampled_blocks = []
         for block in edge.get("blocks", []) or []:
             try:
@@ -891,32 +949,70 @@ def _sample_local_field_at_validation_blocks(
             except (TypeError, ValueError):
                 center_x = col + block_size / 2.0
                 center_y = row + block_size / 2.0
+            field_center_x = None
+            field_center_y = None
+            coordinate_mapping_available = False
+            coordinate_mapping_reason = None
+            try:
+                if transforms is None:
+                    raise ValueError("scene transforms are unavailable")
+                field_center_x, field_center_y = map_pixel_center_between_grids(
+                    center_x, center_y, transforms[idx_i], transforms[scene_idx],
+                )
+                coordinate_mapping_available = True
+            except (IndexError, KeyError, TypeError, ValueError) as exc:
+                coordinate_mapping_reason = str(exc)
+
             nearest_distance = None
-            if points is not None and len(points):
-                distances = np.hypot(points[:, 0] - center_x, points[:, 1] - center_y)
+            if (coordinate_mapping_available and points is not None
+                    and len(points)):
+                distances = np.hypot(
+                    points[:, 0] - field_center_x,
+                    points[:, 1] - field_center_y,
+                )
                 if np.all(np.isfinite(distances)):
                     nearest_distance = float(np.min(distances))
 
             predicted_dx = None
             predicted_dy = None
             field_available = False
-            if fields_usable:
-                field_row = int(round(center_y))
-                field_col = int(round(center_x))
-                if (0 <= field_row < dx_field.shape[0]
-                        and 0 <= field_col < dx_field.shape[1]):
-                    value_dx = float(dx_field[field_row, field_col])
-                    value_dy = float(dy_field[field_row, field_col])
-                    if np.isfinite(value_dx) and np.isfinite(value_dy):
-                        predicted_dx = value_dx
-                        predicted_dy = value_dy
-                        field_available = True
+            fade_value = None
+            inside_control_hull = None
+            distance_outside_hull = None
+            if coordinate_mapping_available and support is not None:
+                fade_value = _sample_field_bilinear(
+                    support["fade_mask"], field_center_x, field_center_y
+                )
+                distance_outside_hull = _sample_field_bilinear(
+                    support["distance_outside_hull"], field_center_x, field_center_y
+                )
+                field_row = int(round(field_center_y))
+                field_col = int(round(field_center_x))
+                if (0 <= field_row < support["inside_hull_mask"].shape[0]
+                        and 0 <= field_col < support["inside_hull_mask"].shape[1]):
+                    inside_control_hull = bool(
+                        support["inside_hull_mask"][field_row, field_col]
+                    )
+            if fields_usable and coordinate_mapping_available:
+                predicted_dx = _sample_field_bilinear(
+                    dx_field, field_center_x, field_center_y
+                )
+                predicted_dy = _sample_field_bilinear(
+                    dy_field, field_center_x, field_center_y
+                )
+                field_available = predicted_dx is not None and predicted_dy is not None
             residual_dx = block.get("residual_dx")
             residual_dy = block.get("residual_dy")
             residual_magnitude = block.get("residual_magnitude")
             sampled_blocks.append({
                 "validation_row": row,
                 "validation_col": col,
+                "reference_center_x": center_x,
+                "reference_center_y": center_y,
+                "field_center_x": field_center_x,
+                "field_center_y": field_center_y,
+                "coordinate_mapping_available": coordinate_mapping_available,
+                "coordinate_mapping_reason": coordinate_mapping_reason,
                 "center_x": center_x,
                 "center_y": center_y,
                 "scene_idx": scene_idx,
@@ -926,12 +1022,18 @@ def _sample_local_field_at_validation_blocks(
                     float(np.hypot(predicted_dx, predicted_dy))
                     if field_available else None
                 ),
+                "fade_value": fade_value,
+                "inside_control_hull": inside_control_hull,
+                "distance_outside_hull_px": distance_outside_hull,
+                "nearest_local_control_distance_px": nearest_distance,
                 "field_available": field_available,
                 "selected_smoothing": selected_smoothing,
                 "nearest_training_distance": nearest_distance,
                 "final_residual_dx": residual_dx,
                 "final_residual_dy": residual_dy,
                 "final_residual_magnitude": residual_magnitude,
+                "accepted": block.get("accepted"),
+                "reject_reason": block.get("reject_reason"),
             })
         sampled_edges.append({
             "idx_i": idx_i,
@@ -2598,6 +2700,7 @@ class MultibandPipeline:
         )
         holdout_local_field_samples = _sample_local_field_at_validation_blocks(
             final_validation, local_dx_fields, local_dy_fields, local_refinement,
+            transforms, reg_params,
         )
         logger.info(
             "final HOLDOUT: quality=%s, median=%s, rmse=%s, p95=%s; "

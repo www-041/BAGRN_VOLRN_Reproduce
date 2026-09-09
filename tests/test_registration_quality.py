@@ -8,6 +8,7 @@ Task 1-6 of ghosting fix plan:
 
 import numpy as np
 import pytest
+from rasterio.transform import from_origin
 
 from src.experiment_config import _dict_to_config, validate_config
 
@@ -418,6 +419,8 @@ def test_sample_local_field_uses_actual_faded_field_values():
     result = _sample_local_field_at_validation_blocks(
         _validation_with_sample_block(), {1: dx}, {1: dy},
         {"used_for_scenes": [1], "scenes": {"1": {"selected_smoothing": 0.5}}},
+        [from_origin(0, 10, 1, 1), from_origin(0, 10, 1, 1)],
+        {"local_hull_buffer": 128},
     )
 
     sample = result["edges"][0]["blocks"][0]
@@ -437,6 +440,8 @@ def test_sample_local_field_preserves_validation_residual_and_nearest_training_d
         {"used_for_scenes": [1],
          "control_points": {"1": [[3.0, 5.0], [10.0, 10.0]]},
          "scenes": {"1": {"selected_smoothing": 0.1}}},
+        [from_origin(0, 10, 1, 1), from_origin(0, 10, 1, 1)],
+        {"local_hull_buffer": 128},
     )
 
     sample = result["edges"][0]["blocks"][0]
@@ -454,11 +459,92 @@ def test_sample_local_field_marks_out_of_bounds_center_unavailable():
     result = _sample_local_field_at_validation_blocks(
         validation, {1: np.ones((6, 7))}, {1: np.ones((6, 7))},
         {"used_for_scenes": [1]},
+        [from_origin(0, 10, 1, 1), from_origin(0, 10, 1, 1)],
+        {"local_hull_buffer": 128},
     )
 
     sample = result["edges"][0]["blocks"][0]
     assert sample["field_available"] is False
     assert sample["predicted_local_dx"] is None
+
+
+def test_sample_local_field_maps_reference_center_to_target_grid_before_sampling():
+    from src.multiband_pipeline import _sample_local_field_at_validation_blocks
+
+    validation = _validation_with_sample_block()
+    dx = np.fromfunction(lambda row, col: row * 10.0 + col, (8, 8))
+    dy = np.zeros((8, 8), dtype=float)
+    result = _sample_local_field_at_validation_blocks(
+        validation, {1: dx}, {1: dy},
+        {"used_for_scenes": [1], "control_points": {"1": [
+            [0.0, 0.0], [4.0, 0.0], [0.0, 4.0], [4.0, 4.0],
+        ]}},
+        [from_origin(0, 100, 1, 1), from_origin(2, 102, 1, 1)],
+        {"local_hull_buffer": 4},
+    )
+
+    sample = result["edges"][0]["blocks"][0]
+    assert sample["reference_center_x"] == pytest.approx(3.0)
+    assert sample["reference_center_y"] == pytest.approx(2.0)
+    assert sample["field_center_x"] == pytest.approx(1.0)
+    assert sample["field_center_y"] == pytest.approx(4.0)
+    assert sample["predicted_local_dx"] == pytest.approx(41.0)
+
+
+def test_sample_local_field_distance_uses_target_scene_control_coordinates():
+    from src.multiband_pipeline import _sample_local_field_at_validation_blocks
+
+    result = _sample_local_field_at_validation_blocks(
+        _validation_with_sample_block(),
+        {1: np.ones((8, 8))}, {1: np.ones((8, 8))},
+        {"used_for_scenes": [1], "control_points": {"1": [
+            [1.0, 2.0], [10.0, 10.0],
+        ]}},
+        [from_origin(0, 100, 1, 1), from_origin(2, 102, 1, 1)],
+        {"local_hull_buffer": 4},
+    )
+
+    sample = result["edges"][0]["blocks"][0]
+    assert sample["field_center_x"] == pytest.approx(1.0)
+    assert sample["field_center_y"] == pytest.approx(4.0)
+    assert sample["nearest_local_control_distance_px"] == pytest.approx(2.0)
+
+
+def test_sample_local_field_reports_fade_and_hull_support():
+    from src.multiband_pipeline import _sample_local_field_at_validation_blocks
+
+    result = _sample_local_field_at_validation_blocks(
+        _validation_with_sample_block(),
+        {1: np.ones((8, 8))}, {1: np.ones((8, 8))},
+        {"used_for_scenes": [1], "control_points": {"1": [
+            [0.0, 0.0], [4.0, 0.0], [0.0, 4.0], [4.0, 4.0],
+        ]}},
+        [from_origin(0, 100, 1, 1), from_origin(2, 102, 1, 1)],
+        {"local_hull_buffer": 4},
+    )
+
+    sample = result["edges"][0]["blocks"][0]
+    assert sample["coordinate_mapping_available"] is True
+    assert sample["inside_control_hull"] is True
+    assert sample["fade_value"] == pytest.approx(1.0)
+    assert sample["distance_outside_hull_px"] == pytest.approx(0.0)
+
+
+def test_sample_local_field_mapping_failure_is_explicit_not_silent():
+    from src.multiband_pipeline import _sample_local_field_at_validation_blocks
+
+    result = _sample_local_field_at_validation_blocks(
+        _validation_with_sample_block(),
+        {1: np.ones((8, 8))}, {1: np.ones((8, 8))},
+        {"used_for_scenes": [1]},
+        [from_origin(0, 100, 1, 1), None],
+        {"local_hull_buffer": 4},
+    )
+
+    sample = result["edges"][0]["blocks"][0]
+    assert sample["coordinate_mapping_available"] is False
+    assert sample["coordinate_mapping_reason"]
+    assert sample["field_available"] is False
 
 
 @pytest.mark.parametrize(
