@@ -23,6 +23,31 @@ _MIN_REMATCH_GOOD_BLOCKS = 5
 _MIN_LOCAL_CONTROLS = 12
 
 
+def map_pixel_center_between_grids(
+    center_x: float,
+    center_y: float,
+    src_transform: Affine,
+    dst_transform: Affine,
+) -> Tuple[float, float]:
+    """Map one pixel-center coordinate between two affine grids.
+
+    Coordinates use array-index convention: ``x`` is the column and ``y``
+    is the row, while integer coordinates identify pixel centers.  The
+    half-pixel conversion keeps subpixel offsets intact and avoids the
+    rounding/truncation that is inappropriate for local-field sampling.
+    """
+    try:
+        center_x = float(center_x)
+        center_y = float(center_y)
+        if not np.isfinite(center_x) or not np.isfinite(center_y):
+            raise ValueError("pixel-center coordinates must be finite")
+        world_x, world_y = src_transform * (center_x + 0.5, center_y + 0.5)
+        dst_edge_x, dst_edge_y = (~dst_transform) * (world_x, world_y)
+    except (TypeError, ValueError, ZeroDivisionError) as exc:
+        raise ValueError("invalid source or destination grid transform") from exc
+    return float(dst_edge_x - 0.5), float(dst_edge_y - 0.5)
+
+
 def build_common_valid_mask(
     ref_array,
     tgt_array,

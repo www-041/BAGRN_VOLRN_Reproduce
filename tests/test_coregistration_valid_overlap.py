@@ -1,4 +1,52 @@
 import numpy as np
+import pytest
+
+
+def test_map_pixel_center_between_grids_identity_round_trip():
+    from rasterio.transform import from_origin
+    from src.coregistration import map_pixel_center_between_grids
+
+    transform = from_origin(100.0, 200.0, 14.0, 14.0)
+    mapped = map_pixel_center_between_grids(12.25, 8.5, transform, transform)
+
+    assert mapped == pytest.approx((12.25, 8.5))
+
+
+def test_map_pixel_center_between_grids_translated_origins():
+    from rasterio.transform import from_origin
+    from src.coregistration import map_pixel_center_between_grids
+
+    ref = from_origin(100.0, 200.0, 14.0, 14.0)
+    target = from_origin(128.0, 172.0, 14.0, 14.0)
+
+    mapped = map_pixel_center_between_grids(10.0, 20.0, ref, target)
+
+    assert mapped == pytest.approx((8.0, 18.0))
+
+
+def test_map_pixel_center_between_grids_preserves_subpixel_offset():
+    from rasterio.transform import from_origin
+    from src.coregistration import map_pixel_center_between_grids
+
+    ref = from_origin(0.0, 100.0, 14.0, 14.0)
+    target = from_origin(7.0, 93.0, 14.0, 14.0)
+
+    mapped = map_pixel_center_between_grids(10.25, 20.75, ref, target)
+
+    assert mapped == pytest.approx((9.75, 20.25))
+
+
+def test_map_pixel_center_between_grids_round_trip_between_two_14m_grids():
+    from rasterio.transform import from_origin
+    from src.coregistration import map_pixel_center_between_grids
+
+    ref = from_origin(500000.0, 4200000.0, 14.0, 14.0)
+    target = from_origin(500123.0, 4199877.0, 14.0, 14.0)
+
+    target_xy = map_pixel_center_between_grids(321.125, 654.875, ref, target)
+    round_trip = map_pixel_center_between_grids(*target_xy, target, ref)
+
+    assert round_trip == pytest.approx((321.125, 654.875), abs=1e-9)
 
 
 def test_common_valid_mask_excludes_diagonal_nodata_regions():
