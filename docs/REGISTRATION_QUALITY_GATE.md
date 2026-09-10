@@ -136,6 +136,25 @@ Whether strict support should become a production change is deliberately left
 to the user checkpoint after the real N=2 HULL-C1 run. B12, affine residuals,
 DEM terms, and mountainous local refinement are outside this diagnostic.
 
+HULL-C1 conclusion: the H1 unsupported-extrapolation hypothesis is NOT
+SUPPORTED. Keep the legacy production behavior (`local_hull_buffer: 128`) for
+BAND-C1; do not use hull support as the next production-fix direction.
+
+### BAND-C1 fixed-band comparison
+
+BAND-C1 compares only `registration_band: B14` with `registration_band: B12`.
+Both configurations load B12 and B14, use identical registration parameters,
+and evaluate the final independent HOLDOUT on B14. The B14 run exports the
+reserved-window manifest; the B12 run must reuse it exactly. The final HOLDOUT
+is never used for smoothing selection, RBF acceptance, global refinement, or
+any other model choice. A comparison may declare a directional result only
+after the scene, band, parameter-fingerprint, block-size, and HOLDOUT-key
+integrity checks pass.
+
+Do not infer a production band change from BAND-C1 alone: it measures which
+registration band supplies better geometric observations for the existing
+pipeline, not whether the registration problem is solved.
+
 ## Robust Estimation
 
 The pipeline uses MAD-based robust estimation instead of simple weighted average:

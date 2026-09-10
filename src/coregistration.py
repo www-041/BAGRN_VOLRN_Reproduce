@@ -3333,6 +3333,7 @@ def reserve_validation_windows(
     buffer_pixels=0,
     training_block_sizes=None,
     min_training_windows=None,
+    reserved_windows_override=None,
 ):
     """Reserve exact independent validation windows before registration.
 
@@ -3509,21 +3510,64 @@ def reserve_validation_windows(
     selected = []
     unused = []
     candidates_before_filter = 0
-    for size in sizes:
-        candidates = candidate_by_size[size]
-        candidates_before_filter = len(candidates)
-        trial = spatially_select(
-            candidates,
-            training_checker=training_feasibility if training_sizes else None,
-        )
-        feasibility = training_feasibility(trial)
-        if len(trial) >= minimum and all(
-            item["feasible"] for item in feasibility.values()
-        ):
-            selected_size = size
-            selected = trial[:max(minimum, minimum + int(reservation_margin))]
-            unused = [item for item in candidates if item not in selected]
-            break
+    if reserved_windows_override is not None:
+        override = list(reserved_windows_override)
+        if not override:
+            raise ValueError("reserved_windows_override must not be empty")
+        for item in override:
+            if not isinstance(item, dict):
+                raise ValueError("reserved HOLDOUT overrides must be mappings")
+            try:
+                row = int(item["row"])
+                col = int(item["col"])
+                height = int(item["height"])
+                width = int(item["width"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("reserved HOLDOUT override has invalid window fields") from exc
+            if height <= 0 or width <= 0 or row < 0 or col < 0 \
+                    or row + height > common.shape[0] or col + width > common.shape[1]:
+                raise ValueError(f"reserved HOLDOUT window outside overlap grid: {(row, col, height, width)}")
+            ratio = float(common[row:row + height, col:col + width].mean())
+            if ratio < float(min_common_valid_ratio):
+                raise ValueError(
+                    f"reserved HOLDOUT window {(row, col, height, width)} "
+                    f"has common_valid_ratio={ratio:.6f} below {float(min_common_valid_ratio):.6f}"
+                )
+            if height != width:
+                raise ValueError("reserved HOLDOUT windows must be square")
+            selected.append({
+                "row": row, "col": col, "height": height, "width": width,
+                "center_row": float(row + height / 2.0),
+                "center_col": float(col + width / 2.0),
+                "common_valid_ratio": ratio,
+            })
+        selected_size = int(selected[0]["height"])
+        if any(int(item["height"]) != selected_size for item in selected):
+            raise ValueError("reserved HOLDOUT windows must use one block size")
+        if selected_size not in candidate_by_size:
+            candidate_by_size[selected_size] = enumerate_validation_windows(
+                common, selected_size, step=max(1, selected_size // 2),
+                min_common_valid_ratio=min_common_valid_ratio,
+            )
+            candidate_counts[selected_size] = len(candidate_by_size[selected_size])
+        candidates_before_filter = len(candidate_by_size[selected_size])
+        unused = [item for item in candidate_by_size[selected_size] if item not in selected]
+    else:
+        for size in sizes:
+            candidates = candidate_by_size[size]
+            candidates_before_filter = len(candidates)
+            trial = spatially_select(
+                candidates,
+                training_checker=training_feasibility if training_sizes else None,
+            )
+            feasibility = training_feasibility(trial)
+            if len(trial) >= minimum and all(
+                item["feasible"] for item in feasibility.values()
+            ):
+                selected_size = size
+                selected = trial[:max(minimum, minimum + int(reservation_margin))]
+                unused = [item for item in candidates if item not in selected]
+                break
 
     if selected_size is None:
         all_candidates = candidate_by_size[sizes[-1]]

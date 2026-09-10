@@ -120,6 +120,42 @@ def test_hull_causal_window_csv_contains_window_support_columns(tmp_path):
     } <= set(reader.fieldnames)
 
 
+def test_hull_window_csv_preserves_real_block_size_and_triplet_residuals(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = _hull_causal_registration_fixture()
+    registration["hull_causal"]["window_stats"]["blocks"] = [{
+        "block_size": 384, "global_residual_magnitude": 0.6,
+        "legacy_residual_magnitude": 2.1, "strict_residual_magnitude": 2.2,
+        "validation_row": 1, "validation_col": 2,
+    }]
+    path = diagnose_registration_pair._write_hull_causal_window_stats_csv(
+        registration, tmp_path
+    )
+    with path.open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["block_size"] == "384"
+    assert row["global_residual_magnitude"] != ""
+    assert row["legacy_residual_magnitude"] != ""
+    assert row["strict_residual_magnitude"] != ""
+
+
+def test_hull_window_csv_recovery_fraction_handles_zero_denominator(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = _hull_causal_registration_fixture()
+    registration["hull_causal"]["window_stats"]["blocks"] = [{
+        "block_size": 384, "global_residual_magnitude": 2.0,
+        "legacy_residual_magnitude": 2.0, "strict_residual_magnitude": 1.0,
+    }]
+    path = diagnose_registration_pair._write_hull_causal_window_stats_csv(
+        registration, tmp_path
+    )
+    with path.open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    assert row["recovery_fraction"] == ""
+
+
 def test_quality_fail_still_writes_strict_diagnostic_artifacts_but_returns_nonzero(
     tmp_path, monkeypatch
 ):

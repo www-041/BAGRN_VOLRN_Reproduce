@@ -17,6 +17,8 @@ import argparse
 import json
 import csv
 import logging
+import shutil
+import subprocess
 from pathlib import Path
 import numpy as np
 from rasterio.warp import reproject, Resampling
@@ -32,6 +34,11 @@ from src.mosaic import create_mosaic
 from src.multiband_pipeline import (
     MultibandPipeline,
     registration_quality_meets_requirement,
+)
+from src.registration_band_ab import (
+    build_holdout_manifest,
+    load_holdout_manifest,
+    manifest_to_pair_overrides,
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -371,6 +378,9 @@ def build_diagnostic_payload(registration, scene_ids, output_dir):
 
     payload = {
         "scene_ids": list(scene_ids),
+        "registration_band_name": registration.get("registration_band_name"),
+        "validation_band_name": registration.get("validation_band_name"),
+        "registration_params_sha256": registration.get("registration_params_sha256"),
         "output_dir": str(output_dir),
         "status": registration.get("status"),
         "failure": registration.get("failure", {}),
@@ -594,7 +604,8 @@ def _save_validation_holdout_png(path, validation, shape, title=None):
 
 def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
                                registration_band_idx=0, mosaic_mode="weighted",
-                               *, allow_quality_fail_for_diagnostics=False):
+                               *, allow_quality_fail_for_diagnostics=False,
+                               visualization_band_idx=None):
     """Write registered images, a red-green overlay, and a diagnostic mosaic."""
     quality = registration.get("quality", {}) or {}
     registered = registration.get("registered_arrays")
@@ -622,6 +633,11 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
     nodatas = scene_data["nodata_values"]
     crs = scene_data["crs"]
 
+    visualization_band_idx = (
+        registration_band_idx if visualization_band_idx is None
+        else int(visualization_band_idx)
+    )
+
     def write_pair(prefix, arrays):
         reference_path = output_path / f"{prefix}_reference.tif"
         target_path = output_path / f"{prefix}_target.tif"
@@ -630,8 +646,8 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         write_geotiff(str(target_path), arrays[1], transforms[1], crs,
                       nodata=nodatas[1], dtype="float32")
 
-        reference_band = _registration_band(arrays[0], registration_band_idx)
-        target_band = _registration_band(arrays[1], registration_band_idx)
+        reference_band = _registration_band(arrays[0], visualization_band_idx)
+        target_band = _registration_band(arrays[1], visualization_band_idx)
         target_on_reference = _reproject_to_reference(
             target_band, transforms[1], crs, nodatas[1], reference_band.shape,
             transforms[0], crs,
@@ -688,6 +704,15 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         str(mosaic_path),
         mode=mosaic_mode,
     )
+    b14_global_overlay = output_path / "b14_global_overlay.tif"
+    b14_final_overlay = output_path / "b14_final_overlay.tif"
+    b14_mosaic = output_path / f"b14_diagnostic_mosaic_{mosaic_mode}.tif"
+    if global_overlay_path.exists():
+        shutil.copyfile(global_overlay_path, b14_global_overlay)
+    if final_overlay_path.exists():
+        shutil.copyfile(final_overlay_path, b14_final_overlay)
+    if mosaic_path.exists():
+        shutil.copyfile(mosaic_path, b14_mosaic)
 
     masks_by_edge = registration.get("diagnostic_masks", {}) or {}
     edge_key = next(iter(masks_by_edge), None)
@@ -775,6 +800,11 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         "hull_causal_stage_metrics": str(hull_stage_csv) if hull_stage_csv else None,
         "hull_causal_window_stats": str(hull_window_csv) if hull_window_csv else None,
         "diagnostic_mosaic": str(mosaic_path),
+        "b14_global_overlay": str(b14_global_overlay),
+        "b14_final_overlay": str(b14_final_overlay),
+        "b14_diagnostic_mosaic": str(b14_mosaic),
+        "registration_band_name": registration.get("registration_band_name"),
+        "visualization_band": registration.get("validation_band_name", "B14"),
         "scene_ids": [scene_ids[0], scene_ids[1]],
         "mosaic_mode": mosaic_mode,
         **strict_paths,
@@ -793,6 +823,18 @@ def _parse_args(argv=None):
         choices=("weighted", "source_selection", "narrow_feather"),
         default="weighted",
         help="Diagnostic mosaic mode; source_selection is used only when explicitly selected",
+    )
+    parser.add_argument(
+        "--validation-band", default=None,
+        help="Fixed band used only for independent validation and visual artifacts",
+    )
+    parser.add_argument(
+        "--export-holdout-manifest", default=None,
+        help="Write the exact reserved HOLDOUT windows used by this run",
+    )
+    parser.add_argument(
+        "--holdout-manifest", default=None,
+        help="Reuse an existing reserved HOLDOUT manifest without resampling",
     )
     parser.add_argument(
         "--hull-causal-test",
@@ -834,6 +876,11 @@ def main(argv=None):
 
     logger.info("Registration diagnostic: %s -> %s", scene_ids[0], scene_ids[1])
     pipeline = MultibandPipeline(config)
+    holdout_overrides = None
+    if args.holdout_manifest:
+        holdout_overrides = manifest_to_pair_overrides(
+            load_holdout_manifest(args.holdout_manifest), scene_ids
+        )
     scene_data = pipeline.load_scenes()
     overlaps = pipeline.detect_overlaps(scene_data)
     logger.info("Detected %d overlap pair(s)", len(overlaps))
@@ -856,6 +903,8 @@ def main(argv=None):
             overlaps,
             registration_band_idx=pipeline.registration_band_idx,
             hull_causal_diagnostic=args.hull_causal_test,
+            diagnostic_validation_band=args.validation_band,
+            holdout_reservation_overrides=holdout_overrides,
         )
     except TypeError as exc:
         # Keep compatibility with lightweight external pipeline doubles that
@@ -864,6 +913,29 @@ def main(argv=None):
         if "unexpected keyword argument" not in str(exc):
             raise
         registration = pipeline.register_scenes(scene_data, overlaps)
+    if args.export_holdout_manifest:
+        manifest_registration = dict(registration)
+        manifest_registration["scene_ids"] = scene_ids
+        try:
+            source_commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            source_commit = "unknown"
+        manifest = build_holdout_manifest(
+            manifest_registration, source_commit=source_commit,
+            source_registration_band=registration.get(
+                "registration_band_name", getattr(config, "registration_band", "B14")
+            ), validation_band=registration.get(
+                "validation_band_name", args.validation_band or getattr(config, "registration_band", "B14")
+            ),
+        )
+        manifest_path = Path(args.export_holdout_manifest)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(_json_safe(manifest), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
     quality = registration.get("quality", {}) or {}
     required_quality = (getattr(config, "registration_params", {}) or {}).get(
         "required_quality", "pass"
@@ -903,6 +975,13 @@ def main(argv=None):
             artifacts = write_diagnostic_artifacts(
                 registration, scene_data, scene_ids, output_dir,
                 registration_band_idx=pipeline.registration_band_idx,
+                visualization_band_idx=getattr(
+                    pipeline, "common_bands", [registration.get(
+                        "validation_band_name", getattr(config, "registration_band", "B14")
+                    )]
+                ).index(
+                        registration.get("validation_band_name", getattr(config, "registration_band", "B14"))
+                ),
                 mosaic_mode=args.mosaic_mode,
                 allow_quality_fail_for_diagnostics=True,
             )
@@ -926,6 +1005,13 @@ def main(argv=None):
     artifacts = write_diagnostic_artifacts(
         registration, scene_data, scene_ids, output_dir,
         registration_band_idx=pipeline.registration_band_idx,
+        visualization_band_idx=getattr(
+            pipeline, "common_bands", [registration.get(
+                "validation_band_name", getattr(config, "registration_band", "B14")
+            )]
+        ).index(
+            registration.get("validation_band_name", getattr(config, "registration_band", "B14"))
+        ),
         mosaic_mode=args.mosaic_mode,
     )
     registration_for_payload = {

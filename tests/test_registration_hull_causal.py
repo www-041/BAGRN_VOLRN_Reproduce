@@ -272,8 +272,10 @@ def test_window_stats_uses_full_window_not_only_center():
     validation = _causal_validation(inside_center=True)
     variants = validation.pop("_variants")
     stats = multiband_pipeline._hull_causal_window_stats(
-        validation, [from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
-        {1: variants}, {},
+        global_validation=validation, legacy_validation=validation,
+        strict_validation=validation,
+        transforms=[from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
+        causal_fields_by_scene={1: variants}, local_refinement={},
     )
 
     row = stats["blocks"][0]
@@ -289,8 +291,10 @@ def test_window_stats_detects_partial_hull_overlap():
     validation = _causal_validation(inside_center=False)
     variants = validation.pop("_variants")
     stats = multiband_pipeline._hull_causal_window_stats(
-        validation, [from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
-        {1: variants}, {},
+        global_validation=validation, legacy_validation=validation,
+        strict_validation=validation,
+        transforms=[from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
+        causal_fields_by_scene={1: variants}, local_refinement={},
     )
 
     row = stats["blocks"][0]
@@ -309,8 +313,10 @@ def test_window_stats_marks_negative_control_candidate_when_supports_equal():
     variants["legacy_dy"] = variants["strict_dy"] = np.ones((12, 12))
     variants["raw_dx"] = variants["raw_dy"] = np.ones((12, 12))
     stats = multiband_pipeline._hull_causal_window_stats(
-        validation, [from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
-        {1: variants}, {},
+        global_validation=validation, legacy_validation=validation,
+        strict_validation=validation,
+        transforms=[from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
+        causal_fields_by_scene={1: variants}, local_refinement={},
     )
 
     assert stats["blocks"][0]["negative_control_candidate"] is True
@@ -323,8 +329,10 @@ def test_window_stats_never_serializes_pixel_arrays():
     validation = _causal_validation(inside_center=True)
     variants = validation.pop("_variants")
     stats = multiband_pipeline._hull_causal_window_stats(
-        validation, [from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
-        {1: variants}, {},
+        global_validation=validation, legacy_validation=validation,
+        strict_validation=validation,
+        transforms=[from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
+        causal_fields_by_scene={1: variants}, local_refinement={},
     )
 
     assert not any(isinstance(value, np.ndarray)
@@ -595,7 +603,9 @@ def test_synthetic_case_b_partial_window_stats_not_center_only():
     validation = _causal_validation(inside_center=True)
     variants = validation.pop("_variants")
     stats = multiband_pipeline._hull_causal_window_stats(
-        validation, [from_origin(0, 12, 1, 1)] * 2, {1: variants}, {},
+        global_validation=validation, legacy_validation=validation,
+        strict_validation=validation, transforms=[from_origin(0, 12, 1, 1)] * 2,
+        causal_fields_by_scene={1: variants}, local_refinement={},
     )
 
     assert 0.0 < stats["blocks"][0]["window_inside_hull_fraction"] < 1.0
@@ -724,3 +734,72 @@ def test_hull_causal_integrity_does_not_use_quality_improvement_as_integrity():
     result = _build_hull_causal_integrity(**inputs)
 
     assert result["integrity_pass"] is True
+
+
+def test_validation_block_lookup_uses_edge_selected_block_size():
+    from src.multiband_pipeline import _validation_block_lookup
+
+    validation = {"edges": [{
+        "idx_i": 0, "idx_j": 1, "validation_block_size_selected": 384,
+        "blocks": [{"validation_row": 100, "validation_col": 200,
+                    "residual_magnitude": 1.0}],
+    }]}
+    lookup = _validation_block_lookup(validation)
+    assert lookup[(0, 1, 100, 200)]["block_size"] == 384
+
+
+def test_hull_window_stats_pairs_global_legacy_strict_residuals_by_key():
+    from rasterio.transform import from_origin
+    from src import multiband_pipeline
+
+    base = _causal_validation(inside_center=True)
+    variants = base.pop("_variants")
+    variants = {**variants,
+        "raw_dx": np.ones((400, 400)), "raw_dy": np.ones((400, 400)),
+        "legacy_dx": np.ones((400, 400)), "legacy_dy": np.ones((400, 400)),
+        "strict_dx": np.ones((400, 400)), "strict_dy": np.ones((400, 400)),
+        "legacy_weight": np.ones((400, 400)), "strict_weight": np.ones((400, 400)),
+        "support": {"inside_hull_mask": np.ones((400, 400), dtype=bool),
+                    "fade_mask": np.ones((400, 400), dtype=float)},
+    }
+
+    def with_residual(value):
+        return {"validation_block_size_selected": 384, "edges": [{
+            "idx_i": 0, "idx_j": 1,
+            "validation_block_size_selected": 384,
+            "blocks": [{"validation_row": 1, "validation_col": 1,
+                        "residual_magnitude": value}],
+        }]}
+
+    stats = multiband_pipeline._hull_causal_window_stats(
+        global_validation=with_residual(0.6), legacy_validation=with_residual(2.1),
+        strict_validation=with_residual(2.2),
+        transforms=[from_origin(0, 400, 1, 1)] * 2,
+        causal_fields_by_scene={1: variants}, local_refinement={},
+    )
+    row = stats["blocks"][0]
+    assert row["block_size"] == 384
+    assert row["global_residual_magnitude"] == 0.6
+    assert row["legacy_residual_magnitude"] == 2.1
+    assert row["strict_residual_magnitude"] == 2.2
+    assert stats["n_blocks_paired"] == 1
+
+
+def test_hull_negative_control_rejects_both_zero_outside_window():
+    from rasterio.transform import from_origin
+    from src import multiband_pipeline
+
+    validation = _causal_validation(inside_center=True)
+    variants = validation.pop("_variants")
+    variants["legacy_weight"] = np.zeros((12, 12))
+    variants["strict_weight"] = np.zeros((12, 12))
+    stats = multiband_pipeline._hull_causal_window_stats(
+        global_validation=validation, legacy_validation=validation,
+        strict_validation=validation,
+        transforms=[from_origin(0, 12, 1, 1)] * 2,
+        causal_fields_by_scene={1: variants}, local_refinement={},
+    )
+    row = stats["blocks"][0]
+    assert row["window_legacy_support_mean"] == 0.0
+    assert row["window_strict_support_mean"] == 0.0
+    assert row["negative_control_candidate"] is False

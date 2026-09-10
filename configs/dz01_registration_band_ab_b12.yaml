@@ -1,0 +1,115 @@
+experiment_name: dz01_registration_band_ab_b12
+output_root: data/output/registration_band_ab
+registration_band: B12
+control_scene: scene_20251114
+common_bands_strategy: strict
+selected_bands: [B12, B14]
+rgb_bands: []
+false_color_bands: []
+scenes:
+  - id: scene_20251114
+    datetime: "2025-11-14"
+    sensor: DZ01V
+    bands:
+      B12: data/input/20251114023841/DZ01V_L2_E119.3_N30.3_20251114023841_01_T1/DZ01V_L2_E119.3_N30.3_20251114023841_01_T1_B12.TIF
+      B14: data/input/20251114023841/DZ01V_L2_E119.3_N30.3_20251114023841_01_T1/DZ01V_L2_E119.3_N30.3_20251114023841_01_T1_B14.TIF
+  - id: scene_20251120
+    datetime: "2025-11-20"
+    sensor: DZ01V
+    bands:
+      B12: data/input/20251120024220/DZ01V_L2_E118.9_N30.2_20251120024220_01_T1/DZ01V_L2_E118.9_N30.2_20251120024220_01_T1_B12.TIF
+      B14: data/input/20251120024220/DZ01V_L2_E118.9_N30.2_20251120024220_01_T1/DZ01V_L2_E118.9_N30.2_20251120024220_01_T1_B14.TIF
+  - id: scene_20251208
+    datetime: "2025-12-08"
+    sensor: DZ01V
+    bands:
+      B12: data/input/20251208025051/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1_B12.TIF
+      B14: data/input/20251208025051/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1/DZ01V_L2_E118.9_N30.3_20251208025051_01_T1_B14.TIF
+  - id: scene_20251215
+    datetime: "2025-12-15"
+    sensor: DZ01V
+    bands:
+      B12: data/input/20251215023725/DZ01V_L2_E119.0_N30.1_20251215023725_01_T1/DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B12.TIF
+      B14: data/input/20251215023725/DZ01V_L2_E119.0_N30.1_20251215023725_01_T1/DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B14.TIF
+  - id: scene_20251214_025253
+    datetime: "2025-12-14T02:52:53"
+    sensor: DZ01V
+    bands:
+      B12: data/input/20251214025253/DZ01V_L2_E118.9_N29.9_20251214025253_01_T1/DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B12.TIF
+      B14: data/input/20251214025253/DZ01V_L2_E118.9_N29.9_20251214025253_01_T1/DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B14.TIF
+  - id: scene_20251214_025247
+    datetime: "2025-12-14T02:52:47"
+    sensor: DZ01V
+    bands:
+      B12: data/input/20251214025247/DZ01V_L2_E119.0_N30.3_20251214025247_01_T1/DZ01V_L2_E119.0_N30.3_20251214025247_01_T1_B12.TIF
+      B14: data/input/20251214025247/DZ01V_L2_E119.0_N30.3_20251214025247_01_T1/DZ01V_L2_E119.0_N30.3_20251214025247_01_T1_B14.TIF
+mosaic_modes: [weighted]
+feather_widths: [100]
+volrn_params:
+  block_size: 200
+  lambda: 0.1
+  rho: 1.0
+  max_iter: 200
+  tol: 1.0e-4
+ablation_methods: []
+scale_scene_counts: [2, 4, 6]
+enable_spectral_metrics: false
+smoke_crop_size: 512
+smoke_scene_count: 6
+seed: 42
+dry_run: false
+smoke: false
+registration_params:
+  global_block_size: 512
+  global_confidence_threshold: 0.50
+  max_global_shift: 40.0
+  robust_mad_scale: 3.0
+  robust_residual_floor: 0.75
+  robust_min_inliers: 5
+  robust_min_inlier_ratio: 0.35
+  global_refine_block_size: 384
+  global_refine_max_iterations: 3
+  global_refine_stop_magnitude: 0.15
+  global_refine_max_correction: 5.0
+  enable_local_refinement: true
+  local_block_size: 256
+  local_confidence_threshold: 0.60
+  local_max_residual_shift: 3.0
+  local_search_max_shift: 12.0
+  local_outlier_mad_scale: 3.0
+  local_hard_max_component: 8.0
+  local_neighbor_k: 8
+  local_min_controls: 12
+  local_min_spatial_groups: 3
+  local_max_component: 2.5
+  local_hull_buffer: 128
+  local_cv_min_rmse_improvement: 0.10
+  local_cv_min_p95_improvement: 0.15
+  local_cv_buffer_pixels: 256
+  local_smoothing_candidates: [0.01, 0.05, 0.1, 0.5, 1.0]
+  enable_spatial_holdout: true
+  holdout_fraction: 0.20
+  holdout_seed: 42
+  holdout_block_size: 384
+  min_holdout_cells: 2
+  holdout_buffer_pixels: 0
+  validation_reservation_step: 64
+  validation_reservation_offset_row: 0
+  validation_reservation_offset_col: 0
+  validation_reservation_margin: 2
+  validation_min_common_valid_ratio: 0.30
+  validation_block_size: 384
+  validation_block_size_candidates: [384, 256, 192]
+  validation_confidence_threshold: 0.45
+  validation_max_residual_shift: 3.0
+  validation_required_candidate_count: 5
+  final_min_blocks: 5
+  pass_min_mean_confidence: 0.50
+  pass_max_median: 0.35
+  pass_max_rmse: 0.60
+  pass_max_p95: 1.00
+  warn_min_mean_confidence: 0.45
+  warn_max_median: 0.50
+  warn_max_rmse: 0.75
+  warn_max_p95: 1.25
+  required_quality: pass

@@ -16,6 +16,7 @@
 
 import os
 import json
+import hashlib
 import time
 import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -37,6 +38,11 @@ from src.mosaic import create_mosaic
 # 日志设置
 # ---------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
+
+
+def _registration_params_fingerprint(params):
+    payload = json.dumps(params or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # ===========================================================================
@@ -586,6 +592,7 @@ def _training_points_for_edge(pair_measurements, idx_i, idx_j):
 
 def _build_pair_holdout_context(
     arr_ref, tr_ref, arr_tgt, tr_tgt, nodata_ref, nodata_tgt, params,
+    reserved_windows_override=None,
 ):
     """Build common-valid TRAIN/HOLDOUT masks in reference-patch pixels."""
     from src.coregistration import (
@@ -631,6 +638,7 @@ def _build_pair_holdout_context(
         seed=int(params.get("holdout_seed", 42)),
         reservation_margin=int(params.get("validation_reservation_margin", 2)),
         buffer_pixels=int(params.get("holdout_buffer_pixels", 0)),
+        reserved_windows_override=reserved_windows_override,
         **reservation_kwargs,
     )
     split.update({
@@ -894,191 +902,189 @@ def _sample_field_bilinear(field, x, y):
     return value if np.isfinite(value) else None
 
 
-def _hull_causal_window_stats(
-    validation, transforms, causal_fields_by_scene, local_refinement
-):
-    """Summarize complete reserved validation windows on causal RBF fields."""
-    from scipy.ndimage import map_coordinates
-    from src.coregistration import (
-        compute_hull_fade_support,
-        map_pixel_centers_between_grids,
-    )
+def _sample_field_nearest(field, x, y):
+    """Sample one field at an exact mapped center using nearest semantics."""
+    values = np.asarray(field, dtype=float)
+    if values.ndim != 2 or not np.isfinite(x) or not np.isfinite(y):
+        return None
+    col = int(round(float(x)))
+    row = int(round(float(y)))
+    if not (0 <= row < values.shape[0] and 0 <= col < values.shape[1]):
+        return None
+    value = float(values[row, col])
+    return value if np.isfinite(value) else None
 
+
+def _validation_block_lookup(validation):
+    """Map paired validation coordinates to normalized block records."""
     validation = validation or {}
-    causal_fields_by_scene = causal_fields_by_scene or {}
-    local_refinement = local_refinement or {}
-    default_size = int(validation.get("validation_block_size_selected") or 192)
-    rows = []
-
-    def get_scene_fields(scene_idx):
-        return causal_fields_by_scene.get(
-            scene_idx, causal_fields_by_scene.get(str(scene_idx), {})
-        ) or {}
-
-    def sample(field, mapped, order=1):
-        values = np.asarray(field, dtype=float)
-        return map_coordinates(
-            values,
-            [mapped[:, 1], mapped[:, 0]],
-            order=order,
-            mode="constant",
-            cval=np.nan,
-            prefilter=False,
-        )
-
-    def percentile(values, q):
-        return float(np.percentile(values, q)) if len(values) else 0.0
-
+    top_level_size = validation.get("validation_block_size_selected")
+    lookup = {}
     for edge in validation.get("edges", []) or []:
         try:
             idx_i = int(edge["idx_i"])
             idx_j = int(edge["idx_j"])
         except (KeyError, TypeError, ValueError):
             continue
-        scene_idx = idx_j
-        fields = get_scene_fields(scene_idx)
-        support = fields.get("support")
-        raw_dx = fields.get("raw_dx")
-        raw_dy = fields.get("raw_dy")
-        legacy_dx = fields.get("legacy_dx")
-        legacy_dy = fields.get("legacy_dy")
-        strict_dx = fields.get("strict_dx")
-        strict_dy = fields.get("strict_dy")
-        legacy_weight = fields.get("legacy_weight")
-        strict_weight = fields.get("strict_weight")
-        if support is None and raw_dx is not None:
-            points = (local_refinement.get("control_points", {}) or {}).get(
-                str(scene_idx), (local_refinement.get("control_points", {}) or {}).get(
-                    scene_idx, []
-                )
-            )
-            try:
-                support = compute_hull_fade_support(
-                    np.asarray(points, dtype=float),
-                    np.asarray(raw_dx).shape[0],
-                    np.asarray(raw_dx).shape[1],
-                    buffer=128,
-                )
-            except (TypeError, ValueError, IndexError):
-                support = None
-        if support is None or any(
-            value is None for value in (
-                raw_dx, raw_dy, legacy_dx, legacy_dy, strict_dx, strict_dy,
-            )
-        ):
-            continue
-        if legacy_weight is None:
-            legacy_weight = support["fade_mask"]
-        if strict_weight is None:
-            strict_weight = np.asarray(
-                support["inside_hull_mask"], dtype=np.float64
-            )
-
+        edge_size = edge.get("validation_block_size_selected", top_level_size)
         for block in edge.get("blocks", []) or []:
             try:
                 row = int(block["validation_row"])
                 col = int(block["validation_col"])
             except (KeyError, TypeError, ValueError):
                 continue
-            block_size = int(block.get("block_size", default_size))
-            yy, xx = np.mgrid[row:row + block_size, col:col + block_size]
-            reference_points = np.column_stack([xx.ravel(), yy.ravel()])
-            mapped = map_pixel_centers_between_grids(
-                reference_points, transforms[idx_i], transforms[scene_idx]
-            )
-            sampled = {
-                "raw_dx": sample(raw_dx, mapped),
-                "raw_dy": sample(raw_dy, mapped),
-                "legacy_dx": sample(legacy_dx, mapped),
-                "legacy_dy": sample(legacy_dy, mapped),
-                "strict_dx": sample(strict_dx, mapped),
-                "strict_dy": sample(strict_dy, mapped),
-                "legacy_weight": sample(legacy_weight, mapped),
-                "strict_weight": sample(strict_weight, mapped),
-                "inside_hull": sample(
-                    support["inside_hull_mask"], mapped, order=0
-                ),
-            }
-            valid = np.ones(len(mapped), dtype=bool)
-            for key in ("raw_dx", "raw_dy", "legacy_dx", "legacy_dy",
-                        "strict_dx", "strict_dy", "legacy_weight",
-                        "strict_weight", "inside_hull"):
-                valid &= np.isfinite(sampled[key])
-            if not np.any(valid):
-                continue
-            valid_sample_count = int(np.count_nonzero(valid))
-            raw_magnitude = np.hypot(
-                sampled["raw_dx"][valid], sampled["raw_dy"][valid]
-            )
-            legacy_magnitude = np.hypot(
-                sampled["legacy_dx"][valid], sampled["legacy_dy"][valid]
-            )
-            strict_magnitude = np.hypot(
-                sampled["strict_dx"][valid], sampled["strict_dy"][valid]
-            )
-            legacy_support = sampled["legacy_weight"][valid]
-            strict_support = sampled["strict_weight"][valid]
-            inside = sampled["inside_hull"][valid] >= 0.5
-            difference = np.abs(legacy_support - strict_support) > 1e-12
-            center_x = float(block.get(
-                "center_x", col + (block_size - 1) / 2.0
-            ))
-            center_y = float(block.get(
-                "center_y", row + (block_size - 1) / 2.0
-            ))
-            center_mapped = map_pixel_centers_between_grids(
-                np.asarray([[center_x, center_y]]),
-                transforms[idx_i], transforms[scene_idx],
-            )[0]
-            field_row = int(round(center_mapped[1]))
-            field_col = int(round(center_mapped[0]))
-            inside_shape = np.asarray(support["inside_hull_mask"]).shape
-            center_inside = bool(
-                0 <= field_row < inside_shape[0]
-                and 0 <= field_col < inside_shape[1]
-                and support["inside_hull_mask"][field_row, field_col]
-            )
-            rows.append({
+            size = block.get("block_size")
+            if size is None:
+                size = edge_size
+            if size is None:
+                size = 192
+            normalized = dict(block)
+            normalized.update({
+                "idx_i": idx_i,
+                "idx_j": idx_j,
+                "block_size": int(size),
                 "validation_row": row,
                 "validation_col": col,
-                "block_size": block_size,
-                "scene_idx": scene_idx,
-                "reference_center_x": center_x,
-                "reference_center_y": center_y,
-                "field_center_x": float(center_mapped[0]),
-                "field_center_y": float(center_mapped[1]),
-                "center_inside_hull": center_inside,
-                "center_legacy_weight": float(
-                    sampled["legacy_weight"][valid][len(sampled["legacy_weight"][valid]) // 2]
-                ),
-                "center_strict_weight": float(
-                    sampled["strict_weight"][valid][len(sampled["strict_weight"][valid]) // 2]
-                ),
-                "window_valid_sample_count": valid_sample_count,
-                "window_inside_hull_fraction": float(np.mean(inside)),
-                "window_legacy_support_nonzero_fraction": float(
-                    np.mean(legacy_support > 1e-12)
-                ),
-                "window_strict_support_nonzero_fraction": float(
-                    np.mean(strict_support > 1e-12)
-                ),
-                "window_support_difference_fraction": float(
-                    np.mean(difference)
-                ),
-                "window_legacy_support_mean": float(np.mean(legacy_support)),
-                "window_strict_support_mean": float(np.mean(strict_support)),
-                "window_raw_rbf_magnitude_mean": float(np.mean(raw_magnitude)),
-                "window_raw_rbf_magnitude_p95": percentile(raw_magnitude, 95),
-                "window_legacy_rbf_magnitude_mean": float(np.mean(legacy_magnitude)),
-                "window_legacy_rbf_magnitude_p95": percentile(legacy_magnitude, 95),
-                "window_strict_rbf_magnitude_mean": float(np.mean(strict_magnitude)),
-                "window_strict_rbf_magnitude_p95": percentile(strict_magnitude, 95),
-                "global_residual_magnitude": block.get("global_residual_magnitude"),
-                "legacy_residual_magnitude": block.get("legacy_residual_magnitude"),
-                "strict_residual_magnitude": block.get("strict_residual_magnitude"),
-                "negative_control_candidate": bool(np.mean(difference) <= 1e-12),
             })
-    return {"blocks": rows, "n_blocks": len(rows)}
+            lookup[(idx_i, idx_j, row, col)] = normalized
+    return lookup
+
+
+def _hull_causal_window_stats(
+    *, global_validation, legacy_validation, strict_validation, transforms,
+    causal_fields_by_scene, local_refinement
+):
+    """Summarize paired complete HOLDOUT windows on causal RBF fields."""
+    from scipy.ndimage import map_coordinates
+    from src.coregistration import compute_hull_fade_support, map_pixel_centers_between_grids
+
+    global_lookup = _validation_block_lookup(global_validation)
+    legacy_lookup = _validation_block_lookup(legacy_validation)
+    strict_lookup = _validation_block_lookup(strict_validation)
+    global_keys, legacy_keys, strict_keys = map(set, (global_lookup, legacy_lookup, strict_lookup))
+    paired_keys = sorted(global_keys & legacy_keys & strict_keys)
+    fields_by_scene = causal_fields_by_scene or {}
+    local_refinement = local_refinement or {}
+    rows = []
+
+    def fields_for(scene_idx):
+        return fields_by_scene.get(scene_idx, fields_by_scene.get(str(scene_idx), {})) or {}
+
+    def sample(field, points, order=1):
+        return map_coordinates(
+            np.asarray(field, dtype=float), [points[:, 1], points[:, 0]],
+            order=order, mode="constant", cval=np.nan, prefilter=False,
+        )
+
+    for key in paired_keys:
+        idx_i, idx_j, row, col = key
+        legacy_block = legacy_lookup[key]
+        fields = fields_for(idx_j)
+        support = fields.get("support")
+        raw_dx, raw_dy = fields.get("raw_dx"), fields.get("raw_dy")
+        legacy_dx, legacy_dy = fields.get("legacy_dx"), fields.get("legacy_dy")
+        strict_dx, strict_dy = fields.get("strict_dx"), fields.get("strict_dy")
+        legacy_weight, strict_weight = fields.get("legacy_weight"), fields.get("strict_weight")
+        if support is None and raw_dx is not None:
+            points = (local_refinement.get("control_points", {}) or {}).get(
+                str(idx_j), (local_refinement.get("control_points", {}) or {}).get(idx_j, [])
+            )
+            try:
+                support = compute_hull_fade_support(np.asarray(points, dtype=float),
+                                                    np.asarray(raw_dx).shape[0],
+                                                    np.asarray(raw_dx).shape[1], buffer=128)
+            except (TypeError, ValueError, IndexError):
+                support = None
+        if support is None or any(value is None for value in (
+            raw_dx, raw_dy, legacy_dx, legacy_dy, strict_dx, strict_dy
+        )):
+            continue
+        if legacy_weight is None:
+            legacy_weight = support["fade_mask"]
+        if strict_weight is None:
+            strict_weight = np.asarray(support["inside_hull_mask"], dtype=float)
+
+        block_size = int(legacy_block.get("block_size", 192))
+        yy, xx = np.mgrid[row:row + block_size, col:col + block_size]
+        mapped = map_pixel_centers_between_grids(
+            np.column_stack([xx.ravel(), yy.ravel()]), transforms[idx_i], transforms[idx_j]
+        )
+        sampled = {
+            "raw_dx": sample(raw_dx, mapped), "raw_dy": sample(raw_dy, mapped),
+            "legacy_dx": sample(legacy_dx, mapped), "legacy_dy": sample(legacy_dy, mapped),
+            "strict_dx": sample(strict_dx, mapped), "strict_dy": sample(strict_dy, mapped),
+            "legacy_weight": sample(legacy_weight, mapped),
+            "strict_weight": sample(strict_weight, mapped),
+            "inside_hull": sample(support["inside_hull_mask"], mapped, order=0),
+        }
+        valid = np.ones(len(mapped), dtype=bool)
+        for name, values in sampled.items():
+            valid &= np.isfinite(values)
+        if not np.any(valid):
+            continue
+        raw_magnitude = np.hypot(sampled["raw_dx"][valid], sampled["raw_dy"][valid])
+        legacy_magnitude = np.hypot(sampled["legacy_dx"][valid], sampled["legacy_dy"][valid])
+        strict_magnitude = np.hypot(sampled["strict_dx"][valid], sampled["strict_dy"][valid])
+        legacy_support = sampled["legacy_weight"][valid]
+        strict_support = sampled["strict_weight"][valid]
+        difference = np.abs(legacy_support - strict_support) > 1e-12
+        center_x = float(legacy_block.get("center_x", col + (block_size - 1) / 2.0))
+        center_y = float(legacy_block.get("center_y", row + (block_size - 1) / 2.0))
+        center_mapped = map_pixel_centers_between_grids(
+            np.asarray([[center_x, center_y]]), transforms[idx_i], transforms[idx_j]
+        )[0]
+        center_inside_value = _sample_field_nearest(
+            np.asarray(support["inside_hull_mask"], dtype=float),
+            float(center_mapped[0]), float(center_mapped[1]),
+        )
+        legacy_mean = float(np.mean(legacy_support))
+        strict_mean = float(np.mean(strict_support))
+        difference_fraction = float(np.mean(difference))
+        rows.append({
+            "idx_i": idx_i, "idx_j": idx_j,
+            "validation_row": row, "validation_col": col, "block_size": block_size,
+            "scene_idx": idx_j, "reference_center_x": center_x, "reference_center_y": center_y,
+            "field_center_x": float(center_mapped[0]), "field_center_y": float(center_mapped[1]),
+            "center_inside_hull": bool(center_inside_value is not None and center_inside_value >= 0.5),
+            "center_legacy_weight": _sample_field_bilinear(legacy_weight, *center_mapped),
+            "center_strict_weight": _sample_field_bilinear(strict_weight, *center_mapped),
+            "window_valid_sample_count": int(np.count_nonzero(valid)),
+            "window_inside_hull_fraction": float(np.mean(sampled["inside_hull"][valid] >= 0.5)),
+            "window_legacy_support_nonzero_fraction": float(np.mean(legacy_support > 1e-12)),
+            "window_strict_support_nonzero_fraction": float(np.mean(strict_support > 1e-12)),
+            "window_support_difference_fraction": difference_fraction,
+            "window_legacy_support_mean": legacy_mean, "window_strict_support_mean": strict_mean,
+            "window_raw_rbf_magnitude_mean": float(np.mean(raw_magnitude)),
+            "window_raw_rbf_magnitude_p95": float(np.percentile(raw_magnitude, 95)),
+            "window_legacy_rbf_magnitude_mean": float(np.mean(legacy_magnitude)),
+            "window_legacy_rbf_magnitude_p95": float(np.percentile(legacy_magnitude, 95)),
+            "window_strict_rbf_magnitude_mean": float(np.mean(strict_magnitude)),
+            "window_strict_rbf_magnitude_p95": float(np.percentile(strict_magnitude, 95)),
+            "global_residual_magnitude": global_lookup[key].get("residual_magnitude"),
+            "legacy_residual_magnitude": legacy_block.get("residual_magnitude"),
+            "strict_residual_magnitude": strict_lookup[key].get("residual_magnitude"),
+            "negative_control_candidate": bool(
+                difference_fraction <= 1e-12
+                and np.mean(strict_support > 1e-12) >= 0.95
+                and legacy_mean >= 0.95 and strict_mean >= 0.95
+            ),
+        })
+    negative_control_available = any(
+        row["negative_control_candidate"] for row in rows
+    )
+    return {
+        "blocks": rows,
+        "n_blocks": len(rows),
+        "n_blocks_paired": len(paired_keys),
+        "unpaired_global_keys": sorted(global_keys - set(paired_keys)),
+        "unpaired_legacy_keys": sorted(legacy_keys - set(paired_keys)),
+        "unpaired_strict_keys": sorted(strict_keys - set(paired_keys)),
+        "negative_control_available": negative_control_available,
+        "negative_control_reason": (
+            None if negative_control_available
+            else "no paired HOLDOUT window is >=95% strictly supported with equal supports"
+        ),
+    }
 
 
 def _build_hull_causal_integrity(
@@ -1399,6 +1405,7 @@ def _validate_final_registration_arrays(
     training_measurements,
     params,
     holdout_contexts=None,
+    *, validation_band_idx=None,
 ):
     """Validate the exact arrays that will be used by the quality gate."""
     from src.coregistration import (
@@ -1407,6 +1414,7 @@ def _validate_final_registration_arrays(
     )
 
     params = params or {}
+    band_idx = registration_band_idx if validation_band_idx is None else int(validation_band_idx)
     validation_results = []
     validation_block_size = int(params.get("validation_block_size", 384))
     validation_step = int(params.get("validation_step", 256))
@@ -1443,12 +1451,12 @@ def _validate_final_registration_arrays(
                 reserved_windows = reservation.get("reserved_windows")
             if reserved_mask is None:
                 reserved_mask = np.zeros_like(
-                    registered_arrays[idx_i][registration_band_idx], dtype=bool
+                    registered_arrays[idx_i][band_idx], dtype=bool
                 )
         try:
             validation = validate_registration_independent_grid(
-                registered_arrays[idx_i][registration_band_idx], transforms[idx_i],
-                registered_arrays[idx_j][registration_band_idx], transforms[idx_j],
+                registered_arrays[idx_i][band_idx], transforms[idx_i],
+                registered_arrays[idx_j][band_idx], transforms[idx_j],
                 nodata_values[idx_i], nodata_values[idx_j], training_points,
                 block_size=validation_block_size,
                 step=validation_step,
@@ -2486,6 +2494,8 @@ class MultibandPipeline:
         registration_band_idx: Optional[int] = None,
         *,
         hull_causal_diagnostic: bool = False,
+        diagnostic_validation_band: Optional[str] = None,
+        holdout_reservation_overrides=None,
     ) -> Dict[str, Any]:
         """
         对所有场景执行多波段配准。
@@ -2533,6 +2543,16 @@ class MultibandPipeline:
 
         if registration_band_idx is None:
             registration_band_idx = self.registration_band_idx
+        if diagnostic_validation_band is None:
+            validation_band_idx = registration_band_idx
+        else:
+            if diagnostic_validation_band not in self.common_bands:
+                raise ValueError(
+                    f"diagnostic validation band {diagnostic_validation_band!r} is not loaded"
+                )
+            validation_band_idx = self.common_bands.index(diagnostic_validation_band)
+        registration_band_name = self.common_bands[registration_band_idx]
+        validation_band_name = self.common_bands[validation_band_idx]
 
         logger.info(
             "开始配准 (波段索引=%d, 波段名=%s)...",
@@ -2592,6 +2612,9 @@ class MultibandPipeline:
                     "local_refinement": local_refinement,
                     "final_validation": final_validation,
                 },
+                "registration_band_name": registration_band_name,
+                "validation_band_name": validation_band_name,
+                "registration_params_sha256": _registration_params_fingerprint(reg_params),
             }
 
         # ---- Step 1: 逐对匹配（用配准波段） ----
@@ -2619,6 +2642,7 @@ class MultibandPipeline:
                     arrays[i][registration_band_idx], transforms[i],
                     arrays[j][registration_band_idx], transforms[j],
                     nodata_values[i], nodata_values[j], reg_params,
+                    (holdout_reservation_overrides or {}).get((i, j)),
                 )
                 if holdout_context.get("available"):
                     ri_s, ri_e, ci_s, ci_e = holdout_context["patch_window_ref"]
@@ -2656,6 +2680,9 @@ class MultibandPipeline:
                             "validation_reservation"
                         )
                     }
+                    failure_result["registration_band_name"] = registration_band_name
+                    failure_result["validation_band_name"] = validation_band_name
+                    failure_result["registration_params_sha256"] = _registration_params_fingerprint(reg_params)
                     return failure_result
 
         for ov in overlaps:
@@ -2948,6 +2975,7 @@ class MultibandPipeline:
             pair_measurements,
             reg_params,
             holdout_contexts=holdout_contexts,
+            validation_band_idx=validation_band_idx,
         )
         logger.info(
             "global-only HOLDOUT: quality=%s, median=%s, rmse=%s, p95=%s",
@@ -3145,6 +3173,7 @@ class MultibandPipeline:
             [*pair_measurements, *post_global_pairs],
             reg_params,
             holdout_contexts=holdout_contexts,
+            validation_band_idx=validation_band_idx,
         )
         stage_validation_comparison = _compare_registration_validations(
             global_only_validation, final_validation,
@@ -3191,13 +3220,16 @@ class MultibandPipeline:
                         [*pair_measurements, *post_global_pairs],
                         reg_params,
                         holdout_contexts=holdout_contexts,
+                        validation_band_idx=validation_band_idx,
                     )
                 )
                 window_stats = _hull_causal_window_stats(
-                    final_validation,
-                    transforms,
-                    causal_fields_by_scene,
-                    local_refinement,
+                    global_validation=global_only_validation,
+                    legacy_validation=final_validation,
+                    strict_validation=strict_counterfactual_validation,
+                    transforms=transforms,
+                    causal_fields_by_scene=causal_fields_by_scene,
+                    local_refinement=local_refinement,
                 )
                 integrity = _build_hull_causal_integrity(
                     global_shifts=global_shifts,
@@ -3304,6 +3336,7 @@ class MultibandPipeline:
 
         result = {
             "registered_arrays": registered_arrays,
+            "scene_ids": list(scene_data.get("scene_ids", [])),
             "global_only_arrays": global_only_arrays,
             "global_shifts": global_shifts,
             "local_dx_fields": local_dx_fields,
@@ -3318,6 +3351,9 @@ class MultibandPipeline:
             "matching_edges": matching_edges,
             "rejected_edges": rejected_list,
             "quality": final_quality,
+            "registration_band_name": registration_band_name,
+            "validation_band_name": validation_band_name,
+            "registration_params_sha256": _registration_params_fingerprint(reg_params),
             "final_validation": final_validation,
             "global_only_quality": global_only_quality,
             "global_only_validation": global_only_validation,
