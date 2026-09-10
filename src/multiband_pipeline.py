@@ -1372,6 +1372,58 @@ def _apply_local_rbf_weight_and_clip(raw_dx, raw_dy, weight, params):
     }
 
 
+def _fit_hull_causal_rbf_variants(controls, shape, params, *, smoothing):
+    """Fit one raw RBF and derive legacy and strict hull-support fields."""
+    from src.coregistration import compute_hull_fade_support
+
+    points = np.asarray(controls["points_xy"], dtype=float)
+    h, w = shape
+    raw_dx, raw_dy, raw_stats = _predict_local_rbf_raw_field(
+        controls, shape, smoothing=float(smoothing)
+    )
+    support = compute_hull_fade_support(
+        points, h, w, buffer=int(params.get("local_hull_buffer", 128))
+    )
+    legacy_weight = np.asarray(support["fade_mask"], dtype=np.float64)
+    strict_weight = np.asarray(
+        support["inside_hull_mask"], dtype=np.float64
+    )
+    legacy_dx, legacy_dy, legacy_stats = _apply_local_rbf_weight_and_clip(
+        raw_dx, raw_dy, legacy_weight, params
+    )
+    strict_dx, strict_dy, strict_stats = _apply_local_rbf_weight_and_clip(
+        raw_dx, raw_dy, strict_weight, params
+    )
+    inside_hull = np.asarray(support["inside_hull_mask"], dtype=bool)
+    strict_outside_nonzero_count = int(
+        np.count_nonzero(strict_dx[~inside_hull])
+        + np.count_nonzero(strict_dy[~inside_hull])
+    )
+    return {
+        "smoothing": float(smoothing),
+        "raw_dx": raw_dx,
+        "raw_dy": raw_dy,
+        "legacy_weight": legacy_weight,
+        "strict_weight": strict_weight,
+        "legacy_dx": legacy_dx,
+        "legacy_dy": legacy_dy,
+        "strict_dx": strict_dx,
+        "strict_dy": strict_dy,
+        "raw_stats": raw_stats,
+        "legacy_stats": legacy_stats,
+        "strict_stats": strict_stats,
+        "support": support,
+        "integrity": {
+            "same_raw_field": True,
+            "legacy_buffer_pixels": int(params.get("local_hull_buffer", 128)),
+            "strict_outside_nonzero_count": strict_outside_nonzero_count,
+            "legacy_strict_equal_inside_hull": bool(np.array_equal(
+                legacy_weight[inside_hull], strict_weight[inside_hull]
+            )),
+        },
+    }
+
+
 def _fit_local_rbf_field(controls, shape, params, *, smoothing=None):
     """Fit, fade, and component-clip one target-scene local field."""
     from src.coregistration import compute_hull_fade_support

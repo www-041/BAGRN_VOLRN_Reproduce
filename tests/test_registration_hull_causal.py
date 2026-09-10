@@ -123,3 +123,109 @@ def test_fit_local_rbf_field_return_schema_preserves_existing_keys(monkeypatch):
         "smoothing", "clipping", "fade", "local_dx", "local_dy",
         "max_dx", "max_dy", "p95_magnitude", "max_spatial_gradient",
     } <= set(stats)
+
+
+def test_hull_causal_variants_fit_raw_rbf_exactly_once(monkeypatch):
+    from src import multiband_pipeline
+
+    calls = {"raw": 0}
+
+    def fake_raw(*args, **kwargs):
+        calls["raw"] += 1
+        return (
+            np.full((8, 8), 4.0), np.full((8, 8), -4.0),
+            {"smoothing": kwargs["smoothing"]},
+        )
+
+    monkeypatch.setattr(multiband_pipeline, "_predict_local_rbf_raw_field", fake_raw)
+    variants = multiband_pipeline._fit_hull_causal_rbf_variants(
+        _controls(), (8, 8), {"local_hull_buffer": 2}, smoothing=0.1,
+    )
+
+    assert calls["raw"] == 1
+    assert variants["integrity"]["same_raw_field"] is True
+    assert variants["raw_dx"].shape == (8, 8)
+
+
+def test_strict_weight_is_exactly_zero_outside_hull(monkeypatch):
+    from src import multiband_pipeline
+
+    monkeypatch.setattr(
+        multiband_pipeline,
+        "_predict_local_rbf_raw_field",
+        lambda *args, **kwargs: (
+            np.ones((8, 8)), np.ones((8, 8)), {"smoothing": 0.1}
+        ),
+    )
+    variants = multiband_pipeline._fit_hull_causal_rbf_variants(
+        _controls(), (8, 8), {"local_hull_buffer": 2}, smoothing=0.1,
+    )
+    outside = ~variants["support"]["inside_hull_mask"]
+
+    assert np.all(variants["strict_weight"][outside] == 0.0)
+    assert np.count_nonzero(variants["strict_dx"][outside]) == 0
+    assert variants["integrity"]["strict_outside_nonzero_count"] == 0
+
+
+def test_legacy_and_strict_weights_are_identical_inside_hull(monkeypatch):
+    from src import multiband_pipeline
+
+    monkeypatch.setattr(
+        multiband_pipeline,
+        "_predict_local_rbf_raw_field",
+        lambda *args, **kwargs: (
+            np.ones((8, 8)), np.ones((8, 8)), {"smoothing": 0.1}
+        ),
+    )
+    variants = multiband_pipeline._fit_hull_causal_rbf_variants(
+        _controls(), (8, 8), {"local_hull_buffer": 2}, smoothing=0.1,
+    )
+    inside = variants["support"]["inside_hull_mask"]
+
+    assert np.array_equal(
+        variants["legacy_weight"][inside], variants["strict_weight"][inside]
+    )
+    assert variants["integrity"]["legacy_strict_equal_inside_hull"] is True
+
+
+def test_legacy_branch_keeps_buffered_hull_fade_outside(monkeypatch):
+    from src import multiband_pipeline
+
+    monkeypatch.setattr(
+        multiband_pipeline,
+        "_predict_local_rbf_raw_field",
+        lambda *args, **kwargs: (
+            np.full((8, 8), 2.0), np.full((8, 8), -2.0), {"smoothing": 0.1}
+        ),
+    )
+    variants = multiband_pipeline._fit_hull_causal_rbf_variants(
+        _controls(), (8, 8), {"local_hull_buffer": 3}, smoothing=0.1,
+    )
+    outside = ~variants["support"]["inside_hull_mask"]
+
+    assert np.any(variants["legacy_weight"][outside] > 0.0)
+    assert np.all(variants["strict_weight"][outside] == 0.0)
+    assert np.any(np.abs(variants["legacy_dx"][outside]) > 0.0)
+
+
+def test_both_branches_use_identical_component_cap(monkeypatch):
+    from src import multiband_pipeline
+
+    monkeypatch.setattr(
+        multiband_pipeline,
+        "_predict_local_rbf_raw_field",
+        lambda *args, **kwargs: (
+            np.full((8, 8), 9.0), np.full((8, 8), -9.0), {"smoothing": 0.1}
+        ),
+    )
+    variants = multiband_pipeline._fit_hull_causal_rbf_variants(
+        _controls(), (8, 8),
+        {"local_hull_buffer": 2, "local_hard_max_component": 1.25},
+        smoothing=0.1,
+    )
+
+    assert np.max(np.abs(variants["legacy_dx"])) <= 1.25
+    assert np.max(np.abs(variants["legacy_dy"])) <= 1.25
+    assert np.max(np.abs(variants["strict_dx"])) <= 1.25
+    assert np.max(np.abs(variants["strict_dy"])) <= 1.25
+    assert variants["legacy_stats"]["clipping"] == variants["strict_stats"]["clipping"]
