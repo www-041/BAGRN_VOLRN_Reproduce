@@ -2355,6 +2355,7 @@ class MultibandPipeline:
             "band_names": self.common_bands,
             "resolution": resolution,
         }
+        return result
 
     # -----------------------------------------------------------------------
     # b. 检测重叠
