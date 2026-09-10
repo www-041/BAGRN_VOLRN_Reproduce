@@ -157,6 +157,149 @@ def _log_holdout_local_field_summary(registration):
         "local-field HOLDOUT correction magnitude: median=%s, p95=%s, max=%s",
         _metric_text(median), _metric_text(p95), _metric_text(maximum),
     )
+
+
+_HULL_CAUSAL_STAGE_COLUMNS = [
+    "stage", "available", "quality", "median", "rmse", "p95",
+    "confidence", "n_blocks", "rmse_vs_global", "p95_vs_global",
+    "median_vs_global", "rmse_vs_legacy", "p95_vs_legacy",
+    "median_vs_legacy",
+]
+_HULL_CAUSAL_WINDOW_COLUMNS = [
+    "validation_row", "validation_col", "block_size", "scene_idx",
+    "reference_center_x", "reference_center_y", "field_center_x",
+    "field_center_y", "center_inside_hull", "center_legacy_weight",
+    "center_strict_weight", "window_valid_sample_count",
+    "window_inside_hull_fraction", "window_legacy_support_nonzero_fraction",
+    "window_strict_support_nonzero_fraction", "window_support_difference_fraction",
+    "window_legacy_support_mean", "window_strict_support_mean",
+    "window_raw_rbf_magnitude_mean", "window_raw_rbf_magnitude_p95",
+    "window_legacy_rbf_magnitude_mean", "window_legacy_rbf_magnitude_p95",
+    "window_strict_rbf_magnitude_mean", "window_strict_rbf_magnitude_p95",
+    "global_residual_magnitude", "legacy_residual_magnitude",
+    "strict_residual_magnitude", "legacy_minus_strict", "recovery_fraction",
+    "negative_control_candidate",
+]
+
+
+def _hull_causal_quality(registration, stage):
+    causal = registration.get("hull_causal", {}) or {}
+    if stage == "global_only":
+        return registration.get("global_only_quality", {}) or {}
+    if stage == "legacy_rbf":
+        return registration.get("quality", {}) or {}
+    return causal.get("strict_counterfactual_quality", {}) or {}
+
+
+def _hull_causal_comparison(registration, name):
+    return ((registration.get("hull_causal", {}) or {}).get(
+        "comparisons", {}
+    ) or {}).get(name, {}) or {}
+
+
+def _write_hull_causal_stage_metrics_csv(registration, output_dir):
+    """Write the fixed three-stage HULL-C1 comparison table."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "hull_causal_stage_metrics.csv"
+    global_to_legacy = registration.get("stage_validation_comparison", {}) or {}
+    global_to_strict = _hull_causal_comparison(registration, "global_to_strict")
+    legacy_to_strict = _hull_causal_comparison(registration, "legacy_to_strict")
+    rows = []
+    for stage, comparison, legacy_comparison in (
+        ("global_only", {}, {}),
+        ("legacy_rbf", global_to_legacy, {}),
+        ("strict_rbf", global_to_strict, legacy_to_strict),
+    ):
+        quality = _hull_causal_quality(registration, stage)
+        rows.append({
+            "stage": stage,
+            "available": bool(quality),
+            "quality": quality.get("quality"),
+            "median": quality.get("median"),
+            "rmse": quality.get("rmse"),
+            "p95": quality.get("p95"),
+            "confidence": quality.get("confidence", quality.get("mean_confidence")),
+            "n_blocks": quality.get("n_blocks", quality.get("n_accepted")),
+            "rmse_vs_global": comparison.get("rmse_improvement"),
+            "p95_vs_global": comparison.get("p95_improvement"),
+            "median_vs_global": comparison.get("median_improvement"),
+            "rmse_vs_legacy": legacy_comparison.get("rmse_improvement"),
+            "p95_vs_legacy": legacy_comparison.get("p95_improvement"),
+            "median_vs_legacy": legacy_comparison.get("median_improvement"),
+        })
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_HULL_CAUSAL_STAGE_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: _json_safe(row.get(key)) for key in writer.fieldnames})
+    return csv_path
+
+
+def _write_hull_causal_window_stats_csv(registration, output_dir):
+    """Write compact full-window HULL-C1 support statistics."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "hull_causal_window_stats.csv"
+    causal = registration.get("hull_causal", {}) or {}
+    blocks = ((causal.get("window_stats", {}) or {}).get("blocks", []) or [])
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_HULL_CAUSAL_WINDOW_COLUMNS)
+        writer.writeheader()
+        for block in blocks:
+            row = dict(block)
+            global_magnitude = row.get("global_residual_magnitude")
+            legacy_magnitude = row.get("legacy_residual_magnitude")
+            strict_magnitude = row.get("strict_residual_magnitude")
+            try:
+                legacy_minus_strict = float(legacy_magnitude) - float(strict_magnitude)
+                recovery_fraction = legacy_minus_strict / (
+                    float(legacy_magnitude) - float(global_magnitude)
+                )
+                if not np.isfinite(recovery_fraction):
+                    recovery_fraction = None
+            except (TypeError, ValueError, ZeroDivisionError):
+                legacy_minus_strict = None
+                recovery_fraction = None
+            row.update({
+                "legacy_minus_strict": legacy_minus_strict,
+                "recovery_fraction": recovery_fraction,
+            })
+            writer.writerow({
+                key: _json_safe(row.get(key)) for key in writer.fieldnames
+            })
+    return csv_path
+
+
+def _log_hull_causal_summary(registration):
+    """Log HULL-C1 integrity and the three paired validation stages."""
+    causal = registration.get("hull_causal", {}) or {}
+    if not causal.get("available"):
+        return
+    integrity = causal.get("integrity", {}) or {}
+    logger.info(
+        "HULL-C1 integrity: pass=%s, same_holdout=%s, raw_fit_count=%s, "
+        "strict_outside_nonzero=%s",
+        integrity.get("integrity_pass"),
+        integrity.get("same_reserved_holdout"),
+        integrity.get("raw_rbf_fit_count_by_scene"),
+        integrity.get("strict_outside_hull_nonzero_pixels"),
+    )
+    for stage in ("global_only", "legacy_rbf", "strict_rbf"):
+        quality = _hull_causal_quality(registration, stage)
+        logger.info(
+            "HULL-C1 %s: median=%s, rmse=%s, p95=%s",
+            stage, _metric_text(quality.get("median")),
+            _metric_text(quality.get("rmse")), _metric_text(quality.get("p95")),
+        )
+    comparison = _hull_causal_comparison(registration, "legacy_to_strict")
+    logger.info(
+        "HULL-C1 legacy->strict: delta_rmse=%s, delta_p95=%s, "
+        "delta_median=%s (positive=strict improvement)",
+        _metric_text(comparison.get("rmse_improvement")),
+        _metric_text(comparison.get("p95_improvement")),
+        _metric_text(comparison.get("median_improvement")),
+    )
 def _initial_global_shifts(registration, scene_ids):
     """Return pre-refinement shifts when the schema records them."""
     diagnostics = registration.get("diagnostics", {}) or {}
@@ -258,6 +401,7 @@ def build_diagnostic_payload(registration, scene_ids, output_dir):
         "holdout_local_field_samples": registration.get(
             "holdout_local_field_samples", {}
         ),
+        "hull_causal": registration.get("hull_causal"),
         "final_validation": final_validation,
         "quality": quality,
         "quality_classification": classification,
@@ -508,6 +652,17 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
     final_reference_path, final_target_path, final_overlay_path, reference_band, final_overlay = write_pair(
         "registered_final", registered
     )
+    strict = registration.get("strict_counterfactual_arrays")
+    strict_paths = {}
+    if (registration.get("hull_causal") or {}).get("available") and strict:
+        strict_reference_path, strict_target_path, strict_overlay_path, _, _ = write_pair(
+            "registered_strict_hull", strict
+        )
+        strict_paths = {
+            "registered_strict_hull_reference": str(strict_reference_path),
+            "registered_strict_hull_target": str(strict_target_path),
+            "registered_strict_hull_red_green_overlay": str(strict_overlay_path),
+        }
     # Keep the original artifact names as compatibility aliases for existing
     # consumers while making the two validation stages explicit.
     reference_path = output_path / "registered_reference.tif"
@@ -595,6 +750,16 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
     png_paths["global_registered_overlay"] = str(global_overlay_path)
     png_paths["final_registered_overlay"] = str(final_overlay_path)
 
+    hull_stage_csv = None
+    hull_window_csv = None
+    if (registration.get("hull_causal") or {}).get("available"):
+        hull_stage_csv = _write_hull_causal_stage_metrics_csv(
+            registration, output_dir
+        )
+        hull_window_csv = _write_hull_causal_window_stats_csv(
+            registration, output_dir
+        )
+
     return {
         "registered_reference": str(reference_path),
         "registered_target": str(target_path),
@@ -607,9 +772,12 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         "registered_final_red_green_overlay": str(final_overlay_path),
         "final_holdout_validation_blocks": str(output_path / "final_holdout_validation_blocks.png"),
         "holdout_local_field_samples": holdout_local_field_csv,
+        "hull_causal_stage_metrics": str(hull_stage_csv) if hull_stage_csv else None,
+        "hull_causal_window_stats": str(hull_window_csv) if hull_window_csv else None,
         "diagnostic_mosaic": str(mosaic_path),
         "scene_ids": [scene_ids[0], scene_ids[1]],
         "mosaic_mode": mosaic_mode,
+        **strict_paths,
         **png_paths,
     }
 
@@ -625,6 +793,14 @@ def _parse_args(argv=None):
         choices=("weighted", "source_selection", "narrow_feather"),
         default="weighted",
         help="Diagnostic mosaic mode; source_selection is used only when explicitly selected",
+    )
+    parser.add_argument(
+        "--hull-causal-test",
+        action="store_true",
+        help=(
+            "Run diagnostic-only legacy-vs-strict hull RBF counterfactual; "
+            "does not change production model selection."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -674,7 +850,12 @@ def main(argv=None):
         build_diagnostic_payload(registration, scene_ids, output_dir)
         return 1
 
-    registration = pipeline.register_scenes(scene_data, overlaps)
+    registration = pipeline.register_scenes(
+        scene_data,
+        overlaps,
+        registration_band_idx=pipeline.registration_band_idx,
+        hull_causal_diagnostic=args.hull_causal_test,
+    )
     quality = registration.get("quality", {}) or {}
     required_quality = (getattr(config, "registration_params", {}) or {}).get(
         "required_quality", "pass"
@@ -727,6 +908,7 @@ def main(argv=None):
         }
         build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
         _log_stage_validation_summary(registration)
+        _log_hull_causal_summary(registration)
         logger.error(
             "Registration diagnostic failed: connected=%s, quality=%s, required=%s",
             connected, quality.get("quality", "unknown"), required_quality,
@@ -746,6 +928,7 @@ def main(argv=None):
     }
     build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
     _log_stage_validation_summary(registration)
+    _log_hull_causal_summary(registration)
 
     logger.info("Connected: %s", registration.get("connected", False))
     logger.info("Quality: %s", quality.get("quality", "unknown"))

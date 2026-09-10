@@ -6,12 +6,180 @@ Task 12 of reliability-fixes plan:
 """
 
 import json
+import csv
 from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
 import pytest
 from rasterio.transform import from_origin
+
+
+def _hull_causal_registration_fixture():
+    return {
+        "status": "fail",
+        "quality": {"quality": "fail", "median": 2.0, "rmse": 2.5,
+                    "p95": 3.0, "confidence": 0.7, "n_blocks": 6},
+        "global_only_quality": {"quality": "pass", "median": 0.5,
+                                 "rmse": 0.8, "p95": 1.0,
+                                 "confidence": 0.9, "n_blocks": 6},
+        "global_only_validation": {"edges": [], "overall": {}},
+        "final_validation": {"edges": [], "overall": {}},
+        "local_refinement": {},
+        "strict_counterfactual_arrays": [
+            np.zeros((1, 4096, 4096)), np.zeros((1, 4096, 4096))
+        ],
+        "hull_causal": {
+            "available": True,
+            "integrity": {"integrity_pass": True},
+            "strict_counterfactual_quality": {
+                "quality": "pass", "median": 0.6, "rmse": 0.9,
+                "p95": 1.1, "confidence": 0.9, "n_blocks": 6,
+            },
+            "comparisons": {
+                "global_to_legacy": {"rmse_improvement": -1.7,
+                                      "p95_improvement": -2.0,
+                                      "median_improvement": -1.5},
+                "global_to_strict": {"rmse_improvement": -0.1,
+                                      "p95_improvement": -0.1,
+                                      "median_improvement": -0.1},
+                "legacy_to_strict": {"rmse_improvement": 1.6,
+                                      "p95_improvement": 1.9,
+                                      "median_improvement": 1.4},
+            },
+            "window_stats": {"blocks": [{
+                "validation_row": 0, "validation_col": 0,
+                "block_size": 4, "scene_idx": 1,
+                "window_inside_hull_fraction": 0.5,
+                "window_legacy_support_nonzero_fraction": 0.75,
+                "window_strict_support_nonzero_fraction": 0.5,
+                "window_support_difference_fraction": 0.25,
+            }]},
+        },
+    }
+
+
+def test_hull_causal_cli_flag_is_opt_in():
+    from scripts import diagnose_registration_pair
+
+    assert diagnose_registration_pair._parse_args([
+        "--config", "config.yaml", "--hull-causal-test",
+    ]).hull_causal_test is True
+    assert diagnose_registration_pair._parse_args([
+        "--config", "config.yaml",
+    ]).hull_causal_test is False
+
+
+def test_hull_causal_payload_excludes_large_field_arrays(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = _hull_causal_registration_fixture()
+    payload = diagnose_registration_pair.build_diagnostic_payload(
+        registration, ["a", "b"], tmp_path,
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["hull_causal"]["available"] is True
+    assert "strict_counterfactual_arrays" not in payload
+    assert "4096" not in serialized
+
+
+def test_hull_causal_stage_csv_has_exact_three_rows(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    path = diagnose_registration_pair._write_hull_causal_stage_metrics_csv(
+        _hull_causal_registration_fixture(), tmp_path,
+    )
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert [row["stage"] for row in rows] == [
+        "global_only", "legacy_rbf", "strict_rbf"
+    ]
+    assert len(rows) == 3
+
+
+def test_hull_causal_window_csv_contains_window_support_columns(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    path = diagnose_registration_pair._write_hull_causal_window_stats_csv(
+        _hull_causal_registration_fixture(), tmp_path,
+    )
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+
+    assert rows
+    assert {
+        "window_inside_hull_fraction",
+        "window_legacy_support_nonzero_fraction",
+        "window_strict_support_nonzero_fraction",
+        "window_support_difference_fraction",
+        "legacy_minus_strict",
+        "negative_control_candidate",
+    } <= set(reader.fieldnames)
+
+
+def test_quality_fail_still_writes_strict_diagnostic_artifacts_but_returns_nonzero(
+    tmp_path, monkeypatch
+):
+    from scripts import diagnose_registration_pair
+
+    config = SimpleNamespace(
+        scenes=[{"id": "scene_a"}, {"id": "scene_b"}],
+        control_scene="scene_a",
+        output_root=str(tmp_path),
+        registration_params={"required_quality": "pass"},
+    )
+    registration = _hull_causal_registration_fixture()
+    registration["connected"] = True
+    registration["diagnostics"] = {}
+    registration["registered_arrays"] = [
+        np.zeros((1, 4, 4)), np.zeros((1, 4, 4))
+    ]
+    captured = {}
+
+    class FakePipeline:
+        registration_band_idx = 0
+
+        def __init__(self, pipeline_config):
+            self.config = pipeline_config
+
+        def load_scenes(self):
+            return {
+                "arrays": registration["registered_arrays"],
+                "transforms": [from_origin(0, 4, 1, 1)] * 2,
+                "nodata_values": [None, None],
+                "crs": None,
+            }
+
+        def detect_overlaps(self, scene_data):
+            return [{"idx_i": 0, "idx_j": 1}]
+
+        def register_scenes(self, *args, **kwargs):
+            captured["hull_causal_diagnostic"] = kwargs.get(
+                "hull_causal_diagnostic"
+            )
+            return registration
+
+    monkeypatch.setattr(diagnose_registration_pair, "load_config", lambda _: config)
+    monkeypatch.setattr(diagnose_registration_pair, "MultibandPipeline", FakePipeline)
+    monkeypatch.setattr(
+        diagnose_registration_pair,
+        "write_diagnostic_artifacts",
+        lambda *args, **kwargs: captured.setdefault("artifacts", {}) or {},
+    )
+
+    exit_code = diagnose_registration_pair.main([
+        "--config", "unused.yaml",
+        "--scene-i", "0", "--scene-j", "1",
+        "--hull-causal-test",
+        "--output-dir", str(tmp_path / "out"),
+    ])
+
+    assert exit_code == 1
+    assert captured["hull_causal_diagnostic"] is True
+    assert "artifacts" in captured
 
 
 def test_registration_diagnostic_distinguishes_raw_and_robust_pair_matches(tmp_path):
