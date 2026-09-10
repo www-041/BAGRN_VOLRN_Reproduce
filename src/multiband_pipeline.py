@@ -1316,19 +1316,11 @@ def _local_field_stats(field):
     }
 
 
-def _fit_local_rbf_field(controls, shape, params, *, smoothing=None):
-    """Fit, fade, and component-clip one target-scene local field."""
-    from src.coregistration import compute_hull_fade_mask, fit_local_rbf
+def _predict_local_rbf_raw_field(controls, shape, *, smoothing):
+    """Fit one RBF and evaluate its unweighted, unclipped full-scene field."""
+    from src.coregistration import fit_local_rbf
 
     points = np.asarray(controls["points_xy"], dtype=float)
-    smoothing_values = params.get("local_smoothing_candidates", [0.1])
-    smoothing_values = [float(value) for value in smoothing_values]
-    if smoothing is None:
-        if len(smoothing_values) > 1:
-            raise ValueError(
-                "selected smoothing required when multiple candidates are configured"
-            )
-        smoothing = smoothing_values[0] if smoothing_values else 0.1
     smoothing = float(smoothing)
     rbf_dx, rbf_dy, coord_min, coord_max = fit_local_rbf(
         points,
@@ -1345,19 +1337,64 @@ def _fit_local_rbf_field(controls, shape, params, *, smoothing=None):
     normalized = np.column_stack([tx, ty])
     raw_dx = np.asarray(rbf_dx(normalized), dtype=float).reshape(h, w)
     raw_dy = np.asarray(rbf_dy(normalized), dtype=float).reshape(h, w)
-    fade = compute_hull_fade_mask(
-        points, h, w, buffer=int(params.get("local_hull_buffer", 128))
-    )
-    faded_dx = raw_dx * fade
-    faded_dy = raw_dy * fade
+    return raw_dx, raw_dy, {
+        "smoothing": smoothing,
+        "coord_min": [float(value) for value in coord_min],
+        "coord_max": [float(value) for value in coord_max],
+        "raw_dx": _local_field_stats(raw_dx),
+        "raw_dy": _local_field_stats(raw_dy),
+    }
+
+
+def _apply_local_rbf_weight_and_clip(raw_dx, raw_dy, weight, params):
+    """Apply supplied support weight, then the current component cap."""
+    raw_dx = np.asarray(raw_dx, dtype=float)
+    raw_dy = np.asarray(raw_dy, dtype=float)
+    weight = np.asarray(weight, dtype=float)
+    if raw_dx.shape != raw_dy.shape or raw_dx.shape != weight.shape:
+        raise ValueError("local RBF field and support shapes must match")
+    weighted_dx = raw_dx * weight
+    weighted_dy = raw_dy * weight
     max_component = float(params.get(
         "local_hard_max_component",
         params.get("local_max_component", 2.5),
     ))
-    clipped_dx = int(np.count_nonzero(np.abs(faded_dx) > max_component))
-    clipped_dy = int(np.count_nonzero(np.abs(faded_dy) > max_component))
-    field_dx = np.clip(faded_dx, -max_component, max_component)
-    field_dy = np.clip(faded_dy, -max_component, max_component)
+    clipped_dx = int(np.count_nonzero(np.abs(weighted_dx) > max_component))
+    clipped_dy = int(np.count_nonzero(np.abs(weighted_dy) > max_component))
+    field_dx = np.clip(weighted_dx, -max_component, max_component)
+    field_dy = np.clip(weighted_dy, -max_component, max_component)
+    return field_dx, field_dy, {
+        "clipping": {
+            "dx": clipped_dx, "dy": clipped_dy,
+            "total": clipped_dx + clipped_dy,
+        },
+        "max_component": max_component,
+    }
+
+
+def _fit_local_rbf_field(controls, shape, params, *, smoothing=None):
+    """Fit, fade, and component-clip one target-scene local field."""
+    from src.coregistration import compute_hull_fade_support
+
+    smoothing_values = params.get("local_smoothing_candidates", [0.1])
+    smoothing_values = [float(value) for value in smoothing_values]
+    if smoothing is None:
+        if len(smoothing_values) > 1:
+            raise ValueError(
+                "selected smoothing required when multiple candidates are configured"
+            )
+        smoothing = smoothing_values[0] if smoothing_values else 0.1
+    points = np.asarray(controls["points_xy"], dtype=float)
+    raw_dx, raw_dy, raw_stats = _predict_local_rbf_raw_field(
+        controls, shape, smoothing=float(smoothing)
+    )
+    h, w = shape
+    support = compute_hull_fade_support(
+        points, h, w, buffer=int(params.get("local_hull_buffer", 128))
+    )
+    field_dx, field_dy, apply_stats = _apply_local_rbf_weight_and_clip(
+        raw_dx, raw_dy, support["fade_mask"], params
+    )
     magnitude = np.hypot(field_dx, field_dy)
     grad_dx = np.gradient(field_dx)
     grad_dy = np.gradient(field_dy)
@@ -1366,9 +1403,12 @@ def _fit_local_rbf_field(controls, shape, params, *, smoothing=None):
         np.hypot(grad_dy[0], grad_dy[1]),
     )
     return field_dx, field_dy, {
-        "smoothing": smoothing,
-        "clipping": {"dx": clipped_dx, "dy": clipped_dy, "total": clipped_dx + clipped_dy},
-        "fade": {"min": float(fade.min()), "max": float(fade.max())},
+        "smoothing": float(smoothing),
+        "clipping": apply_stats["clipping"],
+        "fade": {
+            "min": float(support["fade_mask"].min()),
+            "max": float(support["fade_mask"].max()),
+        },
         "local_dx": _local_field_stats(field_dx),
         "local_dy": _local_field_stats(field_dy),
         "max_dx": float(np.max(np.abs(field_dx))),
