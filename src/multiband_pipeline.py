@@ -2246,7 +2246,7 @@ class MultibandPipeline:
             n_scenes, self.n_bands, resolution, elapsed,
         )
 
-        return {
+        result = {
             "arrays": arrays,
             "transforms": transforms,
             "crs": crs,
@@ -2384,6 +2384,8 @@ class MultibandPipeline:
         scene_data: Dict[str, Any],
         overlaps: List[dict],
         registration_band_idx: Optional[int] = None,
+        *,
+        hull_causal_diagnostic: bool = False,
     ) -> Dict[str, Any]:
         """
         对所有场景执行多波段配准。
@@ -2817,6 +2819,7 @@ class MultibandPipeline:
             "control_points": {},
             "rematch_failures": [],
         }
+        causal_fields_by_scene = {}
 
         # Preserve a global-only stage from ORIGINAL inputs for the paired
         # same-HOLDOUT causal comparison.  The reference stays unchanged;
@@ -2986,10 +2989,20 @@ class MultibandPipeline:
             if gate["accepted"]:
                 try:
                     selected_smoothing = gate.get("selected_smoothing")
-                    local_dx_fields[idx], local_dy_fields[idx], field_stats = _fit_local_rbf_field(
-                        controls, arrays[idx].shape[1:], reg_params,
-                        smoothing=selected_smoothing,
-                    )
+                    if hull_causal_diagnostic:
+                        variants = _fit_hull_causal_rbf_variants(
+                            controls, arrays[idx].shape[1:], reg_params,
+                            smoothing=selected_smoothing,
+                        )
+                        local_dx_fields[idx] = variants["legacy_dx"]
+                        local_dy_fields[idx] = variants["legacy_dy"]
+                        causal_fields_by_scene[idx] = variants
+                        field_stats = variants["legacy_stats"]
+                    else:
+                        local_dx_fields[idx], local_dy_fields[idx], field_stats = _fit_local_rbf_field(
+                            controls, arrays[idx].shape[1:], reg_params,
+                            smoothing=selected_smoothing,
+                        )
                     scene_result["field_stats"] = field_stats
                     local_refinement["used_for_scenes"].append(idx)
                 except Exception as exc:
@@ -3040,6 +3053,101 @@ class MultibandPipeline:
             final_validation, local_dx_fields, local_dy_fields, local_refinement,
             transforms, reg_params,
         )
+
+        hull_causal = None
+        strict_counterfactual_arrays = None
+        strict_counterfactual_quality = None
+        strict_counterfactual_validation = None
+        if hull_causal_diagnostic:
+            if causal_fields_by_scene:
+                strict_counterfactual_arrays = []
+                for idx in range(n_images):
+                    gdx, gdy = global_shifts[idx]
+                    if idx == self.control_idx:
+                        strict_counterfactual_arrays.append(arrays[idx].copy())
+                        continue
+                    variants = causal_fields_by_scene.get(idx)
+                    strict_dx = (
+                        variants["strict_dx"] if variants is not None
+                        else np.zeros(arrays[idx].shape[1:], dtype=np.float64)
+                    )
+                    strict_dy = (
+                        variants["strict_dy"] if variants is not None
+                        else np.zeros(arrays[idx].shape[1:], dtype=np.float64)
+                    )
+                    strict_counterfactual_arrays.append(
+                        warp_multiband_with_displacement_field(
+                            arrays[idx], gdx, gdy, strict_dx, strict_dy,
+                            nodata_values[idx],
+                        )
+                    )
+                strict_counterfactual_quality, strict_counterfactual_validation = (
+                    _validate_final_registration_arrays(
+                        strict_counterfactual_arrays,
+                        registration_band_idx,
+                        transforms,
+                        nodata_values,
+                        spanning_tree_edges,
+                        [*pair_measurements, *post_global_pairs],
+                        reg_params,
+                        holdout_contexts=holdout_contexts,
+                    )
+                )
+                window_stats = _hull_causal_window_stats(
+                    final_validation,
+                    transforms,
+                    causal_fields_by_scene,
+                    local_refinement,
+                )
+                hull_causal = {
+                    "available": True,
+                    "reason": None,
+                    "frozen": {
+                        "selected_smoothing_by_scene": {
+                            str(idx): float(variants["smoothing"])
+                            for idx, variants in causal_fields_by_scene.items()
+                        },
+                        "global_shifts": np.asarray(global_shifts).tolist(),
+                        "holdout_keys": [
+                            f"{i}-{j}" for i, j in sorted(holdout_contexts)
+                        ],
+                        "legacy_buffer_pixels": int(reg_params.get(
+                            "local_hull_buffer", 128
+                        )),
+                        "cv_modified": False,
+                        "field_cap_modified": False,
+                    },
+                    "strict_counterfactual_quality": strict_counterfactual_quality,
+                    "strict_counterfactual_validation": strict_counterfactual_validation,
+                    "comparisons": {
+                        "global_to_legacy": stage_validation_comparison,
+                        "global_to_strict": _compare_registration_validations(
+                            global_only_validation, strict_counterfactual_validation,
+                        ),
+                        "legacy_to_strict": _compare_registration_validations(
+                            final_validation, strict_counterfactual_validation,
+                        ),
+                    },
+                    "window_stats": window_stats,
+                    "negative_control_available": any(
+                        block.get("negative_control_candidate")
+                        for block in window_stats.get("blocks", [])
+                    ),
+                }
+            else:
+                hull_causal = {
+                    "available": False,
+                    "reason": "no accepted local RBF variants",
+                    "strict_counterfactual_quality": None,
+                    "strict_counterfactual_validation": None,
+                    "comparisons": {
+                        "global_to_legacy": stage_validation_comparison,
+                        "global_to_strict": None,
+                        "legacy_to_strict": None,
+                    },
+                    "window_stats": {"blocks": [], "n_blocks": 0},
+                    "negative_control_available": False,
+                }
         logger.info(
             "final HOLDOUT: quality=%s, median=%s, rmse=%s, p95=%s; "
             "delta_rmse=%s, delta_p95=%s (global-only minus final)",
@@ -3085,7 +3193,7 @@ class MultibandPipeline:
             if context.get("available")
         }
 
-        return {
+        result = {
             "registered_arrays": registered_arrays,
             "global_only_arrays": global_only_arrays,
             "global_shifts": global_shifts,
@@ -3142,6 +3250,13 @@ class MultibandPipeline:
                 "elapsed_sec": elapsed,
             },
         }
+        if hull_causal_diagnostic:
+            result.update({
+                "strict_counterfactual_arrays": strict_counterfactual_arrays,
+                "hull_causal_fields_by_scene": causal_fields_by_scene,
+                "hull_causal": hull_causal,
+            })
+        return result
 
     # -----------------------------------------------------------------------
     # d. 辐射归一化
