@@ -229,7 +229,8 @@ def test_both_branches_use_identical_component_cap(monkeypatch):
     assert np.max(np.abs(variants["legacy_dy"])) <= 1.25
     assert np.max(np.abs(variants["strict_dx"])) <= 1.25
     assert np.max(np.abs(variants["strict_dy"])) <= 1.25
-    assert variants["legacy_stats"]["clipping"] == variants["strict_stats"]["clipping"]
+    assert variants["legacy_stats"]["max_component"] == 1.25
+    assert variants["strict_stats"]["max_component"] == 1.25
 
 
 def _causal_validation(inside_center=False):
@@ -565,3 +566,71 @@ def test_strict_holdout_never_changes_main_quality_or_status(monkeypatch):
     assert result["quality"]["quality"] == "pass"
     assert result["status"] == "pass"
     assert result["hull_causal"]["strict_counterfactual_quality"]["quality"] == "fail"
+
+
+def _integrity_inputs():
+    fields = {
+        "raw_dx": np.ones((4, 4)), "raw_dy": np.ones((4, 4)),
+        "legacy_dx": np.ones((4, 4)), "legacy_dy": np.ones((4, 4)),
+        "strict_dx": np.ones((4, 4)), "strict_dy": np.ones((4, 4)),
+        "legacy_weight": np.ones((4, 4)),
+        "strict_weight": np.ones((4, 4)),
+        "support": {"inside_hull_mask": np.ones((4, 4), dtype=bool)},
+        "integrity": {
+            "strict_outside_nonzero_count": 0,
+            "legacy_strict_equal_inside_hull": True,
+            "legacy_buffer_pixels": 128,
+        },
+    }
+    validation = {"edges": [{"idx_i": 0, "idx_j": 1, "blocks": []}]}
+    return {
+        "global_shifts": np.zeros((2, 2)),
+        "holdout_contexts": {(0, 1): {"available": True}},
+        "local_refinement": {"cv_rerun_count_for_counterfactual": 0},
+        "causal_fields_by_scene": {1: fields},
+        "final_validation": validation,
+        "strict_validation": validation,
+    }
+
+
+def test_hull_causal_integrity_passes_only_with_shared_raw_and_holdout():
+    from src.multiband_pipeline import _build_hull_causal_integrity
+
+    result = _build_hull_causal_integrity(**_integrity_inputs())
+
+    assert result["integrity_pass"] is True
+    assert result["same_global_shifts_for_legacy_and_strict"] is True
+    assert result["same_reserved_holdout"] is True
+    assert result["raw_rbf_fit_count_by_scene"] == {"1": 1}
+    assert result["strict_outside_hull_nonzero_pixels"] == 0
+    assert result["failures"] == []
+
+
+def test_hull_causal_integrity_fails_if_strict_has_outside_hull_nonzero():
+    from src.multiband_pipeline import _build_hull_causal_integrity
+
+    inputs = _integrity_inputs()
+    inputs["causal_fields_by_scene"][1]["integrity"][
+        "strict_outside_nonzero_count"
+    ] = 3
+    result = _build_hull_causal_integrity(**inputs)
+
+    assert result["integrity_pass"] is False
+    assert result["strict_outside_hull_nonzero_pixels"] == 3
+    assert any("outside hull" in failure for failure in result["failures"])
+
+
+def test_hull_causal_integrity_does_not_use_quality_improvement_as_integrity():
+    from src.multiband_pipeline import _build_hull_causal_integrity
+
+    inputs = _integrity_inputs()
+    inputs["final_validation"] = {
+        "overall": {"rmse": 10.0, "p95": 10.0}, "edges": []
+    }
+    inputs["strict_validation"] = {
+        "overall": {"rmse": 1.0, "p95": 1.0}, "edges": []
+    }
+
+    result = _build_hull_causal_integrity(**inputs)
+
+    assert result["integrity_pass"] is True

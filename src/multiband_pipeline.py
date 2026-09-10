@@ -1081,6 +1081,105 @@ def _hull_causal_window_stats(
     return {"blocks": rows, "n_blocks": len(rows)}
 
 
+def _build_hull_causal_integrity(
+    *,
+    global_shifts,
+    holdout_contexts,
+    local_refinement,
+    causal_fields_by_scene,
+    final_validation,
+    strict_validation,
+):
+    """Check HULL-C1 design invariants without judging model quality."""
+    local_refinement = local_refinement or {}
+    causal_fields_by_scene = causal_fields_by_scene or {}
+    failures = []
+
+    legacy_shifts = local_refinement.get("legacy_global_shifts", global_shifts)
+    strict_shifts = local_refinement.get("strict_global_shifts", global_shifts)
+    same_global_shifts = bool(np.array_equal(
+        np.asarray(legacy_shifts), np.asarray(strict_shifts)
+    ))
+    if not same_global_shifts:
+        failures.append("legacy and strict global shifts differ")
+
+    holdout_keys = {
+        f"{int(i)}-{int(j)}" for i, j in (holdout_contexts or {})
+    }
+
+    def validation_keys(validation):
+        return {
+            f"{int(edge['idx_i'])}-{int(edge['idx_j'])}"
+            for edge in (validation or {}).get("edges", []) or []
+            if "idx_i" in edge and "idx_j" in edge
+        }
+
+    final_keys = validation_keys(final_validation)
+    strict_keys = validation_keys(strict_validation)
+    same_reserved_holdout = final_keys == strict_keys
+    if holdout_keys:
+        same_reserved_holdout = same_reserved_holdout and (
+            final_keys <= holdout_keys
+        )
+    if not same_reserved_holdout:
+        failures.append("legacy and strict reserved HOLDOUT differ")
+
+    raw_fit_count_by_scene = {}
+    strict_outside_hull = 0
+    inside_field_difference = 0.0
+    legacy_buffer_pixels = 128
+    for scene_idx, variants in causal_fields_by_scene.items():
+        variants = variants or {}
+        raw_fit_count_by_scene[str(scene_idx)] = int(
+            variants.get("raw_fit_count", 1)
+        )
+        integrity = variants.get("integrity", {}) or {}
+        strict_outside_hull += int(
+            integrity.get("strict_outside_nonzero_count", 0)
+        )
+        legacy_buffer_pixels = int(integrity.get(
+            "legacy_buffer_pixels", legacy_buffer_pixels
+        ))
+        inside = np.asarray(
+            (variants.get("support") or {}).get("inside_hull_mask", []),
+            dtype=bool,
+        )
+        if inside.size:
+            legacy_dx = np.asarray(variants.get("legacy_dx"), dtype=float)
+            legacy_dy = np.asarray(variants.get("legacy_dy"), dtype=float)
+            strict_dx = np.asarray(variants.get("strict_dx"), dtype=float)
+            strict_dy = np.asarray(variants.get("strict_dy"), dtype=float)
+            inside_field_difference = max(
+                inside_field_difference,
+                float(np.max(np.abs(legacy_dx[inside] - strict_dx[inside]))),
+                float(np.max(np.abs(legacy_dy[inside] - strict_dy[inside]))),
+            )
+
+    if any(count != 1 for count in raw_fit_count_by_scene.values()):
+        failures.append("raw RBF was fit more than once for a scene")
+    cv_rerun_count = int(local_refinement.get(
+        "cv_rerun_count_for_counterfactual", 0
+    ))
+    if cv_rerun_count != 0:
+        failures.append("counterfactual reran local CV")
+    if strict_outside_hull != 0:
+        failures.append("strict field has nonzero pixels outside hull")
+    if inside_field_difference > 1e-12:
+        failures.append("legacy and strict fields differ inside hull")
+
+    return {
+        "same_global_shifts_for_legacy_and_strict": same_global_shifts,
+        "same_reserved_holdout": same_reserved_holdout,
+        "raw_rbf_fit_count_by_scene": raw_fit_count_by_scene,
+        "cv_rerun_count_for_counterfactual": cv_rerun_count,
+        "strict_outside_hull_nonzero_pixels": int(strict_outside_hull),
+        "legacy_inside_strict_field_max_abs_diff": float(inside_field_difference),
+        "legacy_buffer_pixels": int(legacy_buffer_pixels),
+        "integrity_pass": not failures,
+        "failures": failures,
+    }
+
+
 def _sample_local_field_at_validation_blocks(
     validation,
     local_dx_fields,
@@ -3099,9 +3198,18 @@ class MultibandPipeline:
                     causal_fields_by_scene,
                     local_refinement,
                 )
+                integrity = _build_hull_causal_integrity(
+                    global_shifts=global_shifts,
+                    holdout_contexts=holdout_contexts,
+                    local_refinement=local_refinement,
+                    causal_fields_by_scene=causal_fields_by_scene,
+                    final_validation=final_validation,
+                    strict_validation=strict_counterfactual_validation,
+                )
                 hull_causal = {
                     "available": True,
                     "reason": None,
+                    "integrity": integrity,
                     "frozen": {
                         "selected_smoothing_by_scene": {
                             str(idx): float(variants["smoothing"])
