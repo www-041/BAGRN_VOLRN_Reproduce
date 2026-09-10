@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "source_commit": "43e18d882c72445af91a6b1eed3121c9fca362e7",
+  "source_registration_band": "B14",
+  "base_registration_params_sha256": "08864b73e8a53990aa4d74038cdb269d10b0cddd7ebc2df26d5d6654713ccb98",
+  "validation_band": "B14",
+  "scene_ids": ["scene_20251114", "scene_20251120"],
+  "pairs": {
+    "0-1": {
+      "selected_block_size": 384,
+      "reserved_windows": [
+        {"row": 2944, "col": 256, "height": 384, "width": 384},
+        {"row": 256, "col": 640, "height": 384, "width": 384},
+        {"row": 1536, "col": 64, "height": 384, "width": 384},
+        {"row": 2176, "col": 704, "height": 384, "width": 384},
+        {"row": 1088, "col": 768, "height": 384, "width": 384},
+        {"row": 640, "col": 192, "height": 384, "width": 384},
+        {"row": 2560, "col": 512, "height": 384, "width": 384}
+      ]
+    }
+  }
+}

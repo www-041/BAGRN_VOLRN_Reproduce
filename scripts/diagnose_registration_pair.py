@@ -278,6 +278,75 @@ def _write_hull_causal_window_stats_csv(registration, output_dir):
     return csv_path
 
 
+def _write_model_c1_stage_metrics_csv(registration, output_dir):
+    """Write global-only versus affine MODEL-C1 stage metrics."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "model_c1_stage_metrics.csv"
+    affine = registration.get("affine_causal") or {}
+    global_quality = registration.get("global_only_quality") or {}
+    affine_quality = affine.get("quality") or {}
+    rows = [
+        {
+            "stage": "global_only",
+            "status": "available",
+            "quality": global_quality.get("quality"),
+            "median": global_quality.get("median"),
+            "rmse": global_quality.get("rmse"),
+            "p95": global_quality.get("p95"),
+            "confidence": global_quality.get("confidence"),
+            "n_blocks": global_quality.get("n_blocks"),
+        },
+        {
+            "stage": "affine_counterfactual",
+            "status": (
+                "available" if affine.get("available")
+                else affine.get("reason", "unavailable")
+            ),
+            "quality": affine_quality.get("quality") if affine.get("available") else None,
+            "median": affine_quality.get("median") if affine.get("available") else None,
+            "rmse": affine_quality.get("rmse") if affine.get("available") else None,
+            "p95": affine_quality.get("p95") if affine.get("available") else None,
+            "confidence": affine_quality.get("confidence") if affine.get("available") else None,
+            "n_blocks": affine_quality.get("n_blocks") if affine.get("available") else None,
+        },
+    ]
+    fields = ["stage", "status", "quality", "median", "rmse", "p95", "confidence", "n_blocks"]
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: _json_safe(row.get(key)) for key in fields})
+    return csv_path
+
+
+def _write_model_c1_holdout_pairs_csv(registration, output_dir):
+    """Write all measurable paired fixed-HOLDOUT blocks for MODEL-C1."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "model_c1_holdout_pairs.csv"
+    comparison = (registration.get("affine_causal") or {}).get("comparison") or {}
+    fields = [
+        "idx_i", "idx_j", "row", "col", "global_residual",
+        "affine_residual", "improvement", "global_accepted", "affine_accepted",
+    ]
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for item in comparison.get("paired_blocks", []) or []:
+            key = item.get("key", [-1, -1, -1, -1])
+            row = {
+                "idx_i": key[0], "idx_j": key[1], "row": key[2], "col": key[3],
+                "global_residual": item.get("global_residual"),
+                "affine_residual": item.get("affine_residual"),
+                "improvement": item.get("improvement"),
+                "global_accepted": item.get("global_accepted"),
+                "affine_accepted": item.get("affine_accepted"),
+            }
+            writer.writerow({key: _json_safe(row.get(key)) for key in fields})
+    return csv_path
+
+
 def _log_hull_causal_summary(registration):
     """Log HULL-C1 integrity and the three paired validation stages."""
     causal = registration.get("hull_causal", {}) or {}
@@ -412,6 +481,7 @@ def build_diagnostic_payload(registration, scene_ids, output_dir):
             "holdout_local_field_samples", {}
         ),
         "hull_causal": registration.get("hull_causal"),
+        "affine_causal": registration.get("affine_causal"),
         "final_validation": final_validation,
         "quality": quality,
         "quality_classification": classification,
@@ -668,6 +738,40 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
     final_reference_path, final_target_path, final_overlay_path, reference_band, final_overlay = write_pair(
         "registered_final", registered
     )
+    affine_paths = {}
+    affine_stage_csv = None
+    affine_pairs_csv = None
+    affine = registration.get("affine_causal") or {}
+    affine_arrays = registration.get("affine_causal_counterfactual_arrays")
+    if affine.get("available") and affine_arrays:
+        affine_reference_path, affine_target_path, affine_overlay_path, _, _ = write_pair(
+            "registered_affine_counterfactual", affine_arrays
+        )
+        affine_paths.update({
+            "registered_affine_counterfactual_reference": str(affine_reference_path),
+            "registered_affine_counterfactual_target": str(affine_target_path),
+            "registered_affine_counterfactual_red_green_overlay": str(affine_overlay_path),
+        })
+        fields = registration.get("affine_causal_fields_by_scene", {}) or {}
+        if "1" in fields or 1 in fields:
+            field = fields.get("1", fields.get(1))
+            for key, title in (
+                ("affine_displacement_dx", "MODEL-C1 affine displacement dx"),
+                ("affine_displacement_dy", "MODEL-C1 affine displacement dy"),
+            ):
+                field_path = output_path / f"{key}.png"
+                _save_field_png(str(field_path), field["dx_field" if key.endswith("dx") else "dy_field"], title)
+                affine_paths[key] = str(field_path)
+            magnitude_path = output_path / "affine_displacement_magnitude.png"
+            _save_field_png(
+                str(magnitude_path),
+                np.hypot(field["dx_field"], field["dy_field"]),
+                "MODEL-C1 affine displacement magnitude",
+            )
+            affine_paths["affine_displacement_magnitude"] = str(magnitude_path)
+    if registration.get("affine_causal") is not None:
+        affine_stage_csv = _write_model_c1_stage_metrics_csv(registration, output_dir)
+        affine_pairs_csv = _write_model_c1_holdout_pairs_csv(registration, output_dir)
     strict = registration.get("strict_counterfactual_arrays")
     strict_paths = {}
     if (registration.get("hull_causal") or {}).get("available") and strict:
@@ -799,6 +903,8 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         "holdout_local_field_samples": holdout_local_field_csv,
         "hull_causal_stage_metrics": str(hull_stage_csv) if hull_stage_csv else None,
         "hull_causal_window_stats": str(hull_window_csv) if hull_window_csv else None,
+        "model_c1_stage_metrics": str(affine_stage_csv) if affine_stage_csv else None,
+        "model_c1_holdout_pairs": str(affine_pairs_csv) if affine_pairs_csv else None,
         "diagnostic_mosaic": str(mosaic_path),
         "b14_global_overlay": str(b14_global_overlay),
         "b14_final_overlay": str(b14_final_overlay),
@@ -808,6 +914,7 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         "scene_ids": [scene_ids[0], scene_ids[1]],
         "mosaic_mode": mosaic_mode,
         **strict_paths,
+        **affine_paths,
         **png_paths,
     }
 
@@ -844,12 +951,35 @@ def _parse_args(argv=None):
             "does not change production model selection."
         ),
     )
+    parser.add_argument(
+        "--affine-causal-test",
+        action="store_true",
+        help=(
+            "Run diagnostic-only MODEL-C1 affine residual counterfactual; "
+            "requires a fixed B14 HOLDOUT manifest."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = _parse_args(argv)
     config = load_config(args.config)
+
+    if args.affine_causal_test:
+        if not args.holdout_manifest:
+            raise ValueError("--affine-causal-test requires --holdout-manifest")
+        if args.validation_band != "B14":
+            raise ValueError("--affine-causal-test requires explicit --validation-band B14")
+        from src.registration_model_c1 import validate_model_c1_protocol
+        model_c1_manifest = load_holdout_manifest(args.holdout_manifest)
+        protocol = validate_model_c1_protocol(
+            config, model_c1_manifest, validation_band=args.validation_band,
+        )
+        if not protocol["valid"]:
+            raise ValueError(
+                "invalid MODEL-C1 protocol: " + "; ".join(protocol["errors"])
+            )
 
     if not (0 <= args.scene_i < len(config.scenes)):
         raise IndexError(f"scene-i {args.scene_i} is outside the configured scene list")
@@ -903,6 +1033,7 @@ def main(argv=None):
             overlaps,
             registration_band_idx=pipeline.registration_band_idx,
             hull_causal_diagnostic=args.hull_causal_test,
+            affine_causal_diagnostic=args.affine_causal_test,
             diagnostic_validation_band=args.validation_band,
             holdout_reservation_overrides=holdout_overrides,
         )

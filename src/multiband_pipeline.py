@@ -41,7 +41,13 @@ logger = logging.getLogger(__name__)
 
 
 def _registration_params_fingerprint(params):
-    payload = json.dumps(params or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    # Affine MODEL-C1 parameters are diagnostic-only and must not alter the
+    # canonical BAGRN/VOLRN registration fingerprint.
+    canonical = {
+        key: value for key, value in (params or {}).items()
+        if not str(key).startswith("affine_")
+    }
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -301,6 +307,239 @@ def _evaluate_local_rbf_smoothing_candidate(controls, fold_plan, smoothing, para
         "failure_reason": None,
     })
     return base
+
+
+def _evaluate_affine_residual_candidate(controls, fold_plan, params):
+    """Evaluate the diagnostic affine residual model on fixed spatial folds.
+
+    The baseline is the existing global-only residual prediction (zero local
+    residual).  The candidate is fitted independently on each training fold;
+    no validation/holdout pixels or post-fit quality result enter this step.
+    """
+    from src.coregistration import fit_affine_residual_model, predict_affine_residual
+
+    params = params or {}
+    points = np.asarray(controls.get("points_xy", []), dtype=float)
+    residual_dx = np.asarray(controls.get("residual_dx", []), dtype=float)
+    residual_dy = np.asarray(controls.get("residual_dy", []), dtype=float)
+    base = {
+        "available": False,
+        "candidate_rmse": None,
+        "candidate_p95": None,
+        "baseline_rmse": None,
+        "baseline_p95": None,
+        "n_folds": 0,
+        "n_folds_attempted": int(fold_plan.get("n_folds_attempted", 0)),
+        "n_validation_controls": 0,
+        "validation_coverage": 0.0,
+        "cv_strategy": "buffered_spatial_group_affine",
+        "buffer_pixels": float(fold_plan.get("buffer_pixels", 0.0)),
+        "fold_diagnostics": [],
+        "failed_group_ids": [],
+        "failure_reason": None,
+        "passes_rmse_gate": False,
+        "passes_p95_gate": False,
+        "passes_gate": False,
+    }
+    if not fold_plan.get("available", False):
+        base["failure_reason"] = fold_plan.get(
+            "failure_reason", "spatial CV fold plan unavailable"
+        )
+        return base
+    if (points.ndim != 2 or points.shape[1] != 2
+            or len(points) != len(residual_dx)
+            or len(points) != len(residual_dy)):
+        base["failure_reason"] = "control and residual arrays have mismatched lengths"
+        return base
+
+    baseline_errors = []
+    candidate_errors = []
+    diagnostics = []
+    max_component = float(params.get("affine_max_component", 8.0))
+    for fold in fold_plan["folds"]:
+        group_id = int(fold["group_id"])
+        train_idx = np.asarray(fold["train_idx"], dtype=int)
+        test_idx = np.asarray(fold["test_idx"], dtype=int)
+        train_controls = {
+            "points_xy": points[train_idx],
+            "residual_dx": residual_dx[train_idx],
+            "residual_dy": residual_dy[train_idx],
+            "confidence": np.ones(len(train_idx), dtype=float),
+            "n_valid": len(train_idx),
+        }
+        try:
+            fit_result = fit_affine_residual_model(train_controls, params)
+            if not fit_result.get("accepted"):
+                raise ValueError(fit_result.get("reason", "affine fit rejected"))
+            predicted = predict_affine_residual(
+                fit_result["model"], points[test_idx],
+            )
+            if predicted.shape != (len(test_idx), 2):
+                raise ValueError("prediction shape does not match validation controls")
+            if not np.all(np.isfinite(predicted)):
+                raise ValueError("non-finite affine predictions")
+            if np.any(np.abs(predicted) > max_component):
+                raise ValueError("affine prediction exceeds component limit")
+            actual = np.column_stack([residual_dx[test_idx], residual_dy[test_idx]])
+            if not np.all(np.isfinite(actual)):
+                raise ValueError("non-finite held-out residuals")
+            baseline = np.hypot(actual[:, 0], actual[:, 1])
+            candidate = np.hypot(
+                actual[:, 0] - predicted[:, 0],
+                actual[:, 1] - predicted[:, 1],
+            )
+            baseline_errors.extend(baseline.tolist())
+            candidate_errors.extend(candidate.tolist())
+            diagnostics.append({
+                "group_id": group_id,
+                "n_train_before_buffer": int(fold["n_train_before_buffer"]),
+                "n_train_after_buffer": int(fold["n_train_after_buffer"]),
+                "n_test": int(len(test_idx)),
+                "min_train_test_distance_px": fold["min_train_test_distance_px"],
+                "fit_n_inlier": int(fit_result["stats"].get("n_inlier", 0)),
+            })
+        except Exception as exc:
+            base["failed_group_ids"] = [group_id]
+            base["failure_reason"] = f"fold {group_id} failed: {exc}"
+            return base
+
+    baseline_errors = np.asarray(baseline_errors, dtype=float)
+    candidate_errors = np.asarray(candidate_errors, dtype=float)
+    if (len(baseline_errors) == 0 or len(baseline_errors) != len(candidate_errors)
+            or not np.all(np.isfinite(baseline_errors))
+            or not np.all(np.isfinite(candidate_errors))):
+        base["failure_reason"] = "held-out errors are incomplete or non-finite"
+        return base
+    baseline_rmse = float(np.sqrt(np.mean(baseline_errors ** 2)))
+    candidate_rmse = float(np.sqrt(np.mean(candidate_errors ** 2)))
+    baseline_p95 = float(np.percentile(baseline_errors, 95))
+    candidate_p95 = float(np.percentile(candidate_errors, 95))
+    rmse_improvement = baseline_rmse - candidate_rmse
+    p95_improvement = baseline_p95 - candidate_p95
+    passes_rmse = bool(
+        np.isfinite(rmse_improvement)
+        and rmse_improvement >= float(params.get("affine_cv_min_rmse_improvement", 0.10))
+    )
+    passes_p95 = bool(
+        np.isfinite(p95_improvement)
+        and p95_improvement >= float(params.get("affine_cv_min_p95_improvement", 0.15))
+    )
+    base.update({
+        "available": True,
+        "candidate_rmse": candidate_rmse,
+        "candidate_p95": candidate_p95,
+        "baseline_rmse": baseline_rmse,
+        "baseline_p95": baseline_p95,
+        "rmse_improvement": float(rmse_improvement),
+        "p95_improvement": float(p95_improvement),
+        "passes_rmse_gate": passes_rmse,
+        "passes_p95_gate": passes_p95,
+        "passes_gate": bool(passes_rmse and passes_p95),
+        "n_folds": int(len(fold_plan["folds"])),
+        "n_validation_controls": int(len(baseline_errors)),
+        "validation_coverage": float(len(baseline_errors) / len(points)) if len(points) else 0.0,
+        "fold_diagnostics": diagnostics,
+    })
+    return base
+
+
+def _accept_affine_residual_candidate(
+    controls, params, cv_result=None, full_fit=None, field_stats=None,
+):
+    """Apply MODEL-C1 affine control, CV, fit, and field safety gates."""
+    params = params or {}
+    points = np.asarray(controls.get("points_xy", []), dtype=float)
+    n_controls = int(controls.get("n_valid", len(points)))
+    n_groups = int(len(np.unique(_local_spatial_group_labels(points)))) if len(points) else 0
+    result = {
+        "accepted": False,
+        "reason": None,
+        "n_controls": n_controls,
+        "n_spatial_groups": n_groups,
+        "cv_result": cv_result or {},
+    }
+    if n_controls < int(params.get("affine_min_controls", 12)):
+        result["reason"] = "too few affine controls"
+        return result
+    if n_groups < int(params.get("affine_min_spatial_groups", 3)):
+        result["reason"] = "insufficient affine spatial groups"
+        return result
+    if not cv_result or not cv_result.get("available", False):
+        result["reason"] = "affine held-out CV unavailable"
+        return result
+    if not cv_result.get("passes_gate", False):
+        result["reason"] = "affine held-out RMSE and P95 gates failed"
+        return result
+    if not full_fit or not full_fit.get("accepted", False):
+        result["reason"] = "full affine fit rejected"
+        return result
+    if not field_stats or not field_stats.get("safe", False):
+        result["reason"] = "affine displacement field is unsafe"
+        return result
+    result["accepted"] = True
+    result["reason"] = "affine CV, fit, and field safety gates passed"
+    result["rmse_improvement"] = cv_result.get("rmse_improvement")
+    result["p95_improvement"] = cv_result.get("p95_improvement")
+    return result
+
+
+def _run_affine_causal_candidate(controls, shape, params):
+    """Run the complete diagnostic-only affine candidate for one scene."""
+    from src.coregistration import (
+        build_affine_residual_field,
+        fit_affine_residual_model,
+    )
+
+    params = params or {}
+    points = np.asarray(controls.get("points_xy", []), dtype=float)
+    fold_plan = _build_local_cv_fold_plan(points, params)
+    cv_result = _evaluate_affine_residual_candidate(controls, fold_plan, params)
+    empty_dx = np.zeros(tuple(shape), dtype=np.float64)
+    empty_dy = np.zeros(tuple(shape), dtype=np.float64)
+    result = {
+        "available": bool(cv_result.get("available", False)),
+        "accepted": False,
+        "reason": None,
+        "cv": cv_result,
+        "fit": None,
+        "field_stats": None,
+        "dx_field": empty_dx,
+        "dy_field": empty_dy,
+        "fold_plan": {
+            key: value for key, value in fold_plan.items()
+            if key not in {"groups", "folds", "validation_indices"}
+        },
+    }
+    if not cv_result.get("passes_gate", False):
+        result["reason"] = cv_result.get(
+            "failure_reason", "affine held-out CV gates failed"
+        )
+        return result
+    full_fit = fit_affine_residual_model(controls, params)
+    result["fit"] = {
+        key: value for key, value in full_fit.items()
+        if key not in {"model", "inlier_mask"}
+    }
+    if not full_fit.get("accepted", False):
+        result["reason"] = full_fit.get("reason", "full affine fit rejected")
+        return result
+    try:
+        dx_field, dy_field, field_stats = build_affine_residual_field(
+            full_fit["model"], shape,
+            max_component=float(params.get("affine_max_component", 8.0)),
+        )
+    except Exception as exc:
+        result["reason"] = f"affine field construction failed: {exc}"
+        return result
+    result["field_stats"] = field_stats
+    gate = _accept_affine_residual_candidate(
+        controls, params, cv_result, full_fit, field_stats,
+    )
+    result.update(gate)
+    if result["accepted"]:
+        result["dx_field"] = dx_field
+        result["dy_field"] = dy_field
+    return result
 
 
 def _select_local_rbf_cv_candidate(candidate_results, baseline_rmse, baseline_p95, params):
@@ -693,6 +932,27 @@ def _public_holdout_summary(context):
         "common_valid_ratio": float(context.get("common_valid_ratio", 0.0)),
         "failure_reason": context.get("failure_reason"),
         "validation_reservation": reservation_summary,
+    }
+
+
+def _public_affine_causal_scene_summary(candidate):
+    """Strip transient affine model/field arrays from a scene diagnostic."""
+    candidate = candidate or {}
+    cv = candidate.get("cv") or {}
+    fit = candidate.get("fit") or {}
+    return {
+        "available": bool(candidate.get("available", False)),
+        "accepted": bool(candidate.get("accepted", False)),
+        "reason": candidate.get("reason"),
+        "n_controls": int(fit.get("n_controls", candidate.get("n_controls", 0))),
+        "n_spatial_groups": int(
+            fit.get("n_spatial_groups", candidate.get("n_spatial_groups", 0))
+        ),
+        "cv_available": bool(cv.get("available", False)),
+        "cv_passes_gate": bool(cv.get("passes_gate", False)),
+        "cv_rmse_improvement": cv.get("rmse_improvement"),
+        "cv_p95_improvement": cv.get("p95_improvement"),
+        "field_stats": candidate.get("field_stats"),
     }
 
 
@@ -2494,6 +2754,7 @@ class MultibandPipeline:
         registration_band_idx: Optional[int] = None,
         *,
         hull_causal_diagnostic: bool = False,
+        affine_causal_diagnostic: bool = False,
         diagnostic_validation_band: Optional[str] = None,
         holdout_reservation_overrides=None,
     ) -> Dict[str, Any]:
@@ -2947,6 +3208,7 @@ class MultibandPipeline:
             "rematch_failures": [],
         }
         causal_fields_by_scene = {}
+        affine_causal_by_scene = {}
 
         # Preserve a global-only stage from ORIGINAL inputs for the paired
         # same-HOLDOUT causal comparison.  The reference stays unchanged;
@@ -3089,6 +3351,10 @@ class MultibandPipeline:
                 failure for failure in post_global_failures
                 if idx in (failure["idx_i"], failure["idx_j"])
             ]
+            if affine_causal_diagnostic:
+                affine_causal_by_scene[idx] = _run_affine_causal_candidate(
+                    controls, arrays[idx].shape[1:], reg_params,
+                )
             cv_result = _local_holdout_cv(controls, reg_params)
             gate = _accept_local_rbf_candidate(
                 controls, reg_params, cv_result, rematch_failures=scene_failures
@@ -3184,6 +3450,118 @@ class MultibandPipeline:
         )
 
         hull_causal = None
+        affine_causal = None
+        affine_counterfactual_arrays = None
+        affine_counterfactual_quality = None
+        affine_counterfactual_validation = None
+        affine_causal_fields_by_scene = {}
+        if affine_causal_diagnostic:
+            target_indices = [idx for idx in range(n_images) if idx != self.control_idx]
+            accepted_targets = [
+                idx for idx in target_indices
+                if affine_causal_by_scene.get(idx, {}).get("accepted", False)
+            ]
+            if len(accepted_targets) != len(target_indices):
+                rejected = {
+                    str(idx): affine_causal_by_scene.get(idx, {}).get(
+                        "reason", "affine candidate unavailable"
+                    )
+                    for idx in target_indices
+                    if idx not in accepted_targets
+                }
+                affine_causal = {
+                    "available": False,
+                    "accepted": False,
+                    "reason": "training_gate_rejected",
+                    "training_gate_rejected": True,
+                    "rejected_scenes": rejected,
+                    "scenes": {
+                        str(idx): _public_affine_causal_scene_summary(
+                            affine_causal_by_scene.get(idx, {})
+                        )
+                        for idx in target_indices
+                    },
+                    "validation": None,
+                    "comparison": None,
+                    "integrity": {
+                        "same_global_shifts": True,
+                        "same_holdout": True,
+                        "registration_band": registration_band_name,
+                        "validation_band": validation_band_name,
+                        "rbf_component_nonzero_pixels": 0,
+                        "one_pass_from_original": False,
+                    },
+                }
+            else:
+                affine_counterfactual_arrays = []
+                for idx in range(n_images):
+                    if idx == self.control_idx:
+                        affine_counterfactual_arrays.append(arrays[idx].copy())
+                        continue
+                    candidate = affine_causal_by_scene[idx]
+                    gdx, gdy = global_shifts[idx]
+                    affine_counterfactual_arrays.append(
+                        warp_multiband_with_displacement_field(
+                            arrays[idx], gdx, gdy,
+                            candidate["dx_field"], candidate["dy_field"],
+                            nodata_values[idx],
+                        )
+                    )
+                    affine_causal_fields_by_scene[idx] = {
+                        "dx_field": candidate["dx_field"],
+                        "dy_field": candidate["dy_field"],
+                    }
+                affine_counterfactual_quality, affine_counterfactual_validation = (
+                    _validate_final_registration_arrays(
+                        affine_counterfactual_arrays,
+                        registration_band_idx,
+                        transforms,
+                        nodata_values,
+                        spanning_tree_edges,
+                        [*pair_measurements, *post_global_pairs],
+                        reg_params,
+                        holdout_contexts=holdout_contexts,
+                        validation_band_idx=validation_band_idx,
+                    )
+                )
+                from src.registration_model_c1 import compare_fixed_holdout_validations
+                affine_causal = {
+                    "available": True,
+                    "accepted": True,
+                    "reason": None,
+                    "training_gate_rejected": False,
+                    "scenes": {
+                        str(idx): _public_affine_causal_scene_summary(
+                            affine_causal_by_scene[idx]
+                        )
+                        for idx in target_indices
+                    },
+                    "cv": {
+                        str(idx): affine_causal_by_scene[idx].get("cv", {})
+                        for idx in target_indices
+                    },
+                    "fit": {
+                        str(idx): affine_causal_by_scene[idx].get("fit", {})
+                        for idx in target_indices
+                    },
+                    "field": {
+                        str(idx): affine_causal_by_scene[idx].get("field_stats", {})
+                        for idx in target_indices
+                    },
+                    "quality": affine_counterfactual_quality,
+                    "validation": affine_counterfactual_validation,
+                    "comparison": compare_fixed_holdout_validations(
+                        global_only_validation, affine_counterfactual_validation,
+                    ),
+                    "integrity": {
+                        "same_global_shifts": True,
+                        "same_holdout": True,
+                        "registration_band": registration_band_name,
+                        "validation_band": validation_band_name,
+                        "rbf_component_nonzero_pixels": 0,
+                        "one_pass_from_original": True,
+                    },
+                }
         strict_counterfactual_arrays = None
         strict_counterfactual_quality = None
         strict_counterfactual_validation = None
@@ -3390,6 +3768,7 @@ class MultibandPipeline:
                 "global_only_validation": global_only_validation,
                 "stage_validation_comparison": stage_validation_comparison,
                 "holdout_local_field_samples": holdout_local_field_samples,
+                "affine_causal": affine_causal,
                 "final_validation": final_validation,
                 "quality": final_quality,
                 "elapsed_sec": elapsed,
@@ -3400,6 +3779,12 @@ class MultibandPipeline:
                 "strict_counterfactual_arrays": strict_counterfactual_arrays,
                 "hull_causal_fields_by_scene": causal_fields_by_scene,
                 "hull_causal": hull_causal,
+            })
+        if affine_causal_diagnostic:
+            result.update({
+                "affine_causal_counterfactual_arrays": affine_counterfactual_arrays,
+                "affine_causal_fields_by_scene": affine_causal_fields_by_scene,
+                "affine_causal": affine_causal,
             })
         return result
 

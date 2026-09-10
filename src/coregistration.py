@@ -936,7 +936,15 @@ def compute_model_residual_stats(matches, model_shift_y=0.0, model_shift_x=0.0,
     }
 
 
-def fit_affine_ransac(matches):
+def fit_affine_ransac(
+    matches,
+    *,
+    residual_threshold=0.75,
+    max_trials=2000,
+    random_seed=None,
+    rng=None,
+    random_state=None,
+):
     """使用 RANSAC 拟合仿射变换模型。
 
     Parameters
@@ -960,14 +968,40 @@ def fit_affine_ransac(matches):
     dst_points = np.array([[m['dst_x'], m['dst_y']] for m in matches])
 
     try:
-        model, inlier_mask = ransac(
-            (src_points, dst_points),
-            AffineTransform,
-            min_samples=3,
-            residual_threshold=0.75,
-            max_trials=2000,
-        )
+        random_source = rng
+        if random_source is None and random_state is not None:
+            random_source = random_state
+        if random_source is None and random_seed is not None:
+            random_source = np.random.default_rng(int(random_seed))
+        ransac_kwargs = {
+            "min_samples": 3,
+            "residual_threshold": float(residual_threshold),
+            "max_trials": int(max_trials),
+        }
+        if random_source is not None:
+            ransac_kwargs["rng"] = random_source
+        try:
+            model, inlier_mask = ransac(
+                (src_points, dst_points), AffineTransform, **ransac_kwargs,
+            )
+        except TypeError:
+            # Older scikit-image releases called this argument random_state.
+            if "rng" not in ransac_kwargs:
+                raise
+            ransac_kwargs.pop("rng", None)
+            ransac_kwargs["random_state"] = (
+                random_state if random_state is not None else random_seed
+            )
+            model, inlier_mask = ransac(
+                (src_points, dst_points), AffineTransform, **ransac_kwargs,
+            )
     except Exception:
+        return None, np.zeros(len(matches), dtype=bool), {}
+
+    if model is None or inlier_mask is None:
+        return None, np.zeros(len(matches), dtype=bool), {}
+    inlier_mask = np.asarray(inlier_mask, dtype=bool)
+    if len(inlier_mask) != len(matches):
         return None, np.zeros(len(matches), dtype=bool), {}
 
     n_inlier = int(inlier_mask.sum())
@@ -1000,13 +1034,35 @@ def fit_affine_ransac(matches):
     return model, inlier_mask, stats
 
 
-def validate_affine_model(stats, min_inlier_ratio=0.60, min_inlier_count=20):
+def validate_affine_model(
+    stats,
+    min_inlier_ratio=0.60,
+    min_inlier_count=20,
+    *,
+    max_scale_delta=0.02,
+    max_rotation_deg=1.0,
+    max_shear_deg=1.0,
+):
     """判断仿射模型是否合理。
 
     Returns
     -------
     bool, str (valid, reason)
     """
+    required = {
+        "n_inlier": stats.get("n_inlier", 0),
+        "inlier_ratio": stats.get("inlier_ratio", 0.0),
+        "scale_x": stats.get("scale_x"),
+        "scale_y": stats.get("scale_y"),
+        "rotation_deg": stats.get("rotation_deg"),
+        "shear_deg": stats.get("shear_deg"),
+    }
+    try:
+        if not all(np.isfinite(float(value)) for value in required.values()):
+            return False, "affine statistics are not finite"
+    except (TypeError, ValueError):
+        return False, "affine statistics are not numeric"
+
     if stats.get('n_inlier', 0) < min_inlier_count:
         return False, f"内点数不足: {stats['n_inlier']} < {min_inlier_count}"
 
@@ -1014,20 +1070,175 @@ def validate_affine_model(stats, min_inlier_ratio=0.60, min_inlier_count=20):
         return False, f"内点率不足: {stats['inlier_ratio']:.2%} < {min_inlier_ratio:.0%}"
 
     sx, sy = stats['scale_x'], stats['scale_y']
-    if not (0.98 <= sx <= 1.02):
-        return False, f"scale_x={sx:.4f} 超出 [0.98, 1.02]"
-    if not (0.98 <= sy <= 1.02):
-        return False, f"scale_y={sy:.4f} 超出 [0.98, 1.02]"
+    scale_delta = float(max_scale_delta)
+    if not (scale_delta >= 0 and np.isfinite(scale_delta)):
+        return False, "max_scale_delta must be finite and non-negative"
+    if not (1.0 - scale_delta <= sx <= 1.0 + scale_delta):
+        return False, f"scale_x={sx:.4f} outside ±{scale_delta:.4f}"
+    if not (1.0 - scale_delta <= sy <= 1.0 + scale_delta):
+        return False, f"scale_y={sy:.4f} outside ±{scale_delta:.4f}"
 
     rot = abs(stats['rotation_deg'])
-    if rot > 1.0:
-        return False, f"rotation={stats['rotation_deg']:.3f}度 超出 ±1度"
+    if rot > float(max_rotation_deg):
+        return False, f"rotation={stats['rotation_deg']:.3f} outside ±{max_rotation_deg} deg"
 
     sh = abs(stats['shear_deg'])
-    if sh > 1.0:
-        return False, f"shear={stats['shear_deg']:.3f}度 超出 ±1度"
+    if sh > float(max_shear_deg):
+        return False, f"shear={stats['shear_deg']:.3f} outside ±{max_shear_deg} deg"
 
     return True, "仿射模型参数合理"
+
+
+def residual_controls_to_affine_matches(controls):
+    """Convert local displacement controls to exact pixel-to-pixel matches.
+
+    ``points_xy`` uses ``(x, y) == (column, row)``.  Residual components are
+    added to that target pixel coordinate; no row/column swap is performed.
+    """
+    controls = controls or {}
+    points = np.asarray(controls.get("points_xy", []), dtype=float)
+    dx = np.asarray(controls.get("residual_dx", []), dtype=float)
+    dy = np.asarray(controls.get("residual_dy", []), dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2:
+        return []
+    if len(points) != len(dx) or len(points) != len(dy):
+        return []
+    confidence = np.asarray(
+        controls.get("confidence", np.ones(len(points))), dtype=float,
+    )
+    if len(confidence) != len(points):
+        confidence = np.ones(len(points), dtype=float)
+    matches = []
+    for point, residual_x, residual_y, conf in zip(points, dx, dy, confidence):
+        if not np.all(np.isfinite(point)) or not np.isfinite(residual_x) \
+                or not np.isfinite(residual_y):
+            continue
+        matches.append({
+            "src_x": float(point[0]),
+            "src_y": float(point[1]),
+            "dst_x": float(point[0] + residual_x),
+            "dst_y": float(point[1] + residual_y),
+            "confidence": float(conf) if np.isfinite(conf) else 0.0,
+        })
+    return matches
+
+
+def fit_affine_residual_model(controls, params=None):
+    """Fit and validate a deterministic affine model to residual controls."""
+    params = params or {}
+    matches = residual_controls_to_affine_matches(controls)
+    min_controls = int(params.get("affine_min_controls", 12))
+    min_groups = int(params.get("affine_min_spatial_groups", 3))
+    points = np.asarray(controls.get("points_xy", []), dtype=float)
+    result = {
+        "available": False,
+        "accepted": False,
+        "model": None,
+        "inlier_mask": np.zeros(len(matches), dtype=bool),
+        "stats": {},
+        "reason": None,
+        "n_controls": int(len(matches)),
+        "n_spatial_groups": 0,
+    }
+    if len(matches) < min_controls:
+        result["reason"] = f"too few affine controls: {len(matches)} < {min_controls}"
+        return result
+    if points.ndim != 2 or len(points) != len(matches):
+        result["reason"] = "affine control coordinates are invalid"
+        return result
+    x_groups = np.clip(
+        ((points[:, 0] - points[:, 0].min())
+            / max(np.ptp(points[:, 0]), 1e-12) * 4).astype(int), 0, 3,
+    )
+    y_groups = np.clip(
+        ((points[:, 1] - points[:, 1].min())
+            / max(np.ptp(points[:, 1]), 1e-12) * 4).astype(int), 0, 3,
+    )
+    result["n_spatial_groups"] = int(len(np.unique(y_groups * 4 + x_groups)))
+    if result["n_spatial_groups"] < min_groups:
+        result["reason"] = (
+            f"too few affine spatial groups: {result['n_spatial_groups']} < {min_groups}"
+        )
+        return result
+    centered = points - np.mean(points, axis=0, keepdims=True)
+    if np.linalg.matrix_rank(centered) < 2:
+        result["reason"] = "affine controls are collinear (rank < 2)"
+        return result
+
+    model, inlier_mask, stats = fit_affine_ransac(
+        matches,
+        residual_threshold=float(params.get("affine_ransac_residual_threshold", 0.75)),
+        max_trials=int(params.get("affine_ransac_max_trials", 2000)),
+        random_seed=params.get("affine_ransac_seed", 42),
+    )
+    if model is None:
+        result["reason"] = "affine RANSAC fitting failed"
+        return result
+    valid, reason = validate_affine_model(
+        stats,
+        min_inlier_ratio=float(params.get("affine_min_inlier_ratio", 0.50)),
+        min_inlier_count=int(params.get("affine_min_inliers", 8)),
+        max_scale_delta=float(params.get("affine_max_scale_delta", 0.02)),
+        max_rotation_deg=float(params.get("affine_max_rotation_deg", 1.0)),
+        max_shear_deg=float(params.get("affine_max_shear_deg", 1.0)),
+    )
+    result.update({
+        "available": True,
+        "model": model,
+        "inlier_mask": inlier_mask,
+        "stats": stats,
+        "accepted": bool(valid),
+        "reason": None if valid else reason,
+    })
+    return result
+
+
+def predict_affine_residual(model, points_xy):
+    """Predict ``(dx, dy)`` in the same ``(x, y)`` pixel convention."""
+    points = np.asarray(points_xy, dtype=float)
+    if model is None or points.ndim != 2 or points.shape[1] != 2:
+        return np.empty((0, 2), dtype=float)
+    predicted = np.asarray(model(points), dtype=float)
+    return predicted - points
+
+
+def build_affine_residual_field(model, shape, *, max_component=8.0):
+    """Evaluate an affine residual model over an image grid without clipping."""
+    rows, cols = (int(shape[0]), int(shape[1]))
+    if rows < 0 or cols < 0:
+        raise ValueError("field shape must be non-negative")
+    yy, xx = np.mgrid[0:rows, 0:cols]
+    points = np.column_stack([xx.ravel(), yy.ravel()]).astype(float)
+    predicted = predict_affine_residual(model, points)
+    if predicted.shape != (len(points), 2):
+        raise ValueError("affine field prediction shape mismatch")
+    dx = predicted[:, 0].reshape(rows, cols)
+    dy = predicted[:, 1].reshape(rows, cols)
+    magnitude = np.hypot(dx, dy)
+    finite = (
+        np.all(np.isfinite(dx)) and np.all(np.isfinite(dy))
+        and np.all(np.isfinite(magnitude))
+    )
+    max_abs_dx = float(np.max(np.abs(dx))) if dx.size else 0.0
+    max_abs_dy = float(np.max(np.abs(dy))) if dy.size else 0.0
+    cap = float(max_component)
+    safe = bool(
+        finite and np.isfinite(cap) and cap > 0
+        and max_abs_dx <= cap and max_abs_dy <= cap
+    )
+    stats = {
+        "available": bool(finite),
+        "safe": safe,
+        "max_abs_dx": max_abs_dx if finite else None,
+        "max_abs_dy": max_abs_dy if finite else None,
+        "p95_magnitude": float(np.percentile(magnitude, 95)) if finite and magnitude.size else None,
+        "mean_dx": float(np.mean(dx)) if finite and dx.size else None,
+        "mean_dy": float(np.mean(dy)) if finite and dy.size else None,
+        "row_span": int(rows),
+        "col_span": int(cols),
+        "max_component": cap,
+    }
+    return dx, dy, stats
 
 
 def warp_affine_once(arr, model, tr_orig, crs, nodata, output_path):

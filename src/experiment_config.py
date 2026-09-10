@@ -81,6 +81,20 @@ _DEFAULT_REGISTRATION_PARAMS: Dict[str, Any] = {
     "warn_max_rmse": 0.75,
     "warn_max_p95": 1.25,
     "required_quality": "pass",
+    # Diagnostic-only MODEL-C1 affine residual protocol parameters.
+    "affine_min_controls": 12,
+    "affine_min_spatial_groups": 3,
+    "affine_min_inliers": 8,
+    "affine_min_inlier_ratio": 0.50,
+    "affine_ransac_residual_threshold": 0.75,
+    "affine_ransac_max_trials": 2000,
+    "affine_ransac_seed": 42,
+    "affine_max_scale_delta": 0.02,
+    "affine_max_rotation_deg": 1.0,
+    "affine_max_shear_deg": 1.0,
+    "affine_max_component": 8.0,
+    "affine_cv_min_rmse_improvement": 0.10,
+    "affine_cv_min_p95_improvement": 0.15,
 }
 
 
@@ -365,6 +379,66 @@ def validate_config(config: ExperimentConfig, skip_file_check: bool = False) -> 
             errors.append(
                 "registration_params.validation_min_common_valid_ratio 必须在 [0, 1] 内"
             )
+
+        integer_minimums = {
+            "affine_min_controls": 3,
+            "affine_min_spatial_groups": 1,
+            "affine_min_inliers": 3,
+            "affine_ransac_max_trials": 1,
+        }
+        for key, minimum in integer_minimums.items():
+            value = rp.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+                errors.append(f"registration_params.{key} 必须是整数且 >= {minimum}")
+            elif int(value) < minimum:
+                errors.append(f"registration_params.{key} 必须 >= {minimum}")
+        try:
+            seed = rp.get("affine_ransac_seed")
+            if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)):
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append("registration_params.affine_ransac_seed 必须是整数")
+
+        positive_finite = (
+            "affine_ransac_residual_threshold",
+            "affine_max_rotation_deg",
+            "affine_max_shear_deg",
+            "affine_max_component",
+        )
+        for key in positive_finite:
+            try:
+                value = float(rp.get(key))
+            except (TypeError, ValueError):
+                value = float("nan")
+            if not np.isfinite(value) or value <= 0:
+                errors.append(
+                    f"registration_params.{key} 必须是正有限数值"
+                )
+        try:
+            scale_delta = float(rp.get("affine_max_scale_delta"))
+        except (TypeError, ValueError):
+            scale_delta = float("nan")
+        if not np.isfinite(scale_delta) or scale_delta <= 0 or scale_delta >= 1:
+            errors.append(
+                "registration_params.affine_max_scale_delta 必须在 (0, 1) 内"
+            )
+        try:
+            ratio = float(rp.get("affine_min_inlier_ratio"))
+        except (TypeError, ValueError):
+            ratio = float("nan")
+        if not np.isfinite(ratio) or not 0 < ratio <= 1:
+            errors.append(
+                "registration_params.affine_min_inlier_ratio 必须在 (0, 1] 内"
+            )
+        for key in ("affine_cv_min_rmse_improvement", "affine_cv_min_p95_improvement"):
+            try:
+                value = float(rp.get(key))
+            except (TypeError, ValueError):
+                value = float("nan")
+            if not np.isfinite(value) or value < 0:
+                errors.append(
+                    f"registration_params.{key} 必须为非负有限数值"
+                )
 
     # ---- 基本字段 ----
     if not config.experiment_name.strip():

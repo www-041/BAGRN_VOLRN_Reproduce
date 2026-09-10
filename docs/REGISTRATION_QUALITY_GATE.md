@@ -140,6 +140,41 @@ HULL-C1 conclusion: the H1 unsupported-extrapolation hypothesis is NOT
 SUPPORTED. Keep the legacy production behavior (`local_hull_buffer: 128`) for
 BAND-C1; do not use hull support as the next production-fix direction.
 
+### MODEL-C1 diagnostic-only robust affine residual test
+
+MODEL-C1 is a frozen causal diagnostic for the B12-vs-B14 question. It keeps
+`registration_band: B12`, validates only on B14, and reuses the exact seven
+reserved windows in `configs/dz01_model_c1_holdout_manifest.json`. The affine
+residual candidate is fitted only from post-global TRAIN controls, evaluated by
+the fixed spatial CV folds, and accepted only when both affine RMSE and P95
+improvement gates pass. Final HOLDOUT pixels are never used for fitting,
+cross-validation, or gating.
+
+The counterfactual is generated directly from ORIGINAL arrays with the frozen
+global shift plus one affine residual field. It contains no RBF component and
+does not change the canonical `registered_arrays`, `quality`, or BAGRN/VOLRN
+inputs. If the TRAIN gates or field safety gate fail, the sidecar records
+`training_gate_rejected` and leaves treatment metrics blank rather than running
+an invalid final comparison.
+
+The diagnostic-only command is:
+
+```bash
+python scripts/diagnose_registration_pair.py \
+    --config configs/dz01_model_c1_affine_b12.yaml \
+    --scene-i 0 --scene-j 1 \
+    --validation-band B14 \
+    --holdout-manifest configs/dz01_model_c1_holdout_manifest.json \
+    --affine-causal-test \
+    --output-dir outputs/diagnose_model_c1_affine_b12
+```
+
+Inspect the integrity fields before interpreting metrics. The run writes the
+affine counterfactual rasters/overlays, displacement figures,
+`model_c1_stage_metrics.csv`, and `model_c1_holdout_pairs.csv` when available.
+No real N=2/N=4/N=6 run is part of automated verification; the real N=2 run is
+the user checkpoint after this implementation.
+
 ### BAND-C1 fixed-band comparison
 
 BAND-C1 compares only `registration_band: B14` with `registration_band: B12`.
