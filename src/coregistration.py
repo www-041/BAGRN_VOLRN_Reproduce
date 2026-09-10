@@ -48,6 +48,45 @@ def map_pixel_center_between_grids(
     return float(dst_edge_x - 0.5), float(dst_edge_y - 0.5)
 
 
+def map_pixel_centers_between_grids(
+    points_xy: np.ndarray,
+    src_transform: Affine,
+    dst_transform: Affine,
+) -> np.ndarray:
+    """Vectorized equivalent of :func:`map_pixel_center_between_grids`."""
+    points = np.asarray(points_xy, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError("pixel-center points must have shape (N, 2)")
+    if not np.all(np.isfinite(points)):
+        raise ValueError("pixel-center coordinates must be finite")
+    src_centers = points + 0.5
+    world_x = (
+        float(src_transform.a) * src_centers[:, 0]
+        + float(src_transform.b) * src_centers[:, 1]
+        + float(src_transform.c)
+    )
+    world_y = (
+        float(src_transform.d) * src_centers[:, 0]
+        + float(src_transform.e) * src_centers[:, 1]
+        + float(src_transform.f)
+    )
+    determinant = float(dst_transform.a * dst_transform.e
+                        - dst_transform.b * dst_transform.d)
+    if not np.isfinite(determinant) or abs(determinant) <= 1e-15:
+        raise ValueError("invalid source or destination grid transform")
+    delta_x = world_x - float(dst_transform.c)
+    delta_y = world_y - float(dst_transform.f)
+    dst_edge_x = (
+        float(dst_transform.e) * delta_x
+        - float(dst_transform.b) * delta_y
+    ) / determinant
+    dst_edge_y = (
+        -float(dst_transform.d) * delta_x
+        + float(dst_transform.a) * delta_y
+    ) / determinant
+    return np.column_stack([dst_edge_x - 0.5, dst_edge_y - 0.5])
+
+
 def build_common_valid_mask(
     ref_array,
     tgt_array,

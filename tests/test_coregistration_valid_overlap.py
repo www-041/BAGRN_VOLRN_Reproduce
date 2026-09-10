@@ -49,6 +49,41 @@ def test_map_pixel_center_between_grids_round_trip_between_two_14m_grids():
     assert round_trip == pytest.approx((321.125, 654.875), abs=1e-9)
 
 
+def test_vector_pixel_center_mapping_matches_scalar_for_many_points():
+    from rasterio.transform import from_origin
+    from src.coregistration import (
+        map_pixel_center_between_grids,
+        map_pixel_centers_between_grids,
+    )
+
+    ref = from_origin(500000.0, 4200000.0, 14.0, 14.0)
+    target = from_origin(500123.0, 4199877.0, 14.0, 14.0)
+    points = np.array([[0.0, 0.0], [1.25, 2.5], [321.125, 654.875]])
+
+    vector_result = map_pixel_centers_between_grids(points, ref, target)
+    scalar_result = np.array([
+        map_pixel_center_between_grids(x, y, ref, target)
+        for x, y in points
+    ])
+
+    assert vector_result.shape == (3, 2)
+    assert np.allclose(vector_result, scalar_result, atol=1e-10)
+
+
+def test_vector_pixel_center_mapping_round_trip():
+    from rasterio.transform import from_origin
+    from src.coregistration import map_pixel_centers_between_grids
+
+    ref = from_origin(100.0, 200.0, 14.0, 14.0)
+    target = from_origin(128.0, 172.0, 14.0, 14.0)
+    points = np.array([[0.0, 0.0], [10.25, 20.75], [99.5, 42.125]])
+
+    mapped = map_pixel_centers_between_grids(points, ref, target)
+    round_trip = map_pixel_centers_between_grids(mapped, target, ref)
+
+    assert np.allclose(round_trip, points, atol=1e-10)
+
+
 def test_common_valid_mask_excludes_diagonal_nodata_regions():
     from src.coregistration import build_common_valid_mask
 

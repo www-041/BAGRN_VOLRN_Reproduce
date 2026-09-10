@@ -894,6 +894,193 @@ def _sample_field_bilinear(field, x, y):
     return value if np.isfinite(value) else None
 
 
+def _hull_causal_window_stats(
+    validation, transforms, causal_fields_by_scene, local_refinement
+):
+    """Summarize complete reserved validation windows on causal RBF fields."""
+    from scipy.ndimage import map_coordinates
+    from src.coregistration import (
+        compute_hull_fade_support,
+        map_pixel_centers_between_grids,
+    )
+
+    validation = validation or {}
+    causal_fields_by_scene = causal_fields_by_scene or {}
+    local_refinement = local_refinement or {}
+    default_size = int(validation.get("validation_block_size_selected") or 192)
+    rows = []
+
+    def get_scene_fields(scene_idx):
+        return causal_fields_by_scene.get(
+            scene_idx, causal_fields_by_scene.get(str(scene_idx), {})
+        ) or {}
+
+    def sample(field, mapped, order=1):
+        values = np.asarray(field, dtype=float)
+        return map_coordinates(
+            values,
+            [mapped[:, 1], mapped[:, 0]],
+            order=order,
+            mode="constant",
+            cval=np.nan,
+            prefilter=False,
+        )
+
+    def percentile(values, q):
+        return float(np.percentile(values, q)) if len(values) else 0.0
+
+    for edge in validation.get("edges", []) or []:
+        try:
+            idx_i = int(edge["idx_i"])
+            idx_j = int(edge["idx_j"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        scene_idx = idx_j
+        fields = get_scene_fields(scene_idx)
+        support = fields.get("support")
+        raw_dx = fields.get("raw_dx")
+        raw_dy = fields.get("raw_dy")
+        legacy_dx = fields.get("legacy_dx")
+        legacy_dy = fields.get("legacy_dy")
+        strict_dx = fields.get("strict_dx")
+        strict_dy = fields.get("strict_dy")
+        legacy_weight = fields.get("legacy_weight")
+        strict_weight = fields.get("strict_weight")
+        if support is None and raw_dx is not None:
+            points = (local_refinement.get("control_points", {}) or {}).get(
+                str(scene_idx), (local_refinement.get("control_points", {}) or {}).get(
+                    scene_idx, []
+                )
+            )
+            try:
+                support = compute_hull_fade_support(
+                    np.asarray(points, dtype=float),
+                    np.asarray(raw_dx).shape[0],
+                    np.asarray(raw_dx).shape[1],
+                    buffer=128,
+                )
+            except (TypeError, ValueError, IndexError):
+                support = None
+        if support is None or any(
+            value is None for value in (
+                raw_dx, raw_dy, legacy_dx, legacy_dy, strict_dx, strict_dy,
+            )
+        ):
+            continue
+        if legacy_weight is None:
+            legacy_weight = support["fade_mask"]
+        if strict_weight is None:
+            strict_weight = np.asarray(
+                support["inside_hull_mask"], dtype=np.float64
+            )
+
+        for block in edge.get("blocks", []) or []:
+            try:
+                row = int(block["validation_row"])
+                col = int(block["validation_col"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            block_size = int(block.get("block_size", default_size))
+            yy, xx = np.mgrid[row:row + block_size, col:col + block_size]
+            reference_points = np.column_stack([xx.ravel(), yy.ravel()])
+            mapped = map_pixel_centers_between_grids(
+                reference_points, transforms[idx_i], transforms[scene_idx]
+            )
+            sampled = {
+                "raw_dx": sample(raw_dx, mapped),
+                "raw_dy": sample(raw_dy, mapped),
+                "legacy_dx": sample(legacy_dx, mapped),
+                "legacy_dy": sample(legacy_dy, mapped),
+                "strict_dx": sample(strict_dx, mapped),
+                "strict_dy": sample(strict_dy, mapped),
+                "legacy_weight": sample(legacy_weight, mapped),
+                "strict_weight": sample(strict_weight, mapped),
+                "inside_hull": sample(
+                    support["inside_hull_mask"], mapped, order=0
+                ),
+            }
+            valid = np.ones(len(mapped), dtype=bool)
+            for key in ("raw_dx", "raw_dy", "legacy_dx", "legacy_dy",
+                        "strict_dx", "strict_dy", "legacy_weight",
+                        "strict_weight", "inside_hull"):
+                valid &= np.isfinite(sampled[key])
+            if not np.any(valid):
+                continue
+            valid_sample_count = int(np.count_nonzero(valid))
+            raw_magnitude = np.hypot(
+                sampled["raw_dx"][valid], sampled["raw_dy"][valid]
+            )
+            legacy_magnitude = np.hypot(
+                sampled["legacy_dx"][valid], sampled["legacy_dy"][valid]
+            )
+            strict_magnitude = np.hypot(
+                sampled["strict_dx"][valid], sampled["strict_dy"][valid]
+            )
+            legacy_support = sampled["legacy_weight"][valid]
+            strict_support = sampled["strict_weight"][valid]
+            inside = sampled["inside_hull"][valid] >= 0.5
+            difference = np.abs(legacy_support - strict_support) > 1e-12
+            center_x = float(block.get(
+                "center_x", col + (block_size - 1) / 2.0
+            ))
+            center_y = float(block.get(
+                "center_y", row + (block_size - 1) / 2.0
+            ))
+            center_mapped = map_pixel_centers_between_grids(
+                np.asarray([[center_x, center_y]]),
+                transforms[idx_i], transforms[scene_idx],
+            )[0]
+            field_row = int(round(center_mapped[1]))
+            field_col = int(round(center_mapped[0]))
+            inside_shape = np.asarray(support["inside_hull_mask"]).shape
+            center_inside = bool(
+                0 <= field_row < inside_shape[0]
+                and 0 <= field_col < inside_shape[1]
+                and support["inside_hull_mask"][field_row, field_col]
+            )
+            rows.append({
+                "validation_row": row,
+                "validation_col": col,
+                "block_size": block_size,
+                "scene_idx": scene_idx,
+                "reference_center_x": center_x,
+                "reference_center_y": center_y,
+                "field_center_x": float(center_mapped[0]),
+                "field_center_y": float(center_mapped[1]),
+                "center_inside_hull": center_inside,
+                "center_legacy_weight": float(
+                    sampled["legacy_weight"][valid][len(sampled["legacy_weight"][valid]) // 2]
+                ),
+                "center_strict_weight": float(
+                    sampled["strict_weight"][valid][len(sampled["strict_weight"][valid]) // 2]
+                ),
+                "window_valid_sample_count": valid_sample_count,
+                "window_inside_hull_fraction": float(np.mean(inside)),
+                "window_legacy_support_nonzero_fraction": float(
+                    np.mean(legacy_support > 1e-12)
+                ),
+                "window_strict_support_nonzero_fraction": float(
+                    np.mean(strict_support > 1e-12)
+                ),
+                "window_support_difference_fraction": float(
+                    np.mean(difference)
+                ),
+                "window_legacy_support_mean": float(np.mean(legacy_support)),
+                "window_strict_support_mean": float(np.mean(strict_support)),
+                "window_raw_rbf_magnitude_mean": float(np.mean(raw_magnitude)),
+                "window_raw_rbf_magnitude_p95": percentile(raw_magnitude, 95),
+                "window_legacy_rbf_magnitude_mean": float(np.mean(legacy_magnitude)),
+                "window_legacy_rbf_magnitude_p95": percentile(legacy_magnitude, 95),
+                "window_strict_rbf_magnitude_mean": float(np.mean(strict_magnitude)),
+                "window_strict_rbf_magnitude_p95": percentile(strict_magnitude, 95),
+                "global_residual_magnitude": block.get("global_residual_magnitude"),
+                "legacy_residual_magnitude": block.get("legacy_residual_magnitude"),
+                "strict_residual_magnitude": block.get("strict_residual_magnitude"),
+                "negative_control_candidate": bool(np.mean(difference) <= 1e-12),
+            })
+    return {"blocks": rows, "n_blocks": len(rows)}
+
+
 def _sample_local_field_at_validation_blocks(
     validation,
     local_dx_fields,

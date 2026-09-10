@@ -229,3 +229,101 @@ def test_both_branches_use_identical_component_cap(monkeypatch):
     assert np.max(np.abs(variants["strict_dx"])) <= 1.25
     assert np.max(np.abs(variants["strict_dy"])) <= 1.25
     assert variants["legacy_stats"]["clipping"] == variants["strict_stats"]["clipping"]
+
+
+def _causal_validation(inside_center=False):
+    from src.coregistration import compute_hull_fade_support
+    points = np.asarray([[2.0, 2.0], [9.0, 2.0], [2.0, 9.0], [9.0, 9.0]])
+    support = compute_hull_fade_support(points, 12, 12, buffer=2)
+    return {
+        "validation_block_size_selected": 4,
+        "edges": [{
+            "idx_i": 0,
+            "idx_j": 1,
+            "blocks": [{
+                "validation_row": 1 if inside_center else 0,
+                "validation_col": 1 if inside_center else 0,
+                "center_x": 5.0 if inside_center else 1.0,
+                "center_y": 5.0 if inside_center else 1.0,
+                "accepted": True,
+                "residual_magnitude": 0.5,
+            }],
+        }],
+        "_variants": {
+            "support": support,
+            "raw_dx": np.ones((12, 12)),
+            "raw_dy": np.ones((12, 12)),
+            "legacy_weight": np.asarray(support["fade_mask"]),
+            "strict_weight": np.asarray(support["inside_hull_mask"], dtype=float),
+            "legacy_dx": np.asarray(support["fade_mask"]),
+            "legacy_dy": np.asarray(support["fade_mask"]),
+            "strict_dx": np.asarray(support["inside_hull_mask"], dtype=float),
+            "strict_dy": np.asarray(support["inside_hull_mask"], dtype=float),
+        },
+    }
+
+
+def test_window_stats_uses_full_window_not_only_center():
+    from rasterio.transform import from_origin
+    from src import multiband_pipeline
+
+    validation = _causal_validation(inside_center=True)
+    variants = validation.pop("_variants")
+    stats = multiband_pipeline._hull_causal_window_stats(
+        validation, [from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
+        {1: variants}, {},
+    )
+
+    row = stats["blocks"][0]
+    assert row["window_valid_sample_count"] == 16
+    assert 0.0 < row["window_inside_hull_fraction"] < 1.0
+    assert row["window_support_difference_fraction"] > 0.0
+
+
+def test_window_stats_detects_partial_hull_overlap():
+    from rasterio.transform import from_origin
+    from src import multiband_pipeline
+
+    validation = _causal_validation(inside_center=False)
+    variants = validation.pop("_variants")
+    stats = multiband_pipeline._hull_causal_window_stats(
+        validation, [from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
+        {1: variants}, {},
+    )
+
+    row = stats["blocks"][0]
+    assert 0.0 < row["window_inside_hull_fraction"] < 1.0
+    assert row["center_inside_hull"] is False
+
+
+def test_window_stats_marks_negative_control_candidate_when_supports_equal():
+    from rasterio.transform import from_origin
+    from src import multiband_pipeline
+
+    validation = _causal_validation(inside_center=True)
+    variants = validation.pop("_variants")
+    variants["legacy_weight"] = variants["strict_weight"] = np.ones((12, 12))
+    variants["legacy_dx"] = variants["strict_dx"] = np.ones((12, 12))
+    variants["legacy_dy"] = variants["strict_dy"] = np.ones((12, 12))
+    variants["raw_dx"] = variants["raw_dy"] = np.ones((12, 12))
+    stats = multiband_pipeline._hull_causal_window_stats(
+        validation, [from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
+        {1: variants}, {},
+    )
+
+    assert stats["blocks"][0]["negative_control_candidate"] is True
+
+
+def test_window_stats_never_serializes_pixel_arrays():
+    from rasterio.transform import from_origin
+    from src import multiband_pipeline
+
+    validation = _causal_validation(inside_center=True)
+    variants = validation.pop("_variants")
+    stats = multiband_pipeline._hull_causal_window_stats(
+        validation, [from_origin(0, 12, 1, 1), from_origin(0, 12, 1, 1)],
+        {1: variants}, {},
+    )
+
+    assert not any(isinstance(value, np.ndarray)
+                   for value in stats["blocks"][0].values())
