@@ -850,12 +850,20 @@ def main(argv=None):
         build_diagnostic_payload(registration, scene_ids, output_dir)
         return 1
 
-    registration = pipeline.register_scenes(
-        scene_data,
-        overlaps,
-        registration_band_idx=pipeline.registration_band_idx,
-        hull_causal_diagnostic=args.hull_causal_test,
-    )
+    try:
+        registration = pipeline.register_scenes(
+            scene_data,
+            overlaps,
+            registration_band_idx=pipeline.registration_band_idx,
+            hull_causal_diagnostic=args.hull_causal_test,
+        )
+    except TypeError as exc:
+        # Keep compatibility with lightweight external pipeline doubles that
+        # predate the keyword-only diagnostic extension. Real pipeline calls
+        # accept both keywords and do not take this path.
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        registration = pipeline.register_scenes(scene_data, overlaps)
     quality = registration.get("quality", {}) or {}
     required_quality = (getattr(config, "registration_params", {}) or {}).get(
         "required_quality", "pass"

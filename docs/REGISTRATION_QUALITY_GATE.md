@@ -111,6 +111,31 @@ returns a nonzero exit code, writes JSON status `fail`, and never exposes those
 arrays as formal BAGRN/VOLRN inputs. Blocked or disconnected results continue
 to produce failure JSON without registered raster artifacts.
 
+### HULL-C1 causal diagnostic
+
+HULL-C1 is an opt-in counterfactual experiment enabled with
+`--hull-causal-test`. Its only treatment is local-RBF support: the production
+legacy branch uses the existing buffered-hull fade, while the strict branch
+uses the same raw RBF field with inside-hull-only support. The raw RBF is fit
+once per accepted scene; CV, smoothing, component cap, controls, global shifts,
+and the reserved HOLDOUT are frozen and shared by all three stages.
+
+`registered_arrays` and the main `quality/status` continue to represent the
+legacy production final. Strict arrays are created from ORIGINAL inputs only
+for counterfactual diagnostics and cannot enter BAGRN/VOLRN or alter the exit
+code. The final HOLDOUT is never used to choose a branch or tune a model.
+HULL-C1 writes `hull_causal_stage_metrics.csv`,
+`hull_causal_window_stats.csv`, and strict-hull raster/overlay artifacts when
+the diagnostic is available. The window table measures support and RBF
+correction over each complete reserved window; `legacy_minus_strict` is the
+causal comparison, and a positive value indicates strict improvement. The
+integrity gate checks shared inputs and strict zero support outside the hull;
+it does not judge whether strict improves RMSE or P95.
+
+Whether strict support should become a production change is deliberately left
+to the user checkpoint after the real N=2 HULL-C1 run. B12, affine residuals,
+DEM terms, and mountainous local refinement are outside this diagnostic.
+
 ## Robust Estimation
 
 The pipeline uses MAD-based robust estimation instead of simple weighted average:
