@@ -568,6 +568,96 @@ def test_strict_holdout_never_changes_main_quality_or_status(monkeypatch):
     assert result["hull_causal"]["strict_counterfactual_quality"]["quality"] == "fail"
 
 
+def test_synthetic_case_a_all_queries_inside_hull_is_negative_control(monkeypatch):
+    from src import multiband_pipeline
+
+    monkeypatch.setattr(
+        multiband_pipeline,
+        "_predict_local_rbf_raw_field",
+        lambda *args, **kwargs: (
+            np.full((8, 8), 2.0), np.full((8, 8), -2.0), {"smoothing": 0.1}
+        ),
+    )
+    variants = multiband_pipeline._fit_hull_causal_rbf_variants(
+        _controls(), (8, 8), {"local_hull_buffer": 2}, smoothing=0.1,
+    )
+    inside = variants["support"]["inside_hull_mask"]
+
+    assert np.array_equal(variants["legacy_dx"][inside], variants["strict_dx"][inside])
+    assert np.array_equal(variants["legacy_dy"][inside], variants["strict_dy"][inside])
+    assert np.array_equal(variants["legacy_weight"][inside], variants["strict_weight"][inside])
+
+
+def test_synthetic_case_b_partial_window_stats_not_center_only():
+    from rasterio.transform import from_origin
+    from src import multiband_pipeline
+
+    validation = _causal_validation(inside_center=True)
+    variants = validation.pop("_variants")
+    stats = multiband_pipeline._hull_causal_window_stats(
+        validation, [from_origin(0, 12, 1, 1)] * 2, {1: variants}, {},
+    )
+
+    assert 0.0 < stats["blocks"][0]["window_inside_hull_fraction"] < 1.0
+
+
+def test_synthetic_case_c_buffered_legacy_extrapolation_is_strictly_removed(monkeypatch):
+    from src import multiband_pipeline
+
+    monkeypatch.setattr(
+        multiband_pipeline,
+        "_predict_local_rbf_raw_field",
+        lambda *args, **kwargs: (
+            np.full((8, 8), 1.0), np.full((8, 8), 1.0), {"smoothing": 0.1}
+        ),
+    )
+    variants = multiband_pipeline._fit_hull_causal_rbf_variants(
+        _controls(), (8, 8), {"local_hull_buffer": 3}, smoothing=0.1,
+    )
+    outside = ~variants["support"]["inside_hull_mask"]
+
+    assert np.any(variants["legacy_dx"][outside] != 0.0)
+    assert np.count_nonzero(variants["strict_dx"][outside]) == 0
+    assert np.count_nonzero(variants["strict_dy"][outside]) == 0
+
+
+def test_synthetic_case_d_legacy_and_strict_share_current_cap(monkeypatch):
+    from src import multiband_pipeline
+
+    monkeypatch.setattr(
+        multiband_pipeline,
+        "_predict_local_rbf_raw_field",
+        lambda *args, **kwargs: (
+            np.full((8, 8), 10.0), np.full((8, 8), -10.0), {"smoothing": 0.1}
+        ),
+    )
+    variants = multiband_pipeline._fit_hull_causal_rbf_variants(
+        _controls(), (8, 8),
+        {"local_hull_buffer": 2, "local_hard_max_component": 1.0},
+        smoothing=0.1,
+    )
+
+    assert np.max(np.abs(variants["legacy_dx"])) == 1.0
+    assert np.max(np.abs(variants["strict_dx"])) == 1.0
+    assert np.max(np.abs(variants["legacy_dy"])) == 1.0
+    assert np.max(np.abs(variants["strict_dy"])) == 1.0
+
+
+def test_hull_causal_end_to_end_freezes_fit_cv_global_and_holdout(monkeypatch):
+    result, cv_calls, _, _ = _run_minimal_causal_register(
+        monkeypatch, use_holdout=True,
+    )
+    causal = result["hull_causal"]
+
+    assert causal["integrity"]["raw_rbf_fit_count_by_scene"] == {"1": 1}
+    assert cv_calls["count"] == 1
+    assert causal["frozen"]["cv_modified"] is False
+    assert causal["frozen"]["field_cap_modified"] is False
+    assert causal["frozen"]["global_shifts"] == [[0.0, 0.0], [0.0, 0.0]]
+    assert causal["frozen"]["holdout_keys"] == ["0-1"]
+    assert result["registered_arrays"][1] is not result["strict_counterfactual_arrays"][1]
+
+
 def _integrity_inputs():
     fields = {
         "raw_dx": np.ones((4, 4)), "raw_dy": np.ones((4, 4)),
