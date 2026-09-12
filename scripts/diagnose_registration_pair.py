@@ -119,6 +119,47 @@ def _log_klt_tps_summary(registration):
     )
 
 
+def _log_tps_support_c1_summary(registration):
+    """Log compact raw/translation/supported C1 diagnostics without a verdict."""
+    causal = registration.get("tps_support_causal", {}) or {}
+    integrity = causal.get("integrity", {}) or {}
+    logger.info(
+        "TPS-SUPPORT-C1 integrity: pass=%s, translation_xy=%s, taper_pixels=%s, "
+        "paired_fixed_HOLDOUT_blocks=%s",
+        integrity.get("integrity_pass"),
+        causal.get("translation_xy"),
+        causal.get("taper_pixels"),
+        len(causal.get("paired_holdout_blocks", []) or []),
+    )
+    raw = causal.get("raw_geometry", {}) or {}
+    supported = causal.get("supported_geometry", {}) or {}
+    logger.info(
+        "TPS-SUPPORT-C1 geometry: raw fold_pixels=%s / max_displacement_pixels=%s; "
+        "supported fold_pixels=%s / max_displacement_pixels=%s",
+        raw.get("fold_pixels"), _metric_text(raw.get("max_displacement_pixels")),
+        supported.get("fold_pixels"),
+        _metric_text(supported.get("max_displacement_pixels")),
+    )
+    translation = causal.get("translation_quality", {}) or {}
+    supported_quality = causal.get("supported_quality", {}) or {}
+    logger.info(
+        "TPS-SUPPORT-C1 translation B14 median / RMSE / P95=%s/%s/%s; "
+        "supported B14 median / RMSE / P95=%s/%s/%s",
+        _metric_text(translation.get("median")),
+        _metric_text(translation.get("rmse")),
+        _metric_text(translation.get("p95")),
+        _metric_text(supported_quality.get("median")),
+        _metric_text(supported_quality.get("rmse")),
+        _metric_text(supported_quality.get("p95")),
+    )
+    comparison = causal.get("comparison", {}) or {}
+    logger.info(
+        "TPS-SUPPORT-C1 translation-minus-supported RMSE/P95 improvement=%s/%s",
+        _metric_text(comparison.get("rmse_improvement")),
+        _metric_text(comparison.get("p95_improvement")),
+    )
+
+
 _KLT_TPS_CONTROL_COLUMNS = [
     "ref_overlap_x", "ref_overlap_y", "moving_overlap_x", "moving_overlap_y",
     "output_moving_x", "output_moving_y", "source_moving_x", "source_moving_y",
@@ -765,6 +806,7 @@ def build_diagnostic_payload(registration, scene_ids, output_dir):
         ),
         "hull_causal": registration.get("hull_causal"),
         "affine_causal": registration.get("affine_causal"),
+        "tps_support_causal": registration.get("tps_support_causal"),
         "final_validation": final_validation,
         "quality": quality,
         "quality_classification": classification,
@@ -1611,7 +1653,11 @@ def main(argv=None):
             ),
             "diagnostic_artifacts": artifacts,
         }
-        build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
+        payload_registration = {
+            key: value for key, value in registration_for_payload.items()
+            if key != "_tps_support_causal_arrays"
+        }
+        build_diagnostic_payload(payload_registration, scene_ids, output_dir)
         if completion_reason:
             _log_tps_support_c1_summary(registration)
             logger.error("TPS-SUPPORT-C1 diagnostic failed: %s", completion_reason)

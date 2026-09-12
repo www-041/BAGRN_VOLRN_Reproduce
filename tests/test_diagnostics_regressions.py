@@ -407,6 +407,52 @@ def test_tps_support_c1_skips_supported_overlay_when_geometry_unsafe(tmp_path):
     assert paths["klt_tps_supported_b14_red_green_overlay"] is None
 
 
+def test_tps_support_c1_payload_contains_compact_causal_result(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = _tps_support_c1_registration_fixture()
+    payload = diagnose_registration_pair.build_diagnostic_payload(
+        registration, ["ref", "moving"], tmp_path,
+    )
+
+    assert payload["tps_support_causal"]["taper_pixels"] == 64
+    assert payload["tps_support_causal"]["integrity"]["integrity_pass"] is True
+
+
+def test_tps_support_c1_payload_excludes_private_arrays(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = _tps_support_c1_registration_fixture()
+    diagnose_registration_pair.build_diagnostic_payload(
+        registration, ["ref", "moving"], tmp_path,
+    )
+    serialized = (tmp_path / "registration_diagnostics.json").read_text(
+        encoding="utf-8"
+    )
+
+    for forbidden in (
+        "_tps_support_causal_arrays", "raw_flow", "translation_flow",
+        "supported_flow", "support_weight", "supported_jacobian",
+        "supported_fold_mask",
+    ):
+        assert forbidden not in serialized
+
+
+def test_tps_support_c1_logging_reports_raw_translation_supported_stages(caplog):
+    from scripts import diagnose_registration_pair
+
+    with caplog.at_level("INFO"):
+        diagnose_registration_pair._log_tps_support_c1_summary(
+            _tps_support_c1_registration_fixture()
+        )
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "raw fold_pixels" in messages
+    assert "translation B14 median" in messages
+    assert "supported B14 median" in messages
+    assert "RMSE/P95 improvement" in messages
+
+
 def test_hull_causal_payload_excludes_large_field_arrays(tmp_path):
     from scripts import diagnose_registration_pair
 
