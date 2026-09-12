@@ -7,6 +7,7 @@ Task 12 of reliability-fixes plan:
 
 import json
 import csv
+import logging
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -907,3 +908,28 @@ def test_legacy_diagnostic_artifact_names_are_unchanged(tmp_path):
     )
     assert (tmp_path / "registered_global_only_reference.tif").exists()
     assert paths["registered_global_only_reference"]
+
+
+def test_log_stage_validation_summary_reports_global_and_final_holdout(caplog):
+    from scripts import diagnose_registration_pair
+
+    registration = {
+        "global_only_quality": {
+            "quality": "warn", "median": 1.2, "rmse": 1.8, "p95": 2.4,
+        },
+        "quality": {
+            "quality": "pass", "median": 0.8, "rmse": 1.1, "p95": 1.7,
+        },
+        "stage_validation_comparison": {
+            "rmse_improvement": 0.7, "p95_improvement": 0.7,
+        },
+    }
+
+    with caplog.at_level(logging.INFO):
+        diagnose_registration_pair._log_stage_validation_summary(registration)
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "global-only holdout" in messages
+    assert "final holdout" in messages
+    assert "delta_rmse=0.700" in messages
+    assert "delta_p95=0.700" in messages

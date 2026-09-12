@@ -82,6 +82,16 @@ def _log_stage_validation_summary(registration):
         _metric_text(global_quality.get("rmse")),
         _metric_text(global_quality.get("p95")),
     )
+    logger.info(
+        "final holdout: quality=%s, median=%s, rmse=%s, p95=%s; "
+        "delta_rmse=%s, delta_p95=%s (global-only minus final; positive means improvement)",
+        final_quality.get("quality", "unknown"),
+        _metric_text(final_quality.get("median")),
+        _metric_text(final_quality.get("rmse")),
+        _metric_text(final_quality.get("p95")),
+        _metric_text(comparison.get("rmse_improvement")),
+        _metric_text(comparison.get("p95_improvement")),
+    )
 
 
 def _log_klt_tps_summary(registration):
@@ -142,16 +152,6 @@ def _write_klt_tps_control_points_csv(registration, output_dir):
                 "forward_backward_error": float(fb[index]),
             })
     return str(csv_path)
-    logger.info(
-        "final holdout: quality=%s, median=%s, rmse=%s, p95=%s; "
-        "delta_rmse=%s, delta_p95=%s (global-only minus final; positive means improvement)",
-        final_quality.get("quality", "unknown"),
-        _metric_text(final_quality.get("median")),
-        _metric_text(final_quality.get("rmse")),
-        _metric_text(final_quality.get("p95")),
-        _metric_text(comparison.get("rmse_improvement")),
-        _metric_text(comparison.get("p95_improvement")),
-    )
 
 
 _HOLDOUT_LOCAL_FIELD_COLUMNS = [
