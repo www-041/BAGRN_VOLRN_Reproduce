@@ -409,3 +409,157 @@ def test_warp_multiband_tps_flow_rejects_cubic_neighbourhood_touching_nodata():
     warped, valid = warp_multiband_with_tps_flow(source, flow, -999.0)
     assert not valid[15, 15]
     assert warped[0, 15, 15] == -999.0
+
+
+def test_analyze_tps_dense_flow_reports_safe_translation():
+    from src.klt_tps_registration import analyze_tps_dense_flow
+
+    flow = np.zeros((32, 40, 2), dtype=np.float32)
+    flow[..., 0] = 1.25
+    flow[..., 1] = -0.50
+    analysis = analyze_tps_dense_flow(flow)
+
+    summary = analysis["summary"]
+    assert summary["fold_pixels"] == 0
+    assert summary["jacobian_min"] == pytest.approx(1.0)
+    assert summary["jacobian_max"] == pytest.approx(1.0)
+    assert summary["displacement_median"] == pytest.approx(1.3462912, abs=1e-5)
+    assert analysis["fold_mask"].shape == flow.shape[:2]
+    assert analysis["jacobian_determinant"].shape == flow.shape[:2]
+
+
+def test_analyze_tps_dense_flow_reports_fold_mask():
+    from src.klt_tps_registration import analyze_tps_dense_flow
+
+    flow = np.zeros((32, 40, 2), dtype=np.float32)
+    flow[..., 0] = -2 * np.indices(flow.shape[:2])[1]
+    analysis = analyze_tps_dense_flow(flow)
+
+    assert not np.any(analysis["fold_mask"] == False)
+    assert analysis["summary"]["fold_pixels"] > 0
+    np.testing.assert_array_equal(
+        analysis["fold_mask"], analysis["jacobian_determinant"] <= 0,
+    )
+
+
+def test_analyze_tps_dense_flow_reports_jacobian_percentiles():
+    from src.klt_tps_registration import analyze_tps_dense_flow
+
+    flow = np.zeros((4, 5, 2), dtype=np.float64)
+    flow[..., 0] = np.indices(flow.shape[:2])[1] * 0.5
+    analysis = analyze_tps_dense_flow(flow)
+    determinant = analysis["jacobian_determinant"]
+    summary = analysis["summary"]
+
+    for percentile, key in ((1, "jacobian_p01"), (5, "jacobian_p05"),
+                            (50, "jacobian_median"), (95, "jacobian_p95"),
+                            (99, "jacobian_p99")):
+        assert summary[key] == pytest.approx(np.percentile(determinant, percentile))
+
+
+def test_inspect_tps_dense_flow_still_rejects_same_folding_after_analysis_refactor():
+    from src.klt_tps_registration import inspect_tps_dense_flow
+
+    flow = np.zeros((32, 40, 2), dtype=np.float32)
+    flow[..., 0] = -2 * np.indices(flow.shape[:2])[1]
+    with pytest.raises(ValueError, match=r"TPS flow contains fold pixels: \d+"):
+        inspect_tps_dense_flow(flow, 50.0)
+
+
+def test_inspect_tps_dense_flow_still_rejects_same_max_shift_after_analysis_refactor():
+    from src.klt_tps_registration import inspect_tps_dense_flow
+
+    flow = np.zeros((32, 40, 2), dtype=np.float32)
+    flow[..., 0] = 51
+    with pytest.raises(ValueError, match=r"TPS flow max shift .* exceeds 50.000"):
+        inspect_tps_dense_flow(flow, 50.0)
+
+
+def test_summarize_control_displacements_reports_expected_percentiles():
+    from src.klt_tps_registration import summarize_control_displacements
+
+    displacement = np.asarray([[3.0, 4.0], [-3.0, 4.0], [0.0, 0.0], [10.0, 0.0]])
+    summary = summarize_control_displacements(displacement)
+
+    assert summary["count"] == 4
+    assert summary["dx"]["min"] == -3.0
+    assert summary["dx"]["max"] == 10.0
+    assert summary["dy"]["median"] == 2.0
+    assert summary["magnitude"]["max"] == 10.0
+    assert summary["magnitude"]["p95"] == pytest.approx(
+        np.percentile(np.hypot(displacement[:, 0], displacement[:, 1]), 95),
+    )
+
+
+def test_summarize_control_displacements_does_not_filter_extreme_values():
+    from src.klt_tps_registration import summarize_control_displacements
+
+    displacement = np.asarray([[0.0, 0.0], [1000.0, 0.0], [-1.0, 0.0]])
+    summary = summarize_control_displacements(displacement)
+
+    assert summary["dx"]["max"] == 1000.0
+    assert summary["magnitude"]["max"] == 1000.0
+
+
+def test_control_hull_mask_contains_control_interior():
+    from src.klt_tps_registration import build_control_hull_mask
+
+    points = np.asarray([[10.0, 10.0], [50.0, 10.0], [50.0, 50.0], [10.0, 50.0]])
+    result = build_control_hull_mask(points, (100, 120))
+
+    assert result["available"] is True
+    assert result["mask"].dtype == bool
+    assert result["mask"][30, 30]
+    assert not result["mask"][60, 60]
+    assert result["pixel_count"] == int(result["mask"].sum())
+    assert result["fraction"] == pytest.approx(result["pixel_count"] / (100 * 120))
+
+
+def test_target_overlap_bbox_mask_uses_context_tgt_window():
+    from src.klt_tps_registration import build_target_overlap_bbox_mask
+
+    result = build_target_overlap_bbox_mask(
+        {"tgt_window": (10, 40, 20, 60)}, (100, 120),
+    )
+
+    assert result["available"] is True
+    assert result["window"] == (10, 40, 20, 60)
+    assert result["mask"][10, 20]
+    assert result["mask"][39, 59]
+    assert not result["mask"][40, 20]
+    assert result["pixel_count"] == 30 * 40
+
+
+def test_fold_support_summary_distinguishes_inside_and_outside_hull():
+    from src.klt_tps_registration import summarize_fold_support
+
+    fold = np.zeros((10, 12), dtype=bool)
+    fold[3, 3] = True
+    fold[1, 1] = True
+    hull = np.zeros_like(fold)
+    hull[2:6, 2:7] = True
+    result = summarize_fold_support(fold, hull, None)
+
+    assert result["fold_pixels_total"] == 2
+    assert result["control_hull_pixels"] == 20
+    assert result["fold_pixels_inside_control_hull"] == 1
+    assert result["fold_pixels_outside_control_hull"] == 1
+    assert result["fold_fraction_inside_control_hull"] == pytest.approx(1 / 20)
+    assert result["fold_fraction_outside_control_hull"] == pytest.approx(1 / (120 - 20))
+
+
+def test_fold_support_summary_distinguishes_inside_and_outside_overlap_bbox():
+    from src.klt_tps_registration import summarize_fold_support
+
+    fold = np.zeros((10, 12), dtype=bool)
+    fold[3, 3] = True
+    fold[1, 1] = True
+    overlap = np.zeros_like(fold)
+    overlap[2:6, 2:7] = True
+    result = summarize_fold_support(fold, None, overlap)
+
+    assert result["overlap_bbox_pixels"] == 20
+    assert result["fold_pixels_inside_overlap_bbox"] == 1
+    assert result["fold_pixels_outside_overlap_bbox"] == 1
+    assert result["fold_fraction_inside_overlap_bbox"] == pytest.approx(1 / 20)
+    assert result["fold_fraction_outside_overlap_bbox"] == pytest.approx(1 / (120 - 20))

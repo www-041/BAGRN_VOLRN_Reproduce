@@ -390,21 +390,222 @@ def build_tps_dense_flow(
     return flow
 
 
-def inspect_tps_dense_flow(flow: np.ndarray, max_shift: float) -> dict[str, Any]:
-    """Apply the source Jacobian folding and maximum-shift safety gate."""
+def summarize_finite_values(values: np.ndarray) -> dict[str, float | int | None]:
+    """Summarize finite values without filtering or altering the source array."""
+    array = np.asarray(values, dtype=float).reshape(-1)
+    finite = array[np.isfinite(array)]
+    if finite.size == 0:
+        return {
+            "count": 0,
+            "min": None,
+            "p01": None,
+            "p05": None,
+            "median": None,
+            "p95": None,
+            "p99": None,
+            "max": None,
+        }
+    return {
+        "count": int(finite.size),
+        "min": float(np.min(finite)),
+        "p01": float(np.percentile(finite, 1)),
+        "p05": float(np.percentile(finite, 5)),
+        "median": float(np.percentile(finite, 50)),
+        "p95": float(np.percentile(finite, 95)),
+        "p99": float(np.percentile(finite, 99)),
+        "max": float(np.max(finite)),
+    }
+
+
+def summarize_control_displacements(
+    displacement_xy: np.ndarray,
+) -> dict[str, Any]:
+    """Return compact displacement statistics without rejecting any controls."""
+    displacement = np.asarray(displacement_xy, dtype=float)
+    if displacement.ndim != 2 or displacement.shape[1] != 2:
+        raise ValueError("control displacement must have shape (N, 2)")
+    dx = displacement[:, 0]
+    dy = displacement[:, 1]
+    magnitude = np.hypot(dx, dy)
+    return {
+        "count": int(len(displacement)),
+        "dx": summarize_finite_values(dx),
+        "dy": summarize_finite_values(dy),
+        "magnitude": summarize_finite_values(magnitude),
+    }
+
+
+def analyze_tps_dense_flow(flow: np.ndarray) -> dict[str, Any]:
+    """Analyze a dense TPS field before applying the safety gate."""
     field = np.asarray(flow)
     if field.ndim != 3 or field.shape[2] != 2:
         raise ValueError("TPS flow must have shape (H, W, 2)")
+    if field.shape[0] == 0 or field.shape[1] == 0:
+        raise ValueError("TPS flow must have a non-empty spatial shape")
     if not np.isfinite(field).all():
         raise ValueError("TPS flow must contain only finite values")
     dx_y, dx_x = np.gradient(field[..., 0])
     dy_y, dy_x = np.gradient(field[..., 1])
     determinant = (1 + dx_x) * (1 + dy_y) - dx_y * dy_x
-    fold_pixels = int(np.count_nonzero(determinant <= 0))
-    max_displacement = float(np.max(np.linalg.norm(field.astype(float), axis=2)))
+    fold_mask = determinant <= 0
+    magnitude = np.linalg.norm(field.astype(float), axis=2)
+    jacobian = summarize_finite_values(determinant)
+    displacement = summarize_finite_values(magnitude)
+    summary = {
+        "jacobian_min": jacobian["min"],
+        "jacobian_p01": jacobian["p01"],
+        "jacobian_p05": jacobian["p05"],
+        "jacobian_median": jacobian["median"],
+        "jacobian_p95": jacobian["p95"],
+        "jacobian_p99": jacobian["p99"],
+        "jacobian_max": jacobian["max"],
+        "fold_pixels": int(np.count_nonzero(fold_mask)),
+        "fold_fraction": float(np.mean(fold_mask)),
+        "displacement_min": displacement["min"],
+        "displacement_p01": displacement["p01"],
+        "displacement_p05": displacement["p05"],
+        "displacement_median": displacement["median"],
+        "displacement_p95": displacement["p95"],
+        "displacement_p99": displacement["p99"],
+        "displacement_max": displacement["max"],
+    }
+    return {
+        "jacobian_determinant": determinant,
+        "fold_mask": fold_mask,
+        "magnitude": magnitude,
+        "summary": summary,
+    }
+
+
+def build_control_hull_mask(
+    control_points_xy: np.ndarray,
+    shape: tuple[int, int],
+) -> dict[str, Any]:
+    """Rasterize the moving-native control convex hull for diagnostics only."""
+    height, width = (int(shape[0]), int(shape[1]))
+    if height <= 0 or width <= 0:
+        raise ValueError("control hull shape must be positive")
+    points = np.asarray(control_points_xy, dtype=float)
+    empty = np.zeros((height, width), dtype=bool)
+    if (
+        points.ndim != 2 or points.shape[1] != 2 or len(points) < 3
+        or not np.isfinite(points).all()
+        or np.linalg.matrix_rank(points - points.mean(axis=0)) < 2
+    ):
+        return {
+            "available": False,
+            "mask": empty,
+            "vertices_xy": np.empty((0, 2), dtype=float),
+            "pixel_count": 0,
+            "fraction": 0.0,
+        }
+    hull = cv2.convexHull(points.astype(np.float32)).reshape(-1, 2)
+    vertices = np.rint(hull).astype(np.int32)
+    mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillConvexPoly(mask, vertices, 1)
+    mask = mask.astype(bool)
+    pixel_count = int(np.count_nonzero(mask))
+    return {
+        "available": True,
+        "mask": mask,
+        "vertices_xy": hull.astype(float),
+        "pixel_count": pixel_count,
+        "fraction": float(pixel_count / (height * width)),
+    }
+
+
+def build_target_overlap_bbox_mask(
+    overlap_context: dict[str, Any],
+    shape: tuple[int, int],
+) -> dict[str, Any]:
+    """Rasterize the geographic target overlap window, without valid-data semantics."""
+    height, width = (int(shape[0]), int(shape[1]))
+    if height <= 0 or width <= 0:
+        raise ValueError("target overlap shape must be positive")
+    window = overlap_context.get("tgt_window")
+    empty = np.zeros((height, width), dtype=bool)
+    if window is None or len(window) != 4:
+        return {
+            "available": False, "mask": empty, "window": None,
+            "pixel_count": 0, "fraction": 0.0,
+        }
+    row_start, row_end, col_start, col_end = (int(value) for value in window)
+    clipped_start = max(0, row_start)
+    clipped_end = min(height, row_end)
+    clipped_col_start = max(0, col_start)
+    clipped_col_end = min(width, col_end)
+    if clipped_end <= clipped_start or clipped_col_end <= clipped_col_start:
+        return {
+            "available": False, "mask": empty,
+            "window": (row_start, row_end, col_start, col_end),
+            "pixel_count": 0, "fraction": 0.0,
+        }
+    empty[clipped_start:clipped_end, clipped_col_start:clipped_col_end] = True
+    pixel_count = int(np.count_nonzero(empty))
+    return {
+        "available": True,
+        "mask": empty,
+        "window": (row_start, row_end, col_start, col_end),
+        "pixel_count": pixel_count,
+        "fraction": float(pixel_count / (height * width)),
+    }
+
+
+def summarize_fold_support(
+    fold_mask: np.ndarray,
+    control_hull_mask: np.ndarray | None,
+    overlap_bbox_mask: np.ndarray | None,
+) -> dict[str, Any]:
+    """Summarize where fold pixels fall relative to diagnostic support regions."""
+    folds = np.asarray(fold_mask, dtype=bool)
+    if folds.ndim != 2:
+        raise ValueError("fold mask must be a 2D array")
     result = {
-        "jacobian_min": float(np.min(determinant)),
-        "jacobian_max": float(np.max(determinant)),
+        "fold_pixels_total": int(np.count_nonzero(folds)),
+        "fold_fraction_total": float(np.mean(folds)),
+    }
+    for prefix, region in (
+        ("control_hull", control_hull_mask),
+        ("overlap_bbox", overlap_bbox_mask),
+    ):
+        if region is None:
+            continue
+        support = np.asarray(region, dtype=bool)
+        if support.shape != folds.shape:
+            raise ValueError(f"{prefix} mask must match fold mask shape")
+        inside = folds & support
+        outside = folds & ~support
+        support_pixels = int(np.count_nonzero(support))
+        outside_pixels = int(support.size - support_pixels)
+        result.update({
+            f"{prefix}_pixels": support_pixels,
+            f"fold_pixels_inside_{prefix}": int(np.count_nonzero(inside)),
+            f"fold_pixels_outside_{prefix}": int(np.count_nonzero(outside)),
+            f"fold_fraction_inside_{prefix}": (
+                float(np.count_nonzero(inside) / support_pixels)
+                if support_pixels else None
+            ),
+            f"fold_fraction_outside_{prefix}": (
+                float(np.count_nonzero(outside) / outside_pixels)
+                if outside_pixels else None
+            ),
+            f"fold_share_inside_{prefix}": (
+                float(np.count_nonzero(inside) / np.count_nonzero(folds))
+                if np.count_nonzero(folds) else None
+            ),
+        })
+    return result
+
+
+def inspect_tps_dense_flow(flow: np.ndarray, max_shift: float) -> dict[str, Any]:
+    """Apply the source Jacobian folding and maximum-shift safety gate."""
+    analysis = analyze_tps_dense_flow(flow)
+    summary = analysis["summary"]
+    fold_pixels = int(summary["fold_pixels"])
+    max_displacement = float(summary["displacement_max"])
+    result = {
+        "jacobian_min": float(summary["jacobian_min"]),
+        "jacobian_max": float(summary["jacobian_max"]),
         "fold_pixels": fold_pixels,
         "max_displacement_pixels": max_displacement,
     }
