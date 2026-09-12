@@ -16,6 +16,9 @@ import pytest
 from rasterio.transform import from_origin
 
 
+MANIFEST_PATH = Path(__file__).resolve().parents[1] / "configs" / "dz01_model_c1_holdout_manifest.json"
+
+
 def _hull_causal_registration_fixture():
     return {
         "status": "fail",
@@ -69,6 +72,116 @@ def test_hull_causal_cli_flag_is_opt_in():
     assert diagnose_registration_pair._parse_args([
         "--config", "config.yaml",
     ]).hull_causal_test is False
+
+
+def _tps_support_cli_config(tmp_path):
+    return SimpleNamespace(
+        scenes=[
+            {"id": "scene_20251114"},
+            {"id": "scene_20251120"},
+        ],
+        registration_band="B12",
+        selected_bands=["B12", "B14"],
+        registration_params={"registration_backend": "klt_tps"},
+        output_root=str(tmp_path),
+        control_scene="scene_20251114",
+    )
+
+
+def test_tps_support_causal_cli_requires_holdout_manifest(monkeypatch, tmp_path):
+    from scripts import diagnose_registration_pair
+
+    monkeypatch.setattr(
+        diagnose_registration_pair, "load_config",
+        lambda _: _tps_support_cli_config(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="requires --holdout-manifest"):
+        diagnose_registration_pair.main([
+            "--config", "unused.yaml",
+            "--scene-i", "0", "--scene-j", "1",
+            "--validation-band", "B14",
+            "--tps-support-causal-test",
+        ])
+
+
+def test_tps_support_causal_cli_requires_explicit_b14_validation(monkeypatch, tmp_path):
+    from scripts import diagnose_registration_pair
+
+    monkeypatch.setattr(
+        diagnose_registration_pair, "load_config",
+        lambda _: _tps_support_cli_config(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="explicit --validation-band B14"):
+        diagnose_registration_pair.main([
+            "--config", "unused.yaml",
+            "--scene-i", "0", "--scene-j", "1",
+            "--holdout-manifest", str(MANIFEST_PATH),
+            "--tps-support-causal-test",
+        ])
+
+
+def test_tps_support_causal_cli_rejects_empty_manifest_pair(tmp_path, monkeypatch):
+    from scripts import diagnose_registration_pair
+
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    manifest["pairs"]["0-1"]["reserved_windows"] = []
+    manifest_path = tmp_path / "empty.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        diagnose_registration_pair, "load_config",
+        lambda _: _tps_support_cli_config(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="invalid TPS-SUPPORT-C1 protocol"):
+        diagnose_registration_pair.main([
+            "--config", "unused.yaml",
+            "--scene-i", "0", "--scene-j", "1",
+            "--validation-band", "B14",
+            "--holdout-manifest", str(manifest_path),
+            "--tps-support-causal-test",
+        ])
+
+
+def test_tps_support_causal_cli_rejects_export_holdout_manifest(monkeypatch, tmp_path):
+    from scripts import diagnose_registration_pair
+
+    monkeypatch.setattr(
+        diagnose_registration_pair, "load_config",
+        lambda _: _tps_support_cli_config(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="cannot be combined with --export-holdout-manifest"):
+        diagnose_registration_pair.main([
+            "--config", "unused.yaml",
+            "--scene-i", "0", "--scene-j", "1",
+            "--validation-band", "B14",
+            "--holdout-manifest", str(MANIFEST_PATH),
+            "--export-holdout-manifest", str(tmp_path / "new.json"),
+            "--tps-support-causal-test",
+        ])
+
+
+def test_tps_support_causal_cli_is_mutually_exclusive_with_other_causal_modes(
+    monkeypatch, tmp_path
+):
+    from scripts import diagnose_registration_pair
+
+    monkeypatch.setattr(
+        diagnose_registration_pair, "load_config",
+        lambda _: _tps_support_cli_config(tmp_path),
+    )
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        diagnose_registration_pair.main([
+            "--config", "unused.yaml",
+            "--scene-i", "0", "--scene-j", "1",
+            "--validation-band", "B14",
+            "--holdout-manifest", str(MANIFEST_PATH),
+            "--tps-support-causal-test",
+            "--hull-causal-test",
+        ])
 
 
 def test_hull_causal_payload_excludes_large_field_arrays(tmp_path):

@@ -757,6 +757,25 @@ def _save_klt_tps_failure_map(path, moving_band, registration, fold_mask):
         f"{klt.get('accepted_point_count', 0)}, fold_pixels={fold_pixels}, "
         f"fold_fraction={fold_fraction:.6f}"
     )
+
+
+def _tps_support_c1_completion_reason(registration):
+    """Return the diagnostic completion failure, or None when C1 is complete."""
+    causal = registration.get("tps_support_causal") or {}
+    if not causal.get("available", False):
+        return causal.get("failure_reason", "TPS-SUPPORT-C1 is unavailable")
+    integrity = causal.get("integrity") or {}
+    if not integrity.get("integrity_pass", False):
+        return "TPS-SUPPORT-C1 integrity is unavailable"
+    if not causal.get("supported_geometry_safe", False):
+        return "TPS-SUPPORT-C1 supported geometry is unsafe"
+    if causal.get("translation_validation") is None:
+        return "TPS-SUPPORT-C1 translation HOLDOUT validation is missing"
+    if causal.get("supported_validation") is None:
+        return "TPS-SUPPORT-C1 supported HOLDOUT validation is missing"
+    if causal.get("comparison") is None:
+        return "TPS-SUPPORT-C1 HOLDOUT comparison is missing"
+    return None
     ax.set_xlabel("moving-native pixel x")
     ax.set_ylabel("moving-native pixel y")
     handles = [
@@ -1185,12 +1204,49 @@ def _parse_args(argv=None):
             "requires a fixed B14 HOLDOUT manifest."
         ),
     )
+    parser.add_argument(
+        "--tps-support-causal-test",
+        action="store_true",
+        help=(
+            "Run diagnostic-only KLT translation vs supported TPS C1 on a "
+            "fixed B14 HOLDOUT."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = _parse_args(argv)
     config = load_config(args.config)
+    tps_support_manifest = None
+
+    if args.tps_support_causal_test:
+        if not args.holdout_manifest:
+            raise ValueError("--tps-support-causal-test requires --holdout-manifest")
+        if args.validation_band != "B14":
+            raise ValueError(
+                "--tps-support-causal-test requires explicit --validation-band B14"
+            )
+        if args.export_holdout_manifest:
+            raise ValueError(
+                "--tps-support-causal-test cannot be combined with "
+                "--export-holdout-manifest"
+            )
+        if args.hull_causal_test or args.affine_causal_test:
+            raise ValueError(
+                "--tps-support-causal-test is mutually exclusive with other "
+                "causal modes"
+            )
+        from src.klt_tps_support_c1 import validate_tps_support_c1_protocol
+
+        tps_support_manifest = load_holdout_manifest(args.holdout_manifest)
+        protocol = validate_tps_support_c1_protocol(
+            config, tps_support_manifest, validation_band=args.validation_band,
+        )
+        if not protocol["valid"]:
+            raise ValueError(
+                "invalid TPS-SUPPORT-C1 protocol: " + "; ".join(protocol["errors"])
+            )
 
     if args.affine_causal_test:
         if not args.holdout_manifest:
@@ -1235,7 +1291,8 @@ def main(argv=None):
     holdout_overrides = None
     if args.holdout_manifest:
         holdout_overrides = manifest_to_pair_overrides(
-            load_holdout_manifest(args.holdout_manifest), scene_ids
+            tps_support_manifest or load_holdout_manifest(args.holdout_manifest),
+            scene_ids,
         )
     scene_data = pipeline.load_scenes()
     overlaps = pipeline.detect_overlaps(scene_data)
@@ -1253,23 +1310,32 @@ def main(argv=None):
         build_diagnostic_payload(registration, scene_ids, output_dir)
         return 1
 
-    try:
-        registration = pipeline.register_scenes(
+    if args.tps_support_causal_test:
+        registration = pipeline.run_klt_tps_support_c1_n2(
             scene_data,
             overlaps,
-            registration_band_idx=pipeline.registration_band_idx,
-            hull_causal_diagnostic=args.hull_causal_test,
-            affine_causal_diagnostic=args.affine_causal_test,
-            diagnostic_validation_band=args.validation_band,
+            pipeline.registration_band_idx,
+            diagnostic_validation_band="B14",
             holdout_reservation_overrides=holdout_overrides,
         )
-    except TypeError as exc:
-        # Keep compatibility with lightweight external pipeline doubles that
-        # predate the keyword-only diagnostic extension. Real pipeline calls
-        # accept both keywords and do not take this path.
-        if "unexpected keyword argument" not in str(exc):
-            raise
-        registration = pipeline.register_scenes(scene_data, overlaps)
+    else:
+        try:
+            registration = pipeline.register_scenes(
+                scene_data,
+                overlaps,
+                registration_band_idx=pipeline.registration_band_idx,
+                hull_causal_diagnostic=args.hull_causal_test,
+                affine_causal_diagnostic=args.affine_causal_test,
+                diagnostic_validation_band=args.validation_band,
+                holdout_reservation_overrides=holdout_overrides,
+            )
+        except TypeError as exc:
+            # Keep compatibility with lightweight external pipeline doubles that
+            # predate the keyword-only diagnostic extension. Real pipeline calls
+            # accept both keywords and do not take this path.
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            registration = pipeline.register_scenes(scene_data, overlaps)
     if args.export_holdout_manifest:
         manifest_registration = dict(registration)
         manifest_registration["scene_ids"] = scene_ids
@@ -1293,6 +1359,25 @@ def main(argv=None):
             json.dumps(_json_safe(manifest), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+    if args.tps_support_causal_test:
+        completion_reason = _tps_support_c1_completion_reason(registration)
+        registration_for_payload = {
+            **registration,
+            "status": "fail" if completion_reason else "pass",
+            "failure": (
+                {"code": "tps_support_c1_incomplete", "reason": completion_reason}
+                if completion_reason else {}
+            ),
+            "diagnostic_artifacts": {},
+        }
+        build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
+        if completion_reason:
+            _log_tps_support_c1_summary(registration)
+            logger.error("TPS-SUPPORT-C1 diagnostic failed: %s", completion_reason)
+            return 1
+        _log_tps_support_c1_summary(registration)
+        logger.info("TPS-SUPPORT-C1 diagnostic completed")
+        return 0
     quality = registration.get("quality", {}) or {}
     required_quality = (getattr(config, "registration_params", {}) or {}).get(
         "required_quality", "pass"
