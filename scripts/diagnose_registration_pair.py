@@ -407,6 +407,229 @@ def _write_model_c1_holdout_pairs_csv(registration, output_dir):
     return csv_path
 
 
+_TPS_SUPPORT_C1_STAGE_COLUMNS = [
+    "stage", "geometry_safe", "fold_pixels", "max_displacement_pixels",
+    "quality", "median", "rmse", "p95", "confidence", "n_blocks",
+]
+_TPS_SUPPORT_C1_HOLDOUT_COLUMNS = [
+    "idx_i", "idx_j", "row", "col", "block_size",
+    "translation_residual", "supported_residual", "improvement",
+    "translation_accepted", "supported_accepted",
+    "translation_reject_reason", "supported_reject_reason",
+]
+
+
+def _write_tps_support_c1_stage_metrics_csv(registration, output_dir):
+    """Write compact raw/translation/supported C1 stage metrics."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "tps_support_c1_stage_metrics.csv"
+    causal = registration.get("tps_support_causal", {}) or {}
+    stages = (
+        ("raw_tps", causal.get("raw_geometry"), None),
+        ("klt_translation", causal.get("translation_geometry"), causal.get("translation_quality")),
+        ("supported_tps", causal.get("supported_geometry"), causal.get("supported_quality")),
+    )
+    rows = []
+    for stage, geometry, quality in stages:
+        geometry = geometry or {}
+        quality = quality or {}
+        rows.append({
+            "stage": stage,
+            "geometry_safe": geometry.get("geometry_safe"),
+            "fold_pixels": geometry.get("fold_pixels"),
+            "max_displacement_pixels": geometry.get("max_displacement_pixels"),
+            "quality": quality.get("quality"),
+            "median": quality.get("median"),
+            "rmse": quality.get("rmse"),
+            "p95": quality.get("p95"),
+            "confidence": quality.get("confidence", quality.get("mean_confidence")),
+            "n_blocks": quality.get("n_blocks", quality.get("n_accepted")),
+        })
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_TPS_SUPPORT_C1_STAGE_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({
+                key: _json_safe(row.get(key)) for key in writer.fieldnames
+            })
+    return csv_path
+
+
+def _write_tps_support_c1_holdout_pairs_csv(registration, output_dir):
+    """Write every measurable paired fixed-HOLDOUT C1 block."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "tps_support_c1_holdout_pairs.csv"
+    comparison = (
+        (registration.get("tps_support_causal", {}) or {}).get("comparison")
+        or {}
+    )
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_TPS_SUPPORT_C1_HOLDOUT_COLUMNS)
+        writer.writeheader()
+        for item in comparison.get("paired_blocks", []) or []:
+            key = list(item.get("key", [-1, -1, -1, -1, -1]))
+            key.extend([-1] * (5 - len(key)))
+            row = {
+                "idx_i": key[0],
+                "idx_j": key[1],
+                "row": key[2],
+                "col": key[3],
+                "block_size": key[4],
+                "translation_residual": item.get("translation_residual"),
+                "supported_residual": item.get("supported_residual"),
+                "improvement": item.get("improvement"),
+                "translation_accepted": item.get("translation_accepted"),
+                "supported_accepted": item.get("supported_accepted"),
+                "translation_reject_reason": item.get("translation_reject_reason"),
+                "supported_reject_reason": item.get("supported_reject_reason"),
+            }
+            writer.writerow({
+                key: _json_safe(row.get(key)) for key in writer.fieldnames
+            })
+    return csv_path
+
+
+def _tps_support_c1_stage_overlay(
+    output_path,
+    prefix,
+    registered,
+    scene_data,
+    validation_band_idx,
+):
+    """Write one B14 red/green overlay on the reference grid."""
+    reference_band = _registration_band(
+        registered[0], int(validation_band_idx)
+    )
+    target_band = _registration_band(
+        registered[1], int(validation_band_idx)
+    )
+    target_on_reference = _reproject_to_reference(
+        target_band,
+        scene_data["transforms"][1],
+        scene_data.get("crs"),
+        scene_data["nodata_values"][1],
+        reference_band.shape,
+        scene_data["transforms"][0],
+        scene_data.get("crs"),
+    )
+    overlay = np.stack([
+        _stretch_for_overlay(target_on_reference, None),
+        _stretch_for_overlay(reference_band, scene_data["nodata_values"][0]),
+        np.zeros(reference_band.shape, dtype=np.uint8),
+    ], axis=0)
+    path = output_path / f"{prefix}_red_green_overlay.tif"
+    write_geotiff(
+        str(path), overlay, scene_data["transforms"][0], scene_data.get("crs"),
+        nodata=0, dtype="uint8",
+    )
+    return path, reference_band
+
+
+def write_tps_support_c1_artifacts(
+    registration,
+    scene_data,
+    scene_ids,
+    output_dir,
+    *,
+    registration_band_idx,
+    validation_band_idx,
+) -> dict[str, str | None]:
+    """Write all compact TPS-SUPPORT-C1 artifacts from private arrays."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    causal = registration.get("tps_support_causal", {}) or {}
+    arrays = registration.get("_tps_support_causal_arrays", {}) or {}
+    transforms = scene_data["transforms"]
+    crs = scene_data.get("crs")
+    moving_transform = transforms[1]
+
+    stage_csv = _write_tps_support_c1_stage_metrics_csv(registration, output_dir)
+    holdout_csv = _write_tps_support_c1_holdout_pairs_csv(registration, output_dir)
+    integrity_path = output_path / "tps_support_c1_integrity.json"
+    integrity_path.write_text(
+        json.dumps(_json_safe(causal.get("integrity", {})), indent=2,
+                   ensure_ascii=False, allow_nan=False),
+        encoding="utf-8",
+    )
+
+    translation_flow = np.asarray(arrays.get("translation_flow"))
+    support_weight = np.asarray(arrays.get("support_weight"))
+    supported_flow = np.asarray(arrays.get("supported_flow"))
+    supported_jacobian = np.asarray(arrays.get("supported_jacobian"))
+    supported_fold_mask = np.asarray(arrays.get("supported_fold_mask"), dtype=bool)
+    field_specs = (
+        ("klt_translation_field_magnitude.png", np.linalg.norm(translation_flow, axis=2),
+         "KLT translation field magnitude"),
+        ("klt_tps_support_weight.png", support_weight,
+         "TPS-SUPPORT-C1 inside-hull taper weight"),
+        ("klt_tps_supported_displacement_magnitude.png", np.linalg.norm(supported_flow, axis=2),
+         "TPS-SUPPORT-C1 supported displacement magnitude"),
+    )
+    paths: dict[str, str | None] = {
+        "tps_support_c1_stage_metrics": str(stage_csv),
+        "tps_support_c1_holdout_pairs": str(holdout_csv),
+        "tps_support_c1_integrity": str(integrity_path),
+    }
+    for filename, field, title in field_specs:
+        path = output_path / filename
+        _save_field_png(str(path), field, title)
+        paths[filename.rsplit(".", 1)[0]] = str(path)
+
+    finite = supported_jacobian[np.isfinite(supported_jacobian)]
+    if finite.size:
+        low, high = np.percentile(finite, [1, 99])
+        jacobian_visual = np.clip(supported_jacobian, low, high)
+    else:
+        jacobian_visual = supported_jacobian
+    jacobian_path = output_path / "klt_tps_supported_jacobian.png"
+    _save_field_png(str(jacobian_path), jacobian_visual,
+                    "TPS-SUPPORT-C1 supported Jacobian (visualized p01-p99)")
+    paths["klt_tps_supported_jacobian"] = str(jacobian_path)
+
+    fold_path = output_path / "klt_tps_supported_fold_mask.tif"
+    write_geotiff(
+        str(fold_path), supported_fold_mask.astype(np.uint8), moving_transform,
+        crs, dtype="uint8",
+    )
+    paths["klt_tps_supported_fold_mask"] = str(fold_path)
+
+    translation_registered = arrays.get("translation_registered")
+    translation_overlay, reference_band = _tps_support_c1_stage_overlay(
+        output_path, "klt_translation_b14", translation_registered,
+        scene_data, validation_band_idx,
+    )
+    paths["klt_translation_b14_red_green_overlay"] = str(translation_overlay)
+    translation_validation_path = output_path / "translation_holdout_validation_blocks.png"
+    _save_validation_holdout_png(
+        str(translation_validation_path),
+        causal.get("translation_validation") or {}, reference_band.shape,
+        title="KLT translation B14 fixed HOLDOUT validation blocks",
+    )
+    paths["translation_holdout_validation_blocks"] = str(translation_validation_path)
+
+    supported_overlay = None
+    supported_validation_path = None
+    if causal.get("supported_geometry_safe") and arrays.get("supported_registered") is not None:
+        supported_overlay, _ = _tps_support_c1_stage_overlay(
+            output_path, "klt_tps_supported_b14",
+            arrays["supported_registered"], scene_data, validation_band_idx,
+        )
+        paths["klt_tps_supported_b14_red_green_overlay"] = str(supported_overlay)
+        supported_validation_path = output_path / "supported_holdout_validation_blocks.png"
+        _save_validation_holdout_png(
+            str(supported_validation_path),
+            causal.get("supported_validation") or {}, reference_band.shape,
+            title="Supported TPS B14 fixed HOLDOUT validation blocks",
+        )
+        paths["supported_holdout_validation_blocks"] = str(supported_validation_path)
+    else:
+        paths["klt_tps_supported_b14_red_green_overlay"] = None
+        paths["supported_holdout_validation_blocks"] = None
+    return paths
+
+
 def _log_hull_causal_summary(registration):
     """Log HULL-C1 integrity and the three paired validation stages."""
     causal = registration.get("hull_causal", {}) or {}
@@ -759,6 +982,21 @@ def _save_klt_tps_failure_map(path, moving_band, registration, fold_mask):
     )
 
 
+    ax.set_xlabel("moving-native pixel x")
+    ax.set_ylabel("moving-native pixel y")
+    handles = [
+        Line2D([], [], marker="o", color="cyan", linestyle="None", markersize=4,
+               label="KLT controls"),
+        Line2D([], [], color="yellow", linewidth=1.4, label="Control convex hull"),
+        Line2D([], [], color="lime", linewidth=1.2, label="Target overlap bbox"),
+        Patch(facecolor="red", alpha=0.55, label="Jacobian <= 0 folds"),
+    ]
+    ax.legend(handles=handles, loc="best")
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+
 def _tps_support_c1_completion_reason(registration):
     """Return the diagnostic completion failure, or None when C1 is complete."""
     causal = registration.get("tps_support_causal") or {}
@@ -776,19 +1014,6 @@ def _tps_support_c1_completion_reason(registration):
     if causal.get("comparison") is None:
         return "TPS-SUPPORT-C1 HOLDOUT comparison is missing"
     return None
-    ax.set_xlabel("moving-native pixel x")
-    ax.set_ylabel("moving-native pixel y")
-    handles = [
-        Line2D([], [], marker="o", color="cyan", linestyle="None", markersize=4,
-               label="KLT controls"),
-        Line2D([], [], color="yellow", linewidth=1.4, label="Control convex hull"),
-        Line2D([], [], color="lime", linewidth=1.2, label="Target overlap bbox"),
-        Patch(facecolor="red", alpha=0.55, label="Jacobian <= 0 folds"),
-    ]
-    ax.legend(handles=handles, loc="best")
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
 
 
 def write_klt_tps_failure_artifacts(
@@ -1361,6 +1586,22 @@ def main(argv=None):
         )
     if args.tps_support_causal_test:
         completion_reason = _tps_support_c1_completion_reason(registration)
+        causal = registration.get("tps_support_causal", {}) or {}
+        if causal.get("available") and registration.get(
+            "_tps_support_causal_arrays"
+        ):
+            artifacts = write_tps_support_c1_artifacts(
+                registration,
+                scene_data,
+                scene_ids,
+                output_dir,
+                registration_band_idx=pipeline.registration_band_idx,
+                validation_band_idx=getattr(
+                    pipeline, "common_bands", ["B12", "B14"]
+                ).index("B14"),
+            )
+        else:
+            artifacts = {}
         registration_for_payload = {
             **registration,
             "status": "fail" if completion_reason else "pass",
@@ -1368,7 +1609,7 @@ def main(argv=None):
                 {"code": "tps_support_c1_incomplete", "reason": completion_reason}
                 if completion_reason else {}
             ),
-            "diagnostic_artifacts": {},
+            "diagnostic_artifacts": artifacts,
         }
         build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
         if completion_reason:

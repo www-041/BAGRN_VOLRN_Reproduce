@@ -184,6 +184,229 @@ def test_tps_support_causal_cli_is_mutually_exclusive_with_other_causal_modes(
         ])
 
 
+def _tps_support_c1_registration_fixture(*, supported_safe=True):
+    shape = (32, 40)
+    raw_flow = np.zeros((*shape, 2), dtype=np.float32)
+    raw_flow[..., 0] = 1.0
+    raw_flow[..., 1] = 0.25
+    translation_flow = np.zeros_like(raw_flow)
+    translation_flow[..., 0] = 1.0
+    support_weight = np.zeros(shape, dtype=np.float32)
+    support_weight[8:24, 10:30] = 1.0
+    supported_flow = translation_flow.copy()
+    supported_flow[support_weight == 1.0] = raw_flow[support_weight == 1.0]
+    validation = {
+        "validation_block_size_selected": 384,
+        "edges": [{
+            "idx_i": 0,
+            "idx_j": 1,
+            "validation_block_size_selected": 384,
+            "blocks": [{
+                "validation_row": 4,
+                "validation_col": 8,
+                "block_size": 384,
+                "residual_magnitude": 0.5,
+                "accepted": True,
+                "reject_reason": None,
+            }],
+        }],
+        "overall": {
+            "quality": "pass", "median": 0.5, "rmse": 0.6,
+            "p95": 0.8, "confidence": 0.9, "n_blocks": 1,
+        },
+    }
+    supported_validation = json.loads(json.dumps(validation))
+    supported_validation["overall"]["median"] = 0.4
+    supported_validation["overall"]["rmse"] = 0.5
+    supported_validation["overall"]["p95"] = 0.7
+    supported_validation["edges"][0]["blocks"][0]["residual_magnitude"] = 0.4
+    return {
+        "registration_backend": "klt_tps",
+        "diagnostic_mode": "tps_support_c1",
+        "scene_ids": ["ref", "moving"],
+        "registration_band_name": "B12",
+        "validation_band_name": "B14",
+        "tps_support_causal": {
+            "available": True,
+            "integrity": {
+                "integrity_pass": True,
+                "raw_fit_count": 1,
+                "support_formula_pass": True,
+                "holdout_keys_match": True,
+            },
+            "translation_xy": [1.0, 0.0],
+            "taper_pixels": 64,
+            "raw_geometry": {
+                "geometry_safe": False, "fold_pixels": 2,
+                "max_displacement_pixels": 2.0,
+            },
+            "translation_geometry": {
+                "geometry_safe": True, "fold_pixels": 0,
+                "max_displacement_pixels": 1.0,
+            },
+            "supported_geometry": {
+                "geometry_safe": supported_safe, "fold_pixels": 0,
+                "max_displacement_pixels": 1.1,
+            },
+            "supported_geometry_safe": supported_safe,
+            "translation_quality": validation["overall"],
+            "translation_validation": validation,
+            "supported_quality": supported_validation["overall"] if supported_safe else None,
+            "supported_validation": supported_validation if supported_safe else None,
+            "comparison": {
+                "available": supported_safe,
+                "holdout_keys_match": True,
+                "rmse_improvement": 0.1,
+                "p95_improvement": 0.1,
+                "median_improvement": 0.1,
+                "paired_blocks": [{
+                    "key": [0, 1, 4, 8, 384],
+                    "translation_residual": 0.5,
+                    "supported_residual": 0.4,
+                    "improvement": 0.1,
+                    "translation_accepted": True,
+                    "supported_accepted": True,
+                    "translation_reject_reason": None,
+                    "supported_reject_reason": None,
+                }],
+            } if supported_safe else None,
+            "paired_holdout_blocks": [],
+        },
+        "_tps_support_causal_arrays": {
+            "translation_registered": np.ones((2, *shape), dtype=np.float32),
+            "supported_registered": (
+                np.ones((2, *shape), dtype=np.float32) * 2
+                if supported_safe else None
+            ),
+            "translation_flow": translation_flow,
+            "support_weight": support_weight,
+            "supported_flow": supported_flow,
+            "supported_jacobian": np.ones(shape, dtype=np.float32),
+            "supported_fold_mask": np.zeros(shape, dtype=bool),
+        },
+    }
+
+
+def _tps_support_c1_scene_data(shape=(32, 40)):
+    return {
+        "arrays": [
+            np.ones((2, *shape), dtype=np.float32),
+            np.ones((2, *shape), dtype=np.float32) * 2,
+        ],
+        "transforms": [from_origin(0, shape[0], 1, 1)] * 2,
+        "nodata_values": [None, None],
+        "crs": "EPSG:3857",
+    }
+
+
+def test_tps_support_c1_writes_stage_metrics_csv(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _tps_support_c1_registration_fixture(),
+        _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+
+    path = Path(paths["tps_support_c1_stage_metrics"])
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["stage"] for row in rows] == [
+        "raw_tps", "klt_translation", "supported_tps"
+    ]
+
+
+def test_tps_support_c1_writes_paired_holdout_csv(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _tps_support_c1_registration_fixture(),
+        _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+
+    with Path(paths["tps_support_c1_holdout_pairs"]).open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert rows[0]["block_size"] == "384"
+    assert "translation_reject_reason" in reader.fieldnames
+
+
+def test_tps_support_c1_writes_integrity_json_without_full_arrays(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _tps_support_c1_registration_fixture(),
+        _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+    text = Path(paths["tps_support_c1_integrity"]).read_text(encoding="utf-8")
+
+    for forbidden in (
+        "_tps_support_causal_arrays", "raw_flow", "translation_flow",
+        "supported_flow", "support_weight", "supported_jacobian",
+        "supported_fold_mask",
+    ):
+        assert forbidden not in text
+
+
+def test_tps_support_c1_writes_support_weight_and_supported_geometry_artifacts(
+    tmp_path,
+):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _tps_support_c1_registration_fixture(),
+        _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+
+    for name in (
+        "klt_translation_field_magnitude.png",
+        "klt_tps_support_weight.png",
+        "klt_tps_supported_displacement_magnitude.png",
+        "klt_tps_supported_jacobian.png",
+        "klt_tps_supported_fold_mask.tif",
+    ):
+        assert (tmp_path / name).exists()
+        assert str(tmp_path / name) in paths.values()
+
+
+def test_tps_support_c1_writes_translation_and_supported_b14_overlays(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _tps_support_c1_registration_fixture(),
+        _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+
+    for name in (
+        "klt_translation_b14_red_green_overlay.tif",
+        "klt_tps_supported_b14_red_green_overlay.tif",
+        "translation_holdout_validation_blocks.png",
+        "supported_holdout_validation_blocks.png",
+    ):
+        assert (tmp_path / name).exists()
+
+
+def test_tps_support_c1_skips_supported_overlay_when_geometry_unsafe(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _tps_support_c1_registration_fixture(supported_safe=False),
+        _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+
+    assert (tmp_path / "klt_translation_b14_red_green_overlay.tif").exists()
+    assert not (tmp_path / "klt_tps_supported_b14_red_green_overlay.tif").exists()
+    assert not (tmp_path / "supported_holdout_validation_blocks.png").exists()
+    assert paths["klt_tps_supported_b14_red_green_overlay"] is None
+
+
 def test_hull_causal_payload_excludes_large_field_arrays(tmp_path):
     from scripts import diagnose_registration_pair
 
