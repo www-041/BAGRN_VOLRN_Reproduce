@@ -220,3 +220,41 @@ def test_inspect_tps_dense_flow_rejects_nonfinite_values():
     flow[3, 4, 0] = np.nan
     with pytest.raises(ValueError, match="finite"):
         inspect_tps_dense_flow(flow, 50.0)
+
+
+def test_warp_multiband_tps_flow_uses_output_to_source_sign():
+    from src.klt_tps_registration import warp_multiband_with_tps_flow
+
+    source = np.zeros((1, 24, 32), dtype=np.float32)
+    source[0, 12, 16] = 100.0
+    flow = np.zeros((24, 32, 2), dtype=np.float32)
+    flow[..., 0] = 2.0
+    warped, valid = warp_multiband_with_tps_flow(source, flow, None)
+    assert valid[12, 14]
+    assert warped[0, 12, 14] > 50
+    assert warped[0, 12, 16] == pytest.approx(0, abs=1e-5)
+
+
+def test_warp_multiband_tps_flow_applies_identical_geometry_to_every_band():
+    from src.klt_tps_registration import warp_multiband_with_tps_flow
+
+    y, x = np.mgrid[0:32, 0:40]
+    band = (x + 2 * y).astype(np.float32)
+    source = np.stack([band, band * 10], axis=0)
+    flow = np.zeros((32, 40, 2), dtype=np.float32)
+    flow[..., 0] = 0.75
+    flow[..., 1] = -0.5
+    warped, valid = warp_multiband_with_tps_flow(source, flow, None)
+    assert valid.any()
+    np.testing.assert_allclose(warped[1, valid], warped[0, valid] * 10, atol=1e-3)
+
+
+def test_warp_multiband_tps_flow_rejects_cubic_neighbourhood_touching_nodata():
+    from src.klt_tps_registration import warp_multiband_with_tps_flow
+
+    source = np.ones((1, 32, 32), dtype=np.float32)
+    source[0, 15, 15] = -999.0
+    flow = np.zeros((32, 32, 2), dtype=np.float32)
+    warped, valid = warp_multiband_with_tps_flow(source, flow, -999.0)
+    assert not valid[15, 15]
+    assert warped[0, 15, 15] == -999.0

@@ -366,3 +366,63 @@ def inspect_tps_dense_flow(flow: np.ndarray, max_shift: float) -> dict[str, Any]
             f"TPS flow max shift {max_displacement:.3f} exceeds {float(max_shift):.3f}"
         )
     return result
+
+
+def warp_multiband_with_tps_flow(
+    moving: np.ndarray,
+    flow: np.ndarray,
+    nodata: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Warp every original moving band once using output-to-source flow."""
+    source = np.asarray(moving)
+    field = np.asarray(flow)
+    if source.ndim != 3:
+        raise ValueError("multiband TPS warp requires a 3D (bands, H, W) array")
+    bands, height, width = source.shape
+    if field.shape != (height, width, 2):
+        raise ValueError("TPS flow shape must match the moving scene")
+    if min(height, width) < 4:
+        raise ValueError("TPS warp requires images at least 4 pixels wide and high")
+    if max(height, width) >= 32767:
+        raise ValueError("OpenCV remap backend requires each dimension < 32767 in Phase I")
+    if not np.isfinite(field).all():
+        raise ValueError("TPS flow must contain only finite values")
+    y, x = np.indices((height, width), dtype=np.float32)
+    sx = x + field[..., 0].astype(np.float32)
+    sy = y + field[..., 1].astype(np.float32)
+    source_valid = np.all(np.isfinite(source), axis=0)
+    if nodata is not None:
+        if isinstance(nodata, float) and np.isnan(nodata):
+            source_valid &= np.all(~np.isnan(source), axis=0)
+        else:
+            source_valid &= np.all(source != nodata, axis=0)
+    valid = (
+        (sx >= 1) & (sx <= width - 3)
+        & (sy >= 1) & (sy <= height - 3)
+    )
+    ix = np.clip(np.floor(sx).astype(np.int32), 1, width - 3)
+    iy = np.clip(np.floor(sy).astype(np.int32), 1, height - 3)
+    for oy in (-1, 0, 1, 2):
+        for ox in (-1, 0, 1, 2):
+            valid &= source_valid[iy + oy, ix + ox]
+
+    work_type = np.float64 if source.dtype.itemsize > 2 else np.float32
+    warped_work = np.empty((bands, height, width), dtype=work_type)
+    work = source.astype(work_type, copy=True)
+    work[:, ~source_valid] = 0
+    for band in range(bands):
+        warped_work[band] = cv2.remap(
+            work[band], sx, sy, cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        )
+    valid &= np.all(np.isfinite(warped_work), axis=0)
+    if not np.any(valid):
+        raise ValueError("no valid source samples after TPS warp")
+    warped = warped_work
+    if source.dtype.kind in "ui":
+        limits = np.iinfo(source.dtype)
+        warped = np.clip(np.rint(warped), limits.min, limits.max)
+    warped = warped.astype(source.dtype)
+    fill = nodata if nodata is not None else 0
+    warped[:, ~valid] = fill
+    return warped, valid
