@@ -822,3 +822,88 @@ def test_dynamic_range_uses_data_not_coefficients():
     assert abs(a_range - 0.2) < 1e-10
     # They should be different - data range is much larger
     assert data_dr != a_range
+
+
+def _klt_diagnostic_fixture(quality="pass"):
+    shape = (32, 40)
+    flow = np.zeros((*shape, 2), dtype=np.float32)
+    flow[..., 0] = 1.0
+    p = np.asarray([[8, 8], [24, 8], [8, 24], [24, 24]], dtype=float)
+    return {
+        "registration_backend": "klt_tps",
+        "transform_model": "dense_klt_tps",
+        "status": "pass" if quality == "pass" else "fail",
+        "connected": True,
+        "registered_arrays": [np.ones((2, *shape), dtype=np.float32), np.ones((2, *shape), dtype=np.float32) * 2],
+        "quality": {"quality": quality, "median": 0.1, "rmse": 0.2, "p95": 0.3, "confidence": 0.9, "n_blocks": 5},
+        "final_validation": {"edges": [], "overall": {}},
+        "local_refinement": {"enabled": False},
+        "pair_matches": [],
+        "klt_tps": {
+            "initial_corner_count": 40,
+            "accepted_point_count": 40,
+            "reference_points_overlap_xy": np.tile(p, (10, 1)),
+            "moving_points_overlap_xy": np.tile(p + [1, 0], (10, 1)),
+            "control_points_moving_xy": np.tile(p, (10, 1)),
+            "source_points_moving_xy": np.tile(p + [1, 0], (10, 1)),
+            "displacement_xy": np.tile([1.0, 0.0], (40, 1)),
+            "forward_backward_error": np.zeros(40),
+            "flow": flow,
+            "geometry": {"jacobian_min": 1.0, "jacobian_max": 1.0, "fold_pixels": 0, "max_displacement_pixels": 1.0},
+        },
+    }
+
+
+def _klt_scene_fixture():
+    return {
+        "transforms": [from_origin(0, 64, 1, 1), from_origin(0, 64, 1, 1)],
+        "nodata_values": [None, None],
+        "crs": "EPSG:3857",
+    }
+
+
+def test_klt_tps_diagnostic_writes_control_csv_and_flow_artifacts(tmp_path):
+    from scripts.diagnose_registration_pair import write_diagnostic_artifacts
+
+    paths = write_diagnostic_artifacts(
+        _klt_diagnostic_fixture(), _klt_scene_fixture(), ["ref", "moving"], tmp_path,
+    )
+    assert (tmp_path / "klt_tps_control_points.csv").exists()
+    assert (tmp_path / "klt_tps_displacement.tif").exists()
+    assert (tmp_path / "klt_tps_displacement_magnitude.png").exists()
+    assert paths["klt_tps_displacement"].endswith("klt_tps_displacement.tif")
+
+
+def test_klt_tps_diagnostic_does_not_fake_global_only_artifacts(tmp_path):
+    from scripts.diagnose_registration_pair import write_diagnostic_artifacts
+
+    write_diagnostic_artifacts(
+        _klt_diagnostic_fixture(), _klt_scene_fixture(), ["ref", "moving"], tmp_path,
+    )
+    assert not list(tmp_path.glob("registered_global_only_*"))
+    assert (tmp_path / "registered_klt_tps_reference.tif").exists()
+
+
+def test_klt_tps_quality_fail_writes_diagnostics_but_returns_nonzero(tmp_path):
+    from scripts.diagnose_registration_pair import write_diagnostic_artifacts
+
+    registration = _klt_diagnostic_fixture("fail")
+    paths = write_diagnostic_artifacts(
+        registration, _klt_scene_fixture(), ["ref", "moving"], tmp_path,
+        allow_quality_fail_for_diagnostics=True,
+    )
+    assert registration["status"] == "fail"
+    assert paths["klt_tps_control_points"]
+
+
+def test_legacy_diagnostic_artifact_names_are_unchanged(tmp_path):
+    from scripts.diagnose_registration_pair import write_diagnostic_artifacts
+
+    registration = _klt_diagnostic_fixture()
+    registration.pop("registration_backend")
+    registration["global_only_arrays"] = registration["registered_arrays"]
+    paths = write_diagnostic_artifacts(
+        registration, _klt_scene_fixture(), ["ref", "moving"], tmp_path,
+    )
+    assert (tmp_path / "registered_global_only_reference.tif").exists()
+    assert paths["registered_global_only_reference"]

@@ -82,6 +82,66 @@ def _log_stage_validation_summary(registration):
         _metric_text(global_quality.get("rmse")),
         _metric_text(global_quality.get("p95")),
     )
+
+
+def _log_klt_tps_summary(registration):
+    """Log the fixed KLT/TPS integrity and final-validation summary."""
+    if registration.get("registration_backend") != "klt_tps":
+        return
+    klt = registration.get("klt_tps", {}) or {}
+    geometry = klt.get("geometry", {}) or {}
+    fb = np.asarray(klt.get("forward_backward_error", []), dtype=float)
+    fb = fb[np.isfinite(fb)]
+    final = registration.get("quality", {}) or {}
+    logger.info(
+        "KLT-TPS: accepted_points / initial_corners=%s/%s; FB median / P95=%s/%s; "
+        "Jacobian min / max=%s/%s; fold_pixels=%s; max_displacement_pixels=%s; "
+        "final B14 median / RMSE / P95 / confidence=%s/%s/%s/%s",
+        klt.get("accepted_point_count", 0), klt.get("initial_corner_count", 0),
+        _metric_text(np.median(fb) if len(fb) else None),
+        _metric_text(np.percentile(fb, 95) if len(fb) else None),
+        _metric_text(geometry.get("jacobian_min")),
+        _metric_text(geometry.get("jacobian_max")),
+        geometry.get("fold_pixels", 0),
+        _metric_text(geometry.get("max_displacement_pixels")),
+        _metric_text(final.get("median")), _metric_text(final.get("rmse")),
+        _metric_text(final.get("p95")), _metric_text(final.get("confidence")),
+    )
+
+
+_KLT_TPS_CONTROL_COLUMNS = [
+    "ref_overlap_x", "ref_overlap_y", "moving_overlap_x", "moving_overlap_y",
+    "output_moving_x", "output_moving_y", "source_moving_x", "source_moving_y",
+    "dx", "dy", "forward_backward_error",
+]
+
+
+def _write_klt_tps_control_points_csv(registration, output_dir):
+    """Write overlap and moving-native KLT control coordinates."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "klt_tps_control_points.csv"
+    klt = registration.get("klt_tps", {}) or {}
+    ref = np.asarray(klt.get("reference_points_overlap_xy", []), dtype=float).reshape((-1, 2))
+    moving = np.asarray(klt.get("moving_points_overlap_xy", []), dtype=float).reshape((-1, 2))
+    output = np.asarray(klt.get("control_points_moving_xy", []), dtype=float).reshape((-1, 2))
+    source = np.asarray(klt.get("source_points_moving_xy", []), dtype=float).reshape((-1, 2))
+    displacement = np.asarray(klt.get("displacement_xy", []), dtype=float).reshape((-1, 2))
+    fb = np.asarray(klt.get("forward_backward_error", []), dtype=float).reshape((-1,))
+    count = min(len(ref), len(moving), len(output), len(source), len(displacement), len(fb))
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_KLT_TPS_CONTROL_COLUMNS)
+        writer.writeheader()
+        for index in range(count):
+            writer.writerow({
+                "ref_overlap_x": float(ref[index, 0]), "ref_overlap_y": float(ref[index, 1]),
+                "moving_overlap_x": float(moving[index, 0]), "moving_overlap_y": float(moving[index, 1]),
+                "output_moving_x": float(output[index, 0]), "output_moving_y": float(output[index, 1]),
+                "source_moving_x": float(source[index, 0]), "source_moving_y": float(source[index, 1]),
+                "dx": float(displacement[index, 0]), "dy": float(displacement[index, 1]),
+                "forward_backward_error": float(fb[index]),
+            })
+    return str(csv_path)
     logger.info(
         "final holdout: quality=%s, median=%s, rmse=%s, p95=%s; "
         "delta_rmse=%s, delta_p95=%s (global-only minus final; positive means improvement)",
@@ -637,6 +697,8 @@ def _save_residual_vectors(path, matches, title):
 
 def _save_field_png(path, field, title):
     """Save one local displacement field as a heatmap."""
+    import matplotlib
+    matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(7, 5), dpi=140)
@@ -691,6 +753,7 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
     if quality_fail and not allow_quality_fail_for_diagnostics:
         raise ValueError("quality-failed registration artifacts require diagnostic opt-in")
 
+    backend = registration.get("registration_backend", "legacy")
     global_only = registration.get("global_only_arrays") or registered
     holdout_local_field_csv = _write_holdout_local_field_csv(
         registration, output_dir
@@ -732,12 +795,35 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
                       nodata=0, dtype="uint8")
         return reference_path, target_path, overlay_path, reference_band, overlay
 
-    global_reference_path, global_target_path, global_overlay_path, _, _ = write_pair(
-        "registered_global_only", global_only
-    )
-    final_reference_path, final_target_path, final_overlay_path, reference_band, final_overlay = write_pair(
-        "registered_final", registered
-    )
+    if backend == "klt_tps":
+        global_reference_path = global_target_path = global_overlay_path = None
+        final_reference_path, final_target_path, final_overlay_path, reference_band, final_overlay = write_pair(
+            "registered_klt_tps", registered
+        )
+    else:
+        global_reference_path, global_target_path, global_overlay_path, _, _ = write_pair(
+            "registered_global_only", global_only
+        )
+        final_reference_path, final_target_path, final_overlay_path, reference_band, final_overlay = write_pair(
+            "registered_final", registered
+        )
+    klt_paths = {}
+    if backend == "klt_tps":
+        klt = registration.get("klt_tps", {}) or {}
+        flow = np.asarray(klt.get("flow"))
+        if flow.shape == (registered[1].shape[1], registered[1].shape[2], 2):
+            flow_path = output_path / "klt_tps_displacement.tif"
+            write_geotiff(
+                str(flow_path), np.moveaxis(flow.astype(np.float32), -1, 0),
+                transforms[1], crs, dtype="float32",
+            )
+            magnitude_path = output_path / "klt_tps_displacement_magnitude.png"
+            _save_field_png(str(magnitude_path), np.linalg.norm(flow, axis=2), "KLT-TPS displacement magnitude")
+            klt_paths.update({
+                "klt_tps_control_points": _write_klt_tps_control_points_csv(registration, output_dir),
+                "klt_tps_displacement": str(flow_path),
+                "klt_tps_displacement_magnitude": str(magnitude_path),
+            })
     affine_paths = {}
     affine_stage_csv = None
     affine_pairs_csv = None
@@ -811,7 +897,7 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
     b14_global_overlay = output_path / "b14_global_overlay.tif"
     b14_final_overlay = output_path / "b14_final_overlay.tif"
     b14_mosaic = output_path / f"b14_diagnostic_mosaic_{mosaic_mode}.tif"
-    if global_overlay_path.exists():
+    if global_overlay_path is not None and global_overlay_path.exists():
         shutil.copyfile(global_overlay_path, b14_global_overlay)
     if final_overlay_path.exists():
         shutil.copyfile(final_overlay_path, b14_final_overlay)
@@ -876,7 +962,8 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
             "Local displacement magnitude",
         )
         png_paths["local_displacement_magnitude"] = str(magnitude_path)
-    png_paths["global_registered_overlay"] = str(global_overlay_path)
+    if global_overlay_path is not None:
+        png_paths["global_registered_overlay"] = str(global_overlay_path)
     png_paths["final_registered_overlay"] = str(final_overlay_path)
 
     hull_stage_csv = None
@@ -893,9 +980,9 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         "registered_reference": str(reference_path),
         "registered_target": str(target_path),
         "red_green_overlay": str(overlay_path),
-        "registered_global_only_reference": str(global_reference_path),
-        "registered_global_only_target": str(global_target_path),
-        "registered_global_only_red_green_overlay": str(global_overlay_path),
+        "registered_global_only_reference": str(global_reference_path) if global_reference_path is not None else None,
+        "registered_global_only_target": str(global_target_path) if global_target_path is not None else None,
+        "registered_global_only_red_green_overlay": str(global_overlay_path) if global_overlay_path is not None else None,
         "registered_final_reference": str(final_reference_path),
         "registered_final_target": str(final_target_path),
         "registered_final_red_green_overlay": str(final_overlay_path),
@@ -915,6 +1002,7 @@ def write_diagnostic_artifacts(registration, scene_data, scene_ids, output_dir,
         "mosaic_mode": mosaic_mode,
         **strict_paths,
         **affine_paths,
+        **klt_paths,
         **png_paths,
     }
 
@@ -1126,6 +1214,7 @@ def main(argv=None):
         }
         build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
         _log_stage_validation_summary(registration)
+        _log_klt_tps_summary(registration)
         _log_hull_causal_summary(registration)
         logger.error(
             "Registration diagnostic failed: connected=%s, quality=%s, required=%s",
@@ -1153,6 +1242,7 @@ def main(argv=None):
     }
     build_diagnostic_payload(registration_for_payload, scene_ids, output_dir)
     _log_stage_validation_summary(registration)
+    _log_klt_tps_summary(registration)
     _log_hull_causal_summary(registration)
 
     logger.info("Connected: %s", registration.get("connected", False))
