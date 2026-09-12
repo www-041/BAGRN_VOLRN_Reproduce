@@ -245,6 +245,81 @@ def test_estimate_pair_uses_existing_geographic_overlap_context(monkeypatch):
     assert result["overlap_context"]["resampled_target"] is True
 
 
+def _geometry_rejection_case(monkeypatch):
+    from src import klt_tps_registration as module
+
+    image = _textured_scene((64, 64))
+    points = np.asarray(
+        [[12.0, 12.0], [50.0, 12.0], [12.0, 50.0], [50.0, 50.0], [32.0, 32.0]],
+    )
+    monkeypatch.setattr(module, "match_bidirectional_klt", lambda *args, **kwargs: {
+        "initial_corner_count": 40,
+        "accepted_point_count": len(points),
+        "reference_points_xy": points,
+        "moving_points_xy": points + [1.0, -0.5],
+        "displacement_xy": np.tile([1.0, -0.5], (len(points), 1)),
+        "forward_backward_error": np.zeros(len(points)),
+    })
+    return module, image
+
+
+def _assert_structured_geometry_rejection(result, reason):
+    assert result["available"] is False
+    assert result["flow"] is None
+    assert result["geometry"] is None
+    assert reason in result["failure_reason"]
+    assert result["overlap_context"] is not None
+    assert result["accepted_point_count"] == 5
+    assert result["reference_points_overlap_xy"].shape == (5, 2)
+
+
+def test_estimate_klt_tps_pair_returns_unavailable_when_tps_fit_fails(monkeypatch):
+    module, image = _geometry_rejection_case(monkeypatch)
+    monkeypatch.setattr(
+        module, "build_tps_dense_flow",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("TPS fit failed")),
+    )
+    result = module.estimate_klt_tps_pair(
+        image, Affine.identity(), image, Affine.identity(), None, None, _klt_params(),
+    )
+    _assert_structured_geometry_rejection(result, "TPS fit failed")
+
+
+def test_estimate_klt_tps_pair_returns_unavailable_when_flow_folds(monkeypatch):
+    module, image = _geometry_rejection_case(monkeypatch)
+    flow = np.zeros((64, 64, 2), dtype=np.float32)
+    flow[..., 0] = -2 * np.indices(flow.shape[:2])[1]
+    monkeypatch.setattr(module, "build_tps_dense_flow", lambda *args, **kwargs: flow)
+    result = module.estimate_klt_tps_pair(
+        image, Affine.identity(), image, Affine.identity(), None, None, _klt_params(),
+    )
+    _assert_structured_geometry_rejection(result, "fold")
+
+
+def test_estimate_klt_tps_pair_returns_unavailable_when_max_shift_exceeded(monkeypatch):
+    module, image = _geometry_rejection_case(monkeypatch)
+    flow = np.zeros((64, 64, 2), dtype=np.float32)
+    flow[..., 0] = 51
+    monkeypatch.setattr(module, "build_tps_dense_flow", lambda *args, **kwargs: flow)
+    result = module.estimate_klt_tps_pair(
+        image, Affine.identity(), image, Affine.identity(), None, None,
+        _klt_params(klt_tps_max_shift=50.0),
+    )
+    _assert_structured_geometry_rejection(result, "exceeds")
+
+
+def test_estimate_klt_tps_pair_preserves_failure_reason(monkeypatch):
+    module, image = _geometry_rejection_case(monkeypatch)
+    monkeypatch.setattr(
+        module, "build_tps_dense_flow",
+        lambda *args, **kwargs: (_ for _ in ()).throw(np.linalg.LinAlgError("singular TPS")),
+    )
+    result = module.estimate_klt_tps_pair(
+        image, Affine.identity(), image, Affine.identity(), None, None, _klt_params(),
+    )
+    _assert_structured_geometry_rejection(result, "singular TPS")
+
+
 def test_tps_dense_flow_recovers_constant_control_displacement():
     from src.klt_tps_registration import build_tps_dense_flow
 
