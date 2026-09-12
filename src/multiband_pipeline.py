@@ -895,6 +895,42 @@ def _build_pair_holdout_context(
     return split
 
 
+def _prepare_pair_holdout_contexts(
+    arrays,
+    transforms,
+    nodata_values,
+    overlaps,
+    registration_band_idx,
+    reg_params,
+    *,
+    holdout_reservation_overrides=None,
+):
+    """Prepare the legacy pair HOLDOUT contexts before registration work."""
+    if not bool((reg_params or {}).get("enable_spatial_holdout", False)):
+        return {}
+    contexts = {}
+    overrides = holdout_reservation_overrides or {}
+    for overlap in overlaps:
+        i, j = int(overlap["idx_i"]), int(overlap["idx_j"])
+        context = _build_pair_holdout_context(
+            arrays[i][registration_band_idx], transforms[i],
+            arrays[j][registration_band_idx], transforms[j],
+            nodata_values[i], nodata_values[j], reg_params,
+            reserved_windows_override=overrides.get((i, j)),
+        )
+        if context.get("available"):
+            ri_s, ri_e, ci_s, ci_e = context["patch_window_ref"]
+            full_holdout = np.zeros(
+                arrays[i][registration_band_idx].shape, dtype=bool,
+            )
+            full_holdout[ri_s:ri_e, ci_s:ci_e] = context[
+                "holdout_region_mask"
+            ]
+            context["holdout_region_full_mask"] = full_holdout
+        contexts[(i, j)] = context
+    return contexts
+
+
 def _public_holdout_summary(context):
     """Return JSON-safe holdout metadata without serializing large masks."""
     if not context:
@@ -2747,6 +2783,198 @@ class MultibandPipeline:
     # c. 配准
     # -----------------------------------------------------------------------
 
+    def _register_scenes_klt_tps_n2(
+        self,
+        scene_data: Dict[str, Any],
+        overlaps: List[dict],
+        registration_band_idx: int,
+        *,
+        diagnostic_validation_band=None,
+        holdout_reservation_overrides=None,
+    ) -> Dict[str, Any]:
+        """Run the opt-in senior KLT/TPS geometry backend for exactly two scenes."""
+        from src.coregistration import map_pixel_centers_between_grids
+        from src.klt_tps_registration import (
+            estimate_klt_tps_pair,
+            warp_multiband_with_tps_flow,
+        )
+
+        arrays = scene_data["arrays"]
+        transforms = scene_data["transforms"]
+        nodata_values = scene_data["nodata_values"]
+        reg_params = getattr(getattr(self, "config", None), "registration_params", {}) or {}
+        n_images = len(arrays)
+        if n_images != 2:
+            raise ValueError("klt_tps backend supports exactly N=2")
+        edge = (0, 1)
+        if not any({int(ov["idx_i"]), int(ov["idx_j"])} == {0, 1} for ov in overlaps):
+            raise ValueError("klt_tps backend requires geographic overlap edge (0, 1)")
+        if diagnostic_validation_band is None:
+            validation_band_idx = registration_band_idx
+        elif isinstance(diagnostic_validation_band, str):
+            if diagnostic_validation_band not in self.common_bands:
+                raise ValueError(f"diagnostic validation band {diagnostic_validation_band!r} is not loaded")
+            validation_band_idx = self.common_bands.index(diagnostic_validation_band)
+        else:
+            validation_band_idx = int(diagnostic_validation_band)
+        registration_band_name = self.common_bands[registration_band_idx]
+        validation_band_name = self.common_bands[validation_band_idx]
+
+        holdout_contexts = _prepare_pair_holdout_contexts(
+            arrays, transforms, nodata_values, overlaps,
+            registration_band_idx, reg_params,
+            holdout_reservation_overrides=holdout_reservation_overrides,
+        )
+        context = holdout_contexts.get(edge)
+        if bool(reg_params.get("enable_spatial_holdout", False)) and (
+            not context or not context.get("available")
+            or int(context.get("reserved_count", 0)) < int(reg_params.get("final_min_blocks", 5))
+        ):
+            reason = (context or {}).get(
+                "failure_reason", "insufficient independent validation geometry"
+            )
+            result = _registration_failure_result(
+                arrays, False, [], [], [edge], [], [],
+                [[0, 1]], [scene_data.get("scene_ids", ["0", "1"])[1]], reason,
+            )
+            result.update({
+                "registration_backend": "klt_tps",
+                "transform_model": "dense_klt_tps",
+                "registration_band_name": registration_band_name,
+                "validation_band_name": validation_band_name,
+            })
+            result["diagnostics"]["klt_tps"] = {"available": False, "failure_reason": reason}
+            return result
+
+        estimation = estimate_klt_tps_pair(
+            arrays[0][registration_band_idx], transforms[0],
+            arrays[1][registration_band_idx], transforms[1],
+            nodata_values[0], nodata_values[1], reg_params,
+        )
+        if not estimation.get("available"):
+            reason = estimation.get("failure_reason", "KLT/TPS estimation unavailable")
+            result = _registration_failure_result(
+                arrays, False, [], [], [edge], [], [], [[0, 1]],
+                [scene_data.get("scene_ids", ["0", "1"])[1]], reason,
+            )
+            result.update({
+                "registration_backend": "klt_tps",
+                "transform_model": "dense_klt_tps",
+                "registration_band_name": registration_band_name,
+                "validation_band_name": validation_band_name,
+                "klt_tps": estimation,
+            })
+            result["diagnostics"]["klt_tps"] = {
+                "available": False, "failure_reason": reason,
+            }
+            return result
+
+        try:
+            moving_registered, moving_valid = warp_multiband_with_tps_flow(
+                arrays[1], estimation["flow"], nodata_values[1],
+            )
+        except Exception as exc:
+            reason = f"KLT/TPS warp failed: {exc}"
+            result = _registration_failure_result(
+                arrays, False, [], [], [edge], [], [], [[0, 1]],
+                [scene_data.get("scene_ids", ["0", "1"])[1]], reason,
+            )
+            result.update({
+                "registration_backend": "klt_tps",
+                "transform_model": "dense_klt_tps",
+                "registration_band_name": registration_band_name,
+                "validation_band_name": validation_band_name,
+                "klt_tps": estimation,
+            })
+            return result
+
+        ref_native = map_pixel_centers_between_grids(
+            estimation["reference_points_overlap_xy"],
+            estimation["overlap_context"]["overlap_transform"], transforms[0],
+        )
+        target_native = estimation["source_points_moving_xy"]
+        fb = estimation["forward_backward_error"]
+        fb_threshold = float(reg_params.get("klt_tps_fb_threshold", 0.5))
+        pair_matches = []
+        for idx in range(len(ref_native)):
+            pair_matches.append({
+                "ref_x": float(ref_native[idx, 0]),
+                "ref_y": float(ref_native[idx, 1]),
+                "tgt_x": float(target_native[idx, 0]),
+                "tgt_y": float(target_native[idx, 1]),
+                "shift_dx": float(estimation["displacement_xy"][idx, 0]),
+                "shift_dy": float(estimation["displacement_xy"][idx, 1]),
+                "confidence": float(max(0.0, 1.0 - float(fb[idx]) / fb_threshold)),
+                "forward_backward_error": float(fb[idx]),
+                "match_method": "bidirectional_klt",
+            })
+        pair_measurement = {
+            "idx_i": 0, "idx_j": 1,
+            "matches": pair_matches,
+            "shift_dx": float(np.median(estimation["displacement_xy"][:, 0])),
+            "shift_dy": float(np.median(estimation["displacement_xy"][:, 1])),
+            "confidence": float(np.mean([m["confidence"] for m in pair_matches])),
+            "n_blocks": len(pair_matches),
+            "method": "bidirectional_klt",
+        }
+        registered_arrays = [np.asarray(arrays[0]).copy(), moving_registered]
+        quality, final_validation = _validate_final_registration_arrays(
+            registered_arrays, registration_band_idx, transforms, nodata_values,
+            [edge], [pair_measurement], reg_params,
+            holdout_contexts=holdout_contexts,
+            validation_band_idx=validation_band_idx,
+        )
+        status, failure = _registration_status_and_failure(
+            True, quality, reg_params.get("required_quality", "pass")
+        )
+        local_dx_fields = [
+            np.zeros(arrays[0].shape[1:], dtype=np.float64),
+            np.asarray(estimation["flow"][..., 0], dtype=np.float64),
+        ]
+        local_dy_fields = [
+            np.zeros(arrays[0].shape[1:], dtype=np.float64),
+            np.asarray(estimation["flow"][..., 1], dtype=np.float64),
+        ]
+        public_klt = dict(estimation)
+        public_klt["warped_valid_pixels"] = int(np.count_nonzero(moving_valid))
+        return {
+            "registration_backend": "klt_tps",
+            "transform_model": "dense_klt_tps",
+            "registered_arrays": registered_arrays,
+            "global_shifts": np.zeros((2, 2), dtype=float),
+            "local_dx_fields": local_dx_fields,
+            "local_dy_fields": local_dy_fields,
+            "pair_matches": pair_matches,
+            "raw_pair_matches": list(pair_matches),
+            "connected": True,
+            "spanning_tree": [edge],
+            "geometric_edges": [edge],
+            "matching_edges": [edge],
+            "rejected_edges": [],
+            "connected_components": [[0, 1]],
+            "unreachable_scenes": [],
+            "local_refinement": {
+                "enabled": False, "used_for_scenes": [], "fallback_scenes": [],
+                "cv_results": {}, "rematch_failures": [],
+                "reason": "not applicable for klt_tps backend",
+            },
+            "klt_tps": public_klt,
+            "quality": quality,
+            "final_validation": final_validation,
+            "status": status,
+            "failure": failure,
+            "diagnostics": {
+                "registration_backend": "klt_tps",
+                "transform_model": "dense_klt_tps",
+                "klt_tps": public_klt,
+                "final_validation": final_validation,
+                "quality": quality,
+            },
+            "registration_band_name": registration_band_name,
+            "validation_band_name": validation_band_name,
+            "registration_params_sha256": _registration_params_fingerprint(reg_params),
+        }
+
     def register_scenes(
         self,
         scene_data: Dict[str, Any],
@@ -2828,6 +3056,17 @@ class MultibandPipeline:
         n_images = len(arrays)
         config = getattr(self, "config", None)
         reg_params = getattr(config, "registration_params", {}) if config is not None else {}
+        registration_backend = str(reg_params.get("registration_backend", "legacy"))
+        if registration_backend == "klt_tps":
+            return self._register_scenes_klt_tps_n2(
+                scene_data,
+                overlaps,
+                registration_band_idx,
+                diagnostic_validation_band=validation_band_idx,
+                holdout_reservation_overrides=holdout_reservation_overrides,
+            )
+        if registration_backend != "legacy":
+            raise ValueError(f"unsupported registration backend: {registration_backend}")
 
         if n_images <= 1:
             local_refinement = {
@@ -2897,24 +3136,12 @@ class MultibandPipeline:
         # rather than a late failure after a full registration run.
         if holdout_enabled:
             geometric_edges = [(ov["idx_i"], ov["idx_j"]) for ov in overlaps]
-            for ov in overlaps:
-                i, j = ov["idx_i"], ov["idx_j"]
-                holdout_context = _build_pair_holdout_context(
-                    arrays[i][registration_band_idx], transforms[i],
-                    arrays[j][registration_band_idx], transforms[j],
-                    nodata_values[i], nodata_values[j], reg_params,
-                    (holdout_reservation_overrides or {}).get((i, j)),
-                )
-                if holdout_context.get("available"):
-                    ri_s, ri_e, ci_s, ci_e = holdout_context["patch_window_ref"]
-                    full_holdout = np.zeros(
-                        arrays[i][registration_band_idx].shape, dtype=bool,
-                    )
-                    full_holdout[ri_s:ri_e, ci_s:ci_e] = holdout_context[
-                        "holdout_region_mask"
-                    ]
-                    holdout_context["holdout_region_full_mask"] = full_holdout
-                holdout_contexts[(i, j)] = holdout_context
+            holdout_contexts = _prepare_pair_holdout_contexts(
+                arrays, transforms, nodata_values, overlaps,
+                registration_band_idx, reg_params,
+                holdout_reservation_overrides=holdout_reservation_overrides,
+            )
+            for (i, j), holdout_context in holdout_contexts.items():
                 required = int(reg_params.get("final_min_blocks", 5))
                 if (not holdout_context.get("available")
                         or int(holdout_context.get("reserved_count", 0)) < required):
