@@ -79,6 +79,82 @@ def test_bidirectional_klt_recovers_synthetic_subpixel_translation():
     assert np.percentile(result["forward_backward_error"], 95) < 0.5
 
 
+def test_klt_training_mask_excludes_reserved_holdout_corners():
+    from src.klt_tps_registration import match_bidirectional_klt
+
+    reference = _textured_scene()
+    expected = np.array([2.25, -1.50])
+    moving = cv2.warpAffine(
+        reference, np.array([[1, 0, expected[0]], [0, 1, expected[1]]], dtype=np.float32),
+        (reference.shape[1], reference.shape[0]), flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT101,
+    )
+    valid = np.ones(reference.shape, dtype=bool)
+    training_mask = np.ones(reference.shape, dtype=bool)
+    training_mask[:, 112:] = False
+    result = match_bidirectional_klt(
+        reference, moving, valid, valid, _klt_params(), training_mask=training_mask,
+    )
+    for points in (result["reference_points_xy"], result["moving_points_xy"]):
+        rows = np.rint(points[:, 1]).astype(int)
+        cols = np.rint(points[:, 0]).astype(int)
+        assert np.all(training_mask[rows, cols])
+
+
+def test_klt_training_mask_rejects_wrong_shape():
+    from src.klt_tps_registration import match_bidirectional_klt
+
+    image = _textured_scene()
+    valid = np.ones(image.shape, dtype=bool)
+    with pytest.raises(ValueError, match="KLT training mask must match overlap image shape"):
+        match_bidirectional_klt(image, image, valid, valid, _klt_params(), training_mask=np.ones((96, 96), bool))
+
+
+def test_klt_training_mask_applies_to_reference_and_moving_support():
+    from src.klt_tps_registration import match_bidirectional_klt
+
+    reference = _textured_scene()
+    moving = cv2.warpAffine(
+        reference, np.array([[1, 0, 1.5], [0, 1, -0.75]], dtype=np.float32),
+        (reference.shape[1], reference.shape[0]), flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT101,
+    )
+    valid = np.ones(reference.shape, dtype=bool)
+    training_mask = np.ones(reference.shape, dtype=bool)
+    training_mask[:28, :] = False
+    result = match_bidirectional_klt(
+        reference, moving, valid, valid, _klt_params(), training_mask=training_mask,
+    )
+    assert np.all(np.rint(result["reference_points_xy"][:, 1]).astype(int) >= 28)
+    assert np.all(np.rint(result["moving_points_xy"][:, 1]).astype(int) >= 28)
+
+
+def test_estimate_klt_tps_pair_passes_training_mask_to_matcher(monkeypatch):
+    from src import klt_tps_registration as module
+
+    image = _textured_scene((64, 64))
+    valid = np.ones(image.shape, dtype=bool)
+    training_mask = np.ones(image.shape, dtype=bool)
+    captured = {}
+    p = np.asarray([[x, y] for y in (10, 20, 30, 40, 50) for x in (10, 15, 20, 25, 30, 35, 40, 50)], dtype=float)
+    def fake_match(*args, **kwargs):
+        captured["training_mask"] = kwargs.get("training_mask")
+        return {
+            "initial_corner_count": 40, "accepted_point_count": 40,
+                "reference_points_xy": p,
+                "moving_points_xy": p + [1, 0],
+            "displacement_xy": np.tile([1, 0], (40, 1)),
+            "forward_backward_error": np.zeros(40),
+        }
+    monkeypatch.setattr(module, "match_bidirectional_klt", fake_match)
+    result = module.estimate_klt_tps_pair(
+        image, Affine.identity(), image, Affine.identity(), None, None,
+        {**_klt_params(), "klt_tps_smoothing": 0.0}, training_mask=training_mask,
+    )
+    assert result["available"] is True
+    np.testing.assert_array_equal(captured["training_mask"], training_mask)
+
+
 def test_bidirectional_klt_rejects_too_few_corners():
     from src.klt_tps_registration import match_bidirectional_klt
 
@@ -150,7 +226,7 @@ def test_estimate_pair_uses_existing_geographic_overlap_context(monkeypatch):
     })
     p = np.array([[4.0, 5.0], [20.0, 25.0], [25.0, 8.0]])
     q = p + np.array([1.5, -0.75])
-    monkeypatch.setattr(module, "match_bidirectional_klt", lambda *args: {
+    monkeypatch.setattr(module, "match_bidirectional_klt", lambda *args, **kwargs: {
         "initial_corner_count": 3,
         "accepted_point_count": 3,
         "reference_points_xy": p,

@@ -94,7 +94,7 @@ def _run_fake_backend(monkeypatch, pipe, registration_band_idx=0, validation_ban
     }
     seen = {}
     estimation = _fake_estimation()
-    monkeypatch.setattr(klt, "estimate_klt_tps_pair", estimate_fn or (lambda *args: estimation))
+    monkeypatch.setattr(klt, "estimate_klt_tps_pair", estimate_fn or (lambda *args, **kwargs: estimation))
     def fake_warp(source, flow, nodata):
         seen["source"] = source.copy()
         return source.copy(), np.ones(source.shape[1:], dtype=bool)
@@ -117,7 +117,7 @@ def test_klt_tps_backend_uses_selected_registration_band(monkeypatch):
     pipe = _dummy_pipeline(bands=("B14", "B12"))
     pipe.config.registration_params["registration_backend"] = "klt_tps"
     seen = {}
-    def fake_estimate(ref, *args):
+    def fake_estimate(ref, *args, **kwargs):
         seen["ref"] = ref
         return _fake_estimation()
     monkeypatch.setattr(klt, "estimate_klt_tps_pair", fake_estimate)
@@ -148,10 +148,15 @@ def test_klt_tps_backend_reuses_holdout_override_for_final_validation(monkeypatc
 
     pipe = _dummy_pipeline()
     pipe.config.registration_params["enable_spatial_holdout"] = True
-    context = {"available": True, "reserved_count": 5, "holdout_region_full_mask": np.zeros((48, 56), bool), "validation_reservation": {}}
+    context = {
+        "available": True, "reserved_count": 5,
+        "train_sampling_mask": np.ones((48, 56), bool),
+        "holdout_region_full_mask": np.zeros((48, 56), bool),
+        "validation_reservation": {},
+    }
     seen = {}
     monkeypatch.setattr(pipeline, "_prepare_pair_holdout_contexts", lambda *args, **kwargs: {(0, 1): context})
-    monkeypatch.setattr(klt, "estimate_klt_tps_pair", lambda *args: _fake_estimation())
+    monkeypatch.setattr(klt, "estimate_klt_tps_pair", lambda *args, **kwargs: _fake_estimation())
     monkeypatch.setattr(klt, "warp_multiband_with_tps_flow", lambda source, flow, nodata: (source.copy(), np.ones(source.shape[1:], bool)))
     def fake_validate(*args, **kwargs):
         seen["contexts"] = kwargs.get("holdout_contexts")
@@ -161,12 +166,60 @@ def test_klt_tps_backend_reuses_holdout_override_for_final_validation(monkeypatc
     assert seen["contexts"][(0, 1)] is context
 
 
+def test_klt_tps_backend_passes_holdout_train_mask_to_estimator(monkeypatch):
+    import src.klt_tps_registration as klt
+    import src.multiband_pipeline as pipeline
+
+    pipe = _dummy_pipeline()
+    pipe.config.registration_params["enable_spatial_holdout"] = True
+    train_mask = np.ones((48, 56), dtype=bool)
+    context = {
+        "available": True,
+        "reserved_count": 5,
+        "train_sampling_mask": train_mask,
+        "holdout_region_full_mask": np.zeros((48, 56), dtype=bool),
+        "validation_reservation": {},
+    }
+    seen = {}
+    monkeypatch.setattr(
+        pipeline, "_prepare_pair_holdout_contexts",
+        lambda *args, **kwargs: {(0, 1): context},
+    )
+
+    def fake_estimate(*args, **kwargs):
+        seen["training_mask"] = kwargs.get("training_mask")
+        return _fake_estimation()
+
+    monkeypatch.setattr(klt, "estimate_klt_tps_pair", fake_estimate)
+    monkeypatch.setattr(
+        klt, "warp_multiband_with_tps_flow",
+        lambda source, flow, nodata: (source.copy(), np.ones(source.shape[1:], bool)),
+    )
+    monkeypatch.setattr(
+        pipeline, "_validate_final_registration_arrays",
+        lambda *args, **kwargs: (
+            {"quality": "pass", "rmse": 0.1, "p95": 0.2, "median": 0.1,
+             "confidence": 0.9, "n_blocks": 5},
+            {"edges": [], "overall": {"quality": "pass"}},
+        ),
+    )
+
+    pipe.register_scenes(
+        {"arrays": [np.ones((2, 48, 56))] * 2,
+         "transforms": [Affine.identity()] * 2,
+         "nodata_values": [None, None]},
+        [{"idx_i": 0, "idx_j": 1}],
+    )
+
+    assert seen["training_mask"] is train_mask
+
+
 def test_klt_tps_backend_does_not_fallback_to_legacy_when_estimation_fails(monkeypatch):
     import src.multiband_pipeline as pipeline
     import src.klt_tps_registration as klt
 
     pipe = _dummy_pipeline()
-    monkeypatch.setattr(klt, "estimate_klt_tps_pair", lambda *args: {"available": False, "failure_reason": "insufficient KLT corners"})
+    monkeypatch.setattr(klt, "estimate_klt_tps_pair", lambda *args, **kwargs: {"available": False, "failure_reason": "insufficient KLT corners"})
     result = pipe.register_scenes(
         {"arrays": [np.ones((2, 48, 56))] * 2, "transforms": [Affine.identity()] * 2, "nodata_values": [None] * 2},
         [{"idx_i": 0, "idx_j": 1}],

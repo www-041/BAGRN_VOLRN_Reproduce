@@ -76,6 +76,8 @@ def match_bidirectional_klt(
     reference_valid: np.ndarray,
     moving_valid: np.ndarray,
     params: dict[str, Any] | None = None,
+    *,
+    training_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Find source-to-target controls with forward/backward Pyramid-LK."""
     params = params or {}
@@ -84,18 +86,27 @@ def match_bidirectional_klt(
     mov_valid = np.asarray(moving_valid, dtype=bool)
     if ref_valid.shape != ref.shape or mov_valid.shape != mov.shape:
         raise ValueError("KLT matching requires same-shape validity masks")
+    if training_mask is not None:
+        training_mask = np.asarray(training_mask, dtype=bool)
+        if training_mask.shape != ref.shape:
+            raise ValueError("KLT training mask must match overlap image shape")
+        ref_training_valid = ref_valid & training_mask
+        moving_training_valid = mov_valid & training_mask
+    else:
+        ref_training_valid = ref_valid
+        moving_training_valid = mov_valid
 
     cv2.setNumThreads(int(params.get("klt_tps_threads", 4)))
     try:
-        ref_norm = normalize_klt_image(ref, ref_valid)
-        mov_norm = normalize_klt_image(mov, mov_valid)
+        ref_norm = normalize_klt_image(ref, ref_training_valid)
+        mov_norm = normalize_klt_image(mov, moving_training_valid)
     except ValueError as exc:
         raise ValueError(f"insufficient KLT image support: {exc}") from exc
 
     window = int(params.get("klt_tps_window", 9))
     pyramid_level = int(params.get("klt_tps_pyramid_level", 3))
     ref_interior = build_klt_interior_mask(
-        ref_valid, max(20, window // 2 + 2),
+        ref_training_valid, max(20, window // 2 + 2),
     )
     corners = cv2.goodFeaturesToTrack(
         ref_norm,
@@ -150,7 +161,7 @@ def match_bidirectional_klt(
     safe_rows = np.clip(q_rows, 0, height - 1)
     safe_cols = np.clip(q_cols, 0, width - 1)
     moving_interior = build_klt_interior_mask(
-        mov_valid, max(10, window // 2 + 2),
+        moving_training_valid, max(10, window // 2 + 2),
     )
     interior = moving_interior[safe_rows, safe_cols] != 0
     fb = np.linalg.norm(p_forward - p_back, axis=1)
@@ -195,13 +206,19 @@ def map_klt_matches_to_moving_grid(
     }
 
 
-def _unavailable_pair_result(reason: str) -> dict[str, Any]:
-    return {
+def _unavailable_pair_result(
+    reason: str,
+    *,
+    context: dict[str, Any] | None = None,
+    match: dict[str, Any] | None = None,
+    mapped: dict[str, np.ndarray] | None = None,
+) -> dict[str, Any]:
+    result = {
         "available": False,
         "failure_reason": str(reason),
-        "overlap_context": None,
-        "initial_corner_count": 0,
-        "accepted_point_count": 0,
+        "overlap_context": context,
+        "initial_corner_count": int((match or {}).get("initial_corner_count", 0)),
+        "accepted_point_count": int((match or {}).get("accepted_point_count", 0)),
         "reference_points_overlap_xy": np.empty((0, 2), dtype=float),
         "moving_points_overlap_xy": np.empty((0, 2), dtype=float),
         "forward_backward_error": np.empty((0,), dtype=float),
@@ -211,6 +228,25 @@ def _unavailable_pair_result(reason: str) -> dict[str, Any]:
         "flow": None,
         "geometry": None,
     }
+    if match is not None:
+        result.update({
+            "reference_points_overlap_xy": np.asarray(
+                match.get("reference_points_xy", []), dtype=float).reshape((-1, 2)),
+            "moving_points_overlap_xy": np.asarray(
+                match.get("moving_points_xy", []), dtype=float).reshape((-1, 2)),
+            "forward_backward_error": np.asarray(
+                match.get("forward_backward_error", []), dtype=float).reshape((-1,)),
+        })
+    if mapped is not None:
+        result.update({
+            "control_points_moving_xy": np.asarray(
+                mapped.get("control_points_xy", []), dtype=float).reshape((-1, 2)),
+            "source_points_moving_xy": np.asarray(
+                mapped.get("source_points_xy", []), dtype=float).reshape((-1, 2)),
+            "displacement_xy": np.asarray(
+                mapped.get("displacement_xy", []), dtype=float).reshape((-1, 2)),
+        })
+    return result
 
 
 def estimate_klt_tps_pair(
@@ -221,6 +257,8 @@ def estimate_klt_tps_pair(
     reference_nodata: float | None,
     moving_nodata: float | None,
     params: dict[str, Any] | None,
+    *,
+    training_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Estimate overlap-grid KLT controls and map them to moving-native pixels."""
     params = params or {}
@@ -231,10 +269,17 @@ def estimate_klt_tps_pair(
     )
     if not context.get("available"):
         return _unavailable_pair_result(context.get("failure_reason", "No geographic overlap"))
+    if training_mask is not None:
+        training_mask = np.asarray(training_mask, dtype=bool)
+        if training_mask.shape != context["ref_overlap"].shape:
+            raise ValueError("KLT training mask must match overlap image shape")
+        context["training_mask_semantics"] = "reference overlap grid mask"
     try:
+        match_kwargs = {} if training_mask is None else {"training_mask": training_mask}
         match = match_bidirectional_klt(
             context["ref_overlap"], context["tgt_overlap"],
             context["ref_valid"], context["tgt_valid"], params,
+            **match_kwargs,
         )
         mapped = map_klt_matches_to_moving_grid(
             match["reference_points_xy"], match["moving_points_xy"],
@@ -244,13 +289,19 @@ def estimate_klt_tps_pair(
         result = _unavailable_pair_result(str(exc))
         result["overlap_context"] = context
         return result
-    flow = build_tps_dense_flow(
-        mapped["control_points_xy"], mapped["displacement_xy"],
-        np.asarray(moving_band).shape, params,
-    )
-    geometry = inspect_tps_dense_flow(
-        flow, float(params.get("klt_tps_max_shift", 50.0)),
-    )
+    try:
+        flow = build_tps_dense_flow(
+            mapped["control_points_xy"], mapped["displacement_xy"],
+            np.asarray(moving_band).shape, params,
+        )
+        geometry = inspect_tps_dense_flow(
+            flow, float(params.get("klt_tps_max_shift", 50.0)),
+        )
+    except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+        return _unavailable_pair_result(
+            f"KLT/TPS geometry rejected: {exc}",
+            context=context, match=match, mapped=mapped,
+        )
     controls = mapped["control_points_xy"]
     xmin, ymin = np.min(controls, axis=0)
     xmax, ymax = np.max(controls, axis=0)

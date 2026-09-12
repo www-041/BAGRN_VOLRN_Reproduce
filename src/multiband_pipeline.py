@@ -2845,11 +2845,29 @@ class MultibandPipeline:
             })
             result["diagnostics"]["klt_tps"] = {"available": False, "failure_reason": reason}
             return result
+        training_mask = None
+        if context is not None:
+            training_mask = context.get("train_sampling_mask")
+        if bool(reg_params.get("enable_spatial_holdout", False)) and training_mask is None:
+            reason = "KLT/TPS HOLDOUT training mask unavailable"
+            result = _registration_failure_result(
+                arrays, False, [], [], [edge], [], [], [[0, 1]],
+                [scene_data.get("scene_ids", ["0", "1"])[1]], reason,
+            )
+            result.update({
+                "registration_backend": "klt_tps",
+                "transform_model": "dense_klt_tps",
+                "registration_band_name": registration_band_name,
+                "validation_band_name": validation_band_name,
+            })
+            result["diagnostics"]["klt_tps"] = {"available": False, "failure_reason": reason}
+            return result
 
         estimation = estimate_klt_tps_pair(
             arrays[0][registration_band_idx], transforms[0],
             arrays[1][registration_band_idx], transforms[1],
             nodata_values[0], nodata_values[1], reg_params,
+            training_mask=training_mask,
         )
         if not estimation.get("available"):
             reason = estimation.get("failure_reason", "KLT/TPS estimation unavailable")
