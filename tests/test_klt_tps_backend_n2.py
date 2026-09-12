@@ -187,3 +187,27 @@ def test_legacy_backend_dispatch_still_uses_existing_path(monkeypatch):
     )
     assert result["status"] == "fail"
     assert result.get("registration_backend") != "klt_tps"
+
+
+def test_dz01_klt_tps_n2_config_is_two_scene_b12_b14():
+    from src.experiment_config import load_config, validate_config
+
+    cfg = load_config("configs/dz01_klt_tps_n2_b12.yaml")
+    assert [scene["id"] for scene in cfg.scenes] == ["scene_20251114", "scene_20251120"]
+    assert cfg.registration_band == "B12"
+    assert cfg.selected_bands == ["B12", "B14"]
+    assert cfg.registration_params["registration_backend"] == "klt_tps"
+    assert cfg.registration_params["enable_local_refinement"] is False
+    assert validate_config(cfg, skip_file_check=True) == []
+
+
+def test_klt_tps_n2_synthetic_end_to_end_uses_actual_backend_dispatch(monkeypatch):
+    pipe = _dummy_pipeline()
+    result, scene_data, _ = _run_fake_backend(monkeypatch, pipe)
+    assert result["registration_backend"] == "klt_tps"
+    assert result["transform_model"] == "dense_klt_tps"
+    assert len(result["registered_arrays"]) == 2
+    assert result["registered_arrays"][0].shape == scene_data["arrays"][0].shape
+    assert result["registered_arrays"][1].shape == scene_data["arrays"][1].shape
+    assert result["final_validation"]["overall"]["quality"] == "pass"
+    assert result["klt_tps"]["accepted_point_count"] >= 30

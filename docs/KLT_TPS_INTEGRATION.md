@@ -21,3 +21,15 @@ Project adaptations:
 - one estimated B12 flow is applied to all loaded bands
 
 Phase-I limitation: `klt_tps` supports exactly N=2.
+
+Manual N=2 validation (run by the user after this branch is pushed):
+
+```powershell
+.\.venv\Scripts\python.exe scripts/diagnose_registration_pair.py `
+  --config configs/dz01_klt_tps_n2_b12.yaml `
+  --scene-i 0 --scene-j 1 --validation-band B14 `
+  --output-dir outputs/klt_tps_n2_b12
+```
+
+This branch does not run real DZ01V data and does not implement N=4/N=6,
+multi-scene TPS composition, parameter search, or BAGRN/VOLRN changes.
