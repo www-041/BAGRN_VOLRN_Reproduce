@@ -12,6 +12,8 @@ import cv2
 import numpy as np
 from rasterio.transform import Affine
 from scipy.ndimage import gaussian_filter
+from scipy.interpolate import RBFInterpolator
+from scipy.ndimage import map_coordinates
 
 from src.coregistration import (
     build_pair_overlap_context,
@@ -242,6 +244,30 @@ def estimate_klt_tps_pair(
         result = _unavailable_pair_result(str(exc))
         result["overlap_context"] = context
         return result
+    flow = build_tps_dense_flow(
+        mapped["control_points_xy"], mapped["displacement_xy"],
+        np.asarray(moving_band).shape, params,
+    )
+    geometry = inspect_tps_dense_flow(
+        flow, float(params.get("klt_tps_max_shift", 50.0)),
+    )
+    controls = mapped["control_points_xy"]
+    xmin, ymin = np.min(controls, axis=0)
+    xmax, ymax = np.max(controls, axis=0)
+    try:
+        from scipy.spatial import ConvexHull
+        hull_area = float(ConvexHull(controls).volume)
+        image_area = float(np.asarray(moving_band).shape[0] * np.asarray(moving_band).shape[1])
+        control_hull_fraction = hull_area / image_area if image_area > 0 else None
+    except Exception:
+        control_hull_fraction = None
+    magnitude = np.linalg.norm(flow.astype(float), axis=2)
+    geometry.update({
+        "control_bbox": [float(xmin), float(ymin), float(xmax), float(ymax)],
+        "control_hull_fraction": control_hull_fraction,
+        "flow_p50_magnitude": float(np.percentile(magnitude, 50)),
+        "flow_p95_magnitude": float(np.percentile(magnitude, 95)),
+    })
     return {
         "available": True,
         "failure_reason": None,
@@ -254,6 +280,89 @@ def estimate_klt_tps_pair(
         "control_points_moving_xy": mapped["control_points_xy"],
         "source_points_moving_xy": mapped["source_points_xy"],
         "displacement_xy": mapped["displacement_xy"],
-        "flow": None,
-        "geometry": None,
+        "flow": flow,
+        "geometry": geometry,
     }
+
+
+def build_tps_dense_flow(
+    control_points_xy: np.ndarray,
+    displacement_xy: np.ndarray,
+    shape: tuple[int, int],
+    params: dict[str, Any] | None = None,
+) -> np.ndarray:
+    """Fit the source thin-plate spline and expand it to a dense field."""
+    params = params or {}
+    points = np.asarray(control_points_xy, dtype=float)
+    displacement = np.asarray(displacement_xy, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError("TPS control points must have shape (N, 2)")
+    if displacement.shape != points.shape or len(points) < 3:
+        raise ValueError("insufficient TPS controls")
+    if not np.isfinite(points).all() or not np.isfinite(displacement).all():
+        raise ValueError("TPS controls must be finite")
+    if np.linalg.matrix_rank(points - points.mean(axis=0)) < 2:
+        raise ValueError("collinear TPS controls")
+    h, w = (int(shape[0]), int(shape[1]))
+    if h <= 0 or w <= 0:
+        raise ValueError("TPS field shape must be positive")
+    step = int(params.get("klt_tps_field_step", 4))
+    if step < 1:
+        raise ValueError("TPS field step must be positive")
+    model = RBFInterpolator(
+        points,
+        displacement,
+        kernel="thin_plate_spline",
+        smoothing=float(params.get("klt_tps_smoothing", 3.0)),
+        neighbors=min(int(params.get("klt_tps_neighbors", 80)), len(points)),
+    )
+    gy, gx = np.mgrid[0:h + step:step, 0:w + step:step]
+    positions = np.column_stack([gx.ravel(), gy.ravel()])
+    coarse = np.empty((len(positions), 2), dtype=np.float64)
+    for start in range(0, len(positions), 20000):
+        coarse[start:start + 20000] = model(positions[start:start + 20000])
+    coarse = coarse.reshape(gy.shape + (2,))
+    rows = np.arange(h, dtype=np.float64)
+    cols = np.arange(w, dtype=np.float64)
+    row_grid, col_grid = np.meshgrid(rows, cols, indexing="ij")
+    flow = np.empty((h, w, 2), dtype=np.float32)
+    for row_start in range(0, h, 256):
+        row_end = min(row_start + 256, h)
+        coords = [
+            row_grid[row_start:row_end] / step,
+            col_grid[row_start:row_end] / step,
+        ]
+        for component in range(2):
+            flow[row_start:row_end, :, component] = map_coordinates(
+                coarse[..., component], coords, order=3, mode="nearest",
+            ).astype(np.float32)
+    return flow
+
+
+def inspect_tps_dense_flow(flow: np.ndarray, max_shift: float) -> dict[str, Any]:
+    """Apply the source Jacobian folding and maximum-shift safety gate."""
+    field = np.asarray(flow)
+    if field.ndim != 3 or field.shape[2] != 2:
+        raise ValueError("TPS flow must have shape (H, W, 2)")
+    if not np.isfinite(field).all():
+        raise ValueError("TPS flow must contain only finite values")
+    dx_y, dx_x = np.gradient(field[..., 0])
+    dy_y, dy_x = np.gradient(field[..., 1])
+    determinant = (1 + dx_x) * (1 + dy_y) - dx_y * dy_x
+    fold_pixels = int(np.count_nonzero(determinant <= 0))
+    max_displacement = float(np.max(np.linalg.norm(field.astype(float), axis=2)))
+    result = {
+        "jacobian_min": float(np.min(determinant)),
+        "jacobian_max": float(np.max(determinant)),
+        "fold_pixels": fold_pixels,
+        "max_displacement_pixels": max_displacement,
+    }
+    if fold_pixels:
+        raise ValueError(f"TPS flow contains fold pixels: {fold_pixels}")
+    if not np.isfinite(max_shift) or max_shift <= 0:
+        raise ValueError("TPS max shift must be positive and finite")
+    if max_displacement > float(max_shift):
+        raise ValueError(
+            f"TPS flow max shift {max_displacement:.3f} exceeds {float(max_shift):.3f}"
+        )
+    return result

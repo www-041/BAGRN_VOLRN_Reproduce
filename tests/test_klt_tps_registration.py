@@ -167,3 +167,56 @@ def test_estimate_pair_uses_existing_geographic_overlap_context(monkeypatch):
     np.testing.assert_allclose(result["control_points_moving_xy"], expected["control_points_xy"])
     np.testing.assert_allclose(result["source_points_moving_xy"], expected["source_points_xy"])
     assert result["overlap_context"]["resampled_target"] is True
+
+
+def test_tps_dense_flow_recovers_constant_control_displacement():
+    from src.klt_tps_registration import build_tps_dense_flow
+
+    points = np.array([[10, 10], [118, 10], [10, 86], [118, 86], [64, 48]], dtype=float)
+    displacement = np.tile([1.75, -0.50], (len(points), 1))
+    flow = build_tps_dense_flow(
+        points, displacement, (96, 128),
+        {"klt_tps_smoothing": 0.0, "klt_tps_neighbors": 80, "klt_tps_field_step": 4},
+    )
+    assert flow.shape == (96, 128, 2)
+    assert flow.dtype == np.float32
+    np.testing.assert_allclose(np.median(flow.reshape(-1, 2), axis=0), displacement[0], atol=0.05)
+    np.testing.assert_allclose(flow[48, 64], displacement[0], atol=0.05)
+
+
+def test_inspect_tps_dense_flow_accepts_safe_translation():
+    from src.klt_tps_registration import inspect_tps_dense_flow
+
+    flow = np.zeros((32, 40, 2), dtype=np.float32)
+    flow[..., 0] = 1.25
+    flow[..., 1] = -0.5
+    result = inspect_tps_dense_flow(flow, 50.0)
+    assert result["fold_pixels"] == 0
+    assert result["max_displacement_pixels"] == pytest.approx(1.3462912, abs=1e-5)
+
+
+def test_inspect_tps_dense_flow_rejects_folding():
+    from src.klt_tps_registration import inspect_tps_dense_flow
+
+    flow = np.zeros((32, 40, 2), dtype=np.float32)
+    flow[..., 0] = -2 * np.indices(flow.shape[:2])[1]
+    with pytest.raises(ValueError, match="fold"):
+        inspect_tps_dense_flow(flow, 50.0)
+
+
+def test_inspect_tps_dense_flow_rejects_excessive_shift():
+    from src.klt_tps_registration import inspect_tps_dense_flow
+
+    flow = np.zeros((32, 40, 2), dtype=np.float32)
+    flow[..., 0] = 51
+    with pytest.raises(ValueError, match="shift"):
+        inspect_tps_dense_flow(flow, 50.0)
+
+
+def test_inspect_tps_dense_flow_rejects_nonfinite_values():
+    from src.klt_tps_registration import inspect_tps_dense_flow
+
+    flow = np.zeros((32, 40, 2), dtype=np.float32)
+    flow[3, 4, 0] = np.nan
+    with pytest.raises(ValueError, match="finite"):
+        inspect_tps_dense_flow(flow, 50.0)
