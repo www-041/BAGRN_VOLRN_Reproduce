@@ -2994,6 +2994,269 @@ class MultibandPipeline:
             "registration_params_sha256": _registration_params_fingerprint(reg_params),
         }
 
+    def run_klt_tps_support_c1_n2(
+        self,
+        scene_data: Dict[str, Any],
+        overlaps: List[dict],
+        registration_band_idx: int,
+        *,
+        diagnostic_validation_band: str | int = "B14",
+        holdout_reservation_overrides,
+    ) -> Dict[str, Any]:
+        """Run diagnostic-only TPS-SUPPORT-C1 for exactly two scenes."""
+        from src.coregistration import map_pixel_centers_between_grids
+        from src.klt_tps_registration import (
+            estimate_klt_tps_pair,
+            warp_multiband_with_tps_flow,
+        )
+        from src.klt_tps_support_c1 import (
+            build_tps_support_c1_fields,
+            compare_tps_support_validations,
+        )
+
+        if not holdout_reservation_overrides:
+            raise ValueError("TPS-SUPPORT-C1 requires fixed HOLDOUT overrides")
+        arrays = scene_data["arrays"]
+        transforms = scene_data["transforms"]
+        nodata_values = scene_data["nodata_values"]
+        if len(arrays) != 2:
+            raise ValueError("TPS-SUPPORT-C1 supports exactly N=2")
+        edge = (0, 1)
+        if not any(
+            {int(overlap["idx_i"]), int(overlap["idx_j"])} == {0, 1}
+            for overlap in overlaps
+        ):
+            raise ValueError("TPS-SUPPORT-C1 requires geographic overlap edge (0, 1)")
+
+        if isinstance(diagnostic_validation_band, str):
+            if diagnostic_validation_band not in self.common_bands:
+                raise ValueError(
+                    f"diagnostic validation band {diagnostic_validation_band!r} is not loaded"
+                )
+            validation_band_idx = self.common_bands.index(diagnostic_validation_band)
+        else:
+            validation_band_idx = int(diagnostic_validation_band)
+        registration_band_name = self.common_bands[registration_band_idx]
+        validation_band_name = self.common_bands[validation_band_idx]
+        reg_params = getattr(
+            getattr(self, "config", None), "registration_params", {}
+        ) or {}
+
+        holdout_contexts = _prepare_pair_holdout_contexts(
+            arrays,
+            transforms,
+            nodata_values,
+            overlaps,
+            registration_band_idx,
+            reg_params,
+            holdout_reservation_overrides=holdout_reservation_overrides,
+        )
+        context = holdout_contexts.get(edge)
+        reservation = (context or {}).get("validation_reservation", {}) or {}
+        reserved_windows = reservation.get("reserved_windows") or []
+        if (
+            not context
+            or not context.get("available")
+            or len(reserved_windows) != 7
+            or int(context.get("reserved_count", 0)) < 7
+        ):
+            raise ValueError(
+                "TPS-SUPPORT-C1 requires all seven fixed HOLDOUT windows"
+            )
+        training_mask = context.get("train_sampling_mask")
+        if training_mask is None:
+            raise ValueError("TPS-SUPPORT-C1 HOLDOUT training mask unavailable")
+
+        estimation = estimate_klt_tps_pair(
+            arrays[0][registration_band_idx],
+            transforms[0],
+            arrays[1][registration_band_idx],
+            transforms[1],
+            nodata_values[0],
+            nodata_values[1],
+            reg_params,
+            training_mask=training_mask,
+        )
+        raw_flow = estimation.get("flow") if estimation.get("available") else None
+        if raw_flow is None:
+            failure_diagnostics = estimation.get("failure_diagnostics") or {}
+            failure_arrays = estimation.get("_failure_diagnostic_arrays") or {}
+            if (
+                failure_diagnostics.get("stage") == "tps_geometry_gate"
+                and failure_arrays.get("flow") is not None
+            ):
+                raw_flow = failure_arrays["flow"]
+        base_causal = {
+            "available": False,
+            "integrity": {"raw_fit_count": 1},
+            "translation_xy": None,
+            "taper_pixels": 64,
+            "raw_geometry": None,
+            "translation_geometry": None,
+            "supported_geometry": None,
+            "supported_geometry_safe": False,
+            "translation_quality": None,
+            "translation_validation": None,
+            "supported_quality": None,
+            "supported_validation": None,
+            "comparison": None,
+            "paired_holdout_blocks": [],
+            "failure_reason": estimation.get(
+                "failure_reason", "KLT/TPS estimation unavailable"
+            ),
+        }
+        if raw_flow is None:
+            return {
+                "registration_backend": "klt_tps",
+                "diagnostic_mode": "tps_support_c1",
+                "scene_ids": scene_data.get("scene_ids", []),
+                "registration_band_name": registration_band_name,
+                "validation_band_name": validation_band_name,
+                "tps_support_causal": base_causal,
+            }
+
+        fields = build_tps_support_c1_fields(
+            raw_flow,
+            estimation["control_points_moving_xy"],
+            estimation["displacement_xy"],
+            max_shift=float(reg_params.get("klt_tps_max_shift", 50.0)),
+            taper_pixels=64,
+        )
+        translation_xy = np.asarray(fields["translation_xy"], dtype=float)
+        ref_native = map_pixel_centers_between_grids(
+            estimation["reference_points_overlap_xy"],
+            estimation["overlap_context"]["overlap_transform"],
+            transforms[0],
+        )
+        target_native = np.asarray(estimation["source_points_moving_xy"], dtype=float)
+        fb = np.asarray(estimation["forward_backward_error"], dtype=float)
+        fb_threshold = float(reg_params.get("klt_tps_fb_threshold", 0.5))
+        displacement = np.asarray(estimation["displacement_xy"], dtype=float)
+        pair_matches = []
+        for index in range(len(ref_native)):
+            pair_matches.append({
+                "ref_x": float(ref_native[index, 0]),
+                "ref_y": float(ref_native[index, 1]),
+                "tgt_x": float(target_native[index, 0]),
+                "tgt_y": float(target_native[index, 1]),
+                "shift_dx": float(displacement[index, 0]),
+                "shift_dy": float(displacement[index, 1]),
+                "confidence": float(
+                    max(0.0, 1.0 - float(fb[index]) / fb_threshold)
+                ),
+                "forward_backward_error": float(fb[index]),
+                "match_method": "bidirectional_klt",
+            })
+        pair_measurement = {
+            "idx_i": 0,
+            "idx_j": 1,
+            "matches": pair_matches,
+            "shift_dx": float(translation_xy[0]),
+            "shift_dy": float(translation_xy[1]),
+            "confidence": float(np.mean([m["confidence"] for m in pair_matches])),
+            "n_blocks": len(pair_matches),
+            "method": "bidirectional_klt",
+        }
+        translation_flow = fields["_arrays"]["translation_flow"]
+        translation_registered, translation_valid = warp_multiband_with_tps_flow(
+            arrays[1], translation_flow, nodata_values[1]
+        )
+        translation_quality, translation_validation = _validate_final_registration_arrays(
+            [np.asarray(arrays[0]).copy(), translation_registered],
+            registration_band_idx,
+            transforms,
+            nodata_values,
+            [edge],
+            [pair_measurement],
+            reg_params,
+            holdout_contexts=holdout_contexts,
+            validation_band_idx=validation_band_idx,
+        )
+
+        supported_geometry_safe = bool(
+            fields["supported_geometry"].get("geometry_safe", False)
+        )
+        supported_registered = None
+        supported_valid = None
+        supported_quality = None
+        supported_validation = None
+        if supported_geometry_safe:
+            supported_flow = fields["_arrays"]["supported_flow"]
+            supported_registered, supported_valid = warp_multiband_with_tps_flow(
+                arrays[1], supported_flow, nodata_values[1]
+            )
+            supported_quality, supported_validation = _validate_final_registration_arrays(
+                [np.asarray(arrays[0]).copy(), supported_registered],
+                registration_band_idx,
+                transforms,
+                nodata_values,
+                [edge],
+                [pair_measurement],
+                reg_params,
+                holdout_contexts=holdout_contexts,
+                validation_band_idx=validation_band_idx,
+            )
+
+        comparison = None
+        paired_holdout_blocks = []
+        if supported_validation is not None:
+            comparison = compare_tps_support_validations(
+                translation_validation, supported_validation,
+            )
+            paired_holdout_blocks = comparison.get("paired_blocks", [])
+        integrity = dict(fields["integrity"])
+        integrity["raw_fit_count"] = 1
+        integrity["registration_band"] = registration_band_name
+        integrity["validation_band"] = validation_band_name
+        integrity["taper_pixels"] = 64
+        integrity["holdout_keys_match"] = bool(
+            comparison is None or comparison.get("holdout_keys_match", False)
+        )
+        integrity["integrity_pass"] = bool(
+            integrity.get("support_formula_pass", False)
+            and integrity["raw_fit_count"] == 1
+            and integrity["registration_band"] == "B12"
+            and integrity["validation_band"] == "B14"
+            and integrity["taper_pixels"] == 64
+            and integrity["holdout_keys_match"]
+        )
+        causal = {
+            "available": True,
+            "integrity": integrity,
+            "translation_xy": translation_xy,
+            "taper_pixels": 64,
+            "raw_geometry": fields["raw_geometry"],
+            "translation_geometry": fields["translation_geometry"],
+            "supported_geometry": fields["supported_geometry"],
+            "supported_geometry_safe": supported_geometry_safe,
+            "translation_quality": translation_quality,
+            "translation_validation": translation_validation,
+            "supported_quality": supported_quality,
+            "supported_validation": supported_validation,
+            "comparison": comparison,
+            "paired_holdout_blocks": paired_holdout_blocks,
+            "failure_reason": None,
+        }
+        return {
+            "registration_backend": "klt_tps",
+            "diagnostic_mode": "tps_support_c1",
+            "scene_ids": scene_data.get("scene_ids", []),
+            "registration_band_name": registration_band_name,
+            "validation_band_name": validation_band_name,
+            "tps_support_causal": causal,
+            "_tps_support_causal_arrays": {
+                "translation_registered": translation_registered,
+                "supported_registered": supported_registered,
+                "translation_flow": fields["_arrays"]["translation_flow"],
+                "support_weight": fields["_arrays"]["support_weight"],
+                "supported_flow": fields["_arrays"]["supported_flow"],
+                "supported_jacobian": fields["_arrays"]["supported_jacobian"],
+                "supported_fold_mask": fields["_arrays"]["supported_fold_mask"],
+                "translation_valid": translation_valid,
+                "supported_valid": supported_valid,
+            },
+        }
+
     def register_scenes(
         self,
         scene_data: Dict[str, Any],

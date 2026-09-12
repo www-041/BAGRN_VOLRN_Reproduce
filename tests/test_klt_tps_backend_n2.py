@@ -292,3 +292,224 @@ def test_klt_tps_n2_synthetic_end_to_end_uses_actual_backend_dispatch(monkeypatc
     assert result["registered_arrays"][1].shape == scene_data["arrays"][1].shape
     assert result["final_validation"]["overall"]["quality"] == "pass"
     assert result["klt_tps"]["accepted_point_count"] >= 30
+
+
+def _c1_context(shape=(48, 56)):
+    return {
+        "available": True,
+        "reserved_count": 7,
+        "train_sampling_mask": np.ones(shape, dtype=bool),
+        "holdout_region_full_mask": np.zeros(shape, dtype=bool),
+        "holdout_exclusion_mask": np.ones(shape, dtype=bool),
+        "validation_reservation": {
+            "reserved_windows": [
+                {"row": 4, "col": 4, "height": 384, "width": 384}
+                for _ in range(7)
+            ],
+        },
+    }
+
+
+def _c1_scene_data(shape=(48, 56)):
+    arrays = [
+        np.stack([np.ones(shape), np.ones(shape) * 2]),
+        np.stack([np.ones(shape) * 3, np.ones(shape) * 4]),
+    ]
+    return {
+        "arrays": arrays,
+        "transforms": [Affine.identity(), Affine.identity()],
+        "nodata_values": [None, None],
+        "scene_ids": ["ref", "moving"],
+    }
+
+
+def _patch_c1_dependencies(monkeypatch, *, estimation=None, validate=None):
+    import src.klt_tps_registration as klt
+    import src.multiband_pipeline as pipeline
+
+    context = _c1_context()
+    monkeypatch.setattr(
+        pipeline, "_prepare_pair_holdout_contexts",
+        lambda *args, **kwargs: {(0, 1): context},
+    )
+    monkeypatch.setattr(
+        klt, "estimate_klt_tps_pair",
+        lambda *args, **kwargs: estimation or _fake_estimation(),
+    )
+    validations = []
+    if validate is None:
+        validate = lambda *args, **kwargs: (
+            {"quality": "pass", "rmse": 0.1, "p95": 0.2, "median": 0.1,
+             "confidence": 0.9, "n_blocks": 5},
+            {"edges": [{"idx_i": 0, "idx_j": 1, "blocks": []}],
+             "overall": {"quality": "pass"}},
+        )
+
+    def fake_validate(*args, **kwargs):
+        validations.append(kwargs.get("holdout_contexts"))
+        return validate(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_validate_final_registration_arrays", fake_validate)
+    return context, validations
+
+
+def test_tps_support_c1_calls_klt_tps_estimator_exactly_once(monkeypatch):
+    import src.klt_tps_registration as klt
+
+    pipe = _dummy_pipeline()
+    calls = []
+    estimation = _fake_estimation()
+    _patch_c1_dependencies(monkeypatch, estimation=estimation)
+
+    def fake_estimate(*args, **kwargs):
+        calls.append((args, kwargs))
+        return estimation
+
+    monkeypatch.setattr(klt, "estimate_klt_tps_pair", fake_estimate)
+    pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        diagnostic_validation_band="B14",
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert len(calls) == 1
+
+
+def test_tps_support_c1_can_use_raw_flow_from_geometry_gate_rejection(monkeypatch):
+    pipe = _dummy_pipeline()
+    estimation = _fake_estimation()
+    estimation.update({
+        "available": False,
+        "failure_reason": "TPS flow contains fold pixels",
+        "failure_diagnostics": {"stage": "tps_geometry_gate"},
+        "_failure_diagnostic_arrays": {
+            "flow": np.full_like(estimation["flow"], [51.0, 0.0]),
+        },
+    })
+    _patch_c1_dependencies(monkeypatch, estimation=estimation)
+
+    result = pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    causal = result["tps_support_causal"]
+    assert causal["available"] is True
+    assert causal["raw_geometry"]["geometry_safe"] is False
+    assert causal["integrity"]["raw_fit_count"] == 1
+
+
+def test_tps_support_c1_rejects_tps_fit_failure_without_counterfactual(monkeypatch):
+    pipe = _dummy_pipeline()
+    estimation = {
+        "available": False,
+        "failure_reason": "TPS fit failed",
+        "failure_diagnostics": {"stage": "tps_fit"},
+        "_failure_diagnostic_arrays": {},
+    }
+    _patch_c1_dependencies(monkeypatch, estimation=estimation)
+
+    result = pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert result["tps_support_causal"]["available"] is False
+    assert result["tps_support_causal"]["raw_geometry"] is None
+    assert result["tps_support_causal"]["translation_validation"] is None
+
+
+def test_tps_support_c1_warps_translation_and_supported_from_original(monkeypatch):
+    import src.klt_tps_registration as klt
+
+    pipe = _dummy_pipeline()
+    scene_data = _c1_scene_data()
+    _patch_c1_dependencies(monkeypatch)
+    sources = []
+    flows = []
+
+    def fake_warp(source, flow, nodata):
+        sources.append(source)
+        flows.append(flow)
+        return source.copy(), np.ones(source.shape[1:], bool)
+
+    monkeypatch.setattr(klt, "warp_multiband_with_tps_flow", fake_warp)
+    result = pipe.run_klt_tps_support_c1_n2(
+        scene_data, [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert result["tps_support_causal"]["available"] is True
+    assert len(sources) == 2
+    assert all(source is scene_data["arrays"][1] for source in sources)
+    assert not np.shares_memory(flows[0], flows[1])
+
+
+def test_tps_support_c1_reuses_same_holdout_context_for_both_validations(monkeypatch):
+    pipe = _dummy_pipeline()
+    context, validations = _patch_c1_dependencies(monkeypatch)
+
+    pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert len(validations) == 2
+    assert validations[0] is validations[1]
+    assert validations[0][(0, 1)] is context
+
+
+def test_tps_support_c1_does_not_warp_supported_when_geometry_unsafe(monkeypatch):
+    import src.klt_tps_registration as klt
+
+    pipe = _dummy_pipeline()
+    estimation = _fake_estimation()
+    estimation["flow"][..., 0] = 1000.0
+    _patch_c1_dependencies(monkeypatch, estimation=estimation)
+    calls = []
+    monkeypatch.setattr(
+        klt, "warp_multiband_with_tps_flow",
+        lambda source, flow, nodata: (
+            calls.append(flow) or (source.copy(), np.ones(source.shape[1:], bool))
+        ),
+    )
+
+    result = pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert len(calls) == 1
+    assert result["tps_support_causal"]["supported_geometry_safe"] is False
+    assert result["tps_support_causal"]["supported_validation"] is None
+
+
+def test_tps_support_c1_records_raw_fit_count_one(monkeypatch):
+    pipe = _dummy_pipeline()
+    _patch_c1_dependencies(monkeypatch)
+
+    result = pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert result["tps_support_causal"]["integrity"]["raw_fit_count"] == 1
+
+
+def test_production_klt_tps_register_scenes_does_not_enable_support_c1(monkeypatch):
+    pipe = _dummy_pipeline()
+    called = []
+    monkeypatch.setattr(
+        pipe, "_register_scenes_klt_tps_n2",
+        lambda *args, **kwargs: called.append(kwargs) or {"production": True},
+    )
+    pipe.run_klt_tps_support_c1_n2 = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("support C1 must not be enabled by production dispatch")
+    )
+
+    result = pipe.register_scenes(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], registration_band_idx=0,
+    )
+
+    assert result == {"production": True}
+    assert called
