@@ -318,10 +318,61 @@ def test_compare_tps_support_validations_reports_translation_minus_supported_imp
         _validation_fixture(), _validation_fixture(supported=True)
     )
 
-    assert comparison["rmse_improvement"] == pytest.approx(1.0)
+    assert comparison["rmse_improvement"] == pytest.approx(
+        np.sqrt(17.0) - np.sqrt(10.0)
+    )
     assert comparison["p95_improvement"] == pytest.approx(1.0)
     assert comparison["median_improvement"] == pytest.approx(1.0)
     assert all(block["improvement"] > 0 for block in comparison["paired_blocks"])
+
+
+def test_compare_tps_support_validations_uses_same_paired_blocks_for_rmse():
+    from src.klt_tps_support_c1 import compare_tps_support_validations
+
+    translation_validation = {
+        "edges": [{"idx_i": 0, "idx_j": 1, "blocks": [
+            {"validation_row": 10, "validation_col": 20,
+             "block_size": 384, "residual_magnitude": 1.0,
+             "accepted": True},
+            {"validation_row": 30, "validation_col": 40,
+             "block_size": 384, "residual_magnitude": 5.0,
+             "accepted": False},
+        ]}],
+        "overall": {"median": 101.0, "rmse": 102.0, "p95": 103.0},
+    }
+    supported_validation = {
+        "edges": [{"idx_i": 0, "idx_j": 1, "blocks": [
+            {"validation_row": 10, "validation_col": 20,
+             "block_size": 384, "residual_magnitude": 2.0,
+             "accepted": True},
+            {"validation_row": 30, "validation_col": 40,
+             "block_size": 384, "residual_magnitude": 3.0,
+             "accepted": True},
+        ]}],
+        "overall": {"median": 201.0, "rmse": 202.0, "p95": 203.0},
+    }
+
+    comparison = compare_tps_support_validations(
+        translation_validation, supported_validation
+    )
+
+    assert comparison["all_measurable"]["translation"] == {
+        "n": 2, "median": 3.0, "rmse": pytest.approx(np.sqrt(13.0)),
+        "p95": pytest.approx(4.8),
+    }
+    assert comparison["all_measurable"]["supported"] == {
+        "n": 2, "median": 2.5, "rmse": pytest.approx(np.sqrt(6.5)),
+        "p95": pytest.approx(2.95),
+    }
+    assert comparison["rmse_improvement"] == pytest.approx(
+        np.sqrt(13.0) - np.sqrt(6.5)
+    )
+    assert comparison["p95_improvement"] == pytest.approx(1.85)
+    assert comparison["median_improvement"] == pytest.approx(0.5)
+    assert comparison["stage_quality"]["translation"] == {
+        "median": 101.0, "rmse": 102.0, "p95": 103.0,
+    }
+    assert comparison["paired_blocks"][1]["translation_accepted"] is False
 
 
 def test_compare_tps_support_validations_marks_holdout_mismatch_unavailable():

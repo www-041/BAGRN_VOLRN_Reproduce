@@ -3209,8 +3209,22 @@ class MultibandPipeline:
         integrity["registration_band"] = registration_band_name
         integrity["validation_band"] = validation_band_name
         integrity["taper_pixels"] = 64
+        integrity["comparison_available"] = bool(
+            comparison is not None
+            and comparison.get("available", False)
+        )
+        integrity["n_paired_blocks"] = int(
+            (comparison or {}).get("n_paired_blocks", 0)
+        )
         integrity["holdout_keys_match"] = bool(
             comparison is None or comparison.get("holdout_keys_match", False)
+        )
+        comparison_integrity_pass = (
+            not supported_geometry_safe
+            or (
+                integrity["comparison_available"]
+                and integrity["n_paired_blocks"] > 0
+            )
         )
         integrity["integrity_pass"] = bool(
             integrity.get("support_formula_pass", False)
@@ -3219,7 +3233,30 @@ class MultibandPipeline:
             and integrity["validation_band"] == "B14"
             and integrity["taper_pixels"] == 64
             and integrity["holdout_keys_match"]
+            and comparison_integrity_pass
         )
+        if comparison is not None:
+            integrity.update({
+                "paired_n": integrity["n_paired_blocks"],
+                "paired_translation_rmse": (
+                    comparison.get("all_measurable", {})
+                    .get("translation", {}).get("rmse")
+                ),
+                "paired_supported_rmse": (
+                    comparison.get("all_measurable", {})
+                    .get("supported", {}).get("rmse")
+                ),
+                "paired_rmse_improvement": comparison.get("rmse_improvement"),
+                "paired_translation_p95": (
+                    comparison.get("all_measurable", {})
+                    .get("translation", {}).get("p95")
+                ),
+                "paired_supported_p95": (
+                    comparison.get("all_measurable", {})
+                    .get("supported", {}).get("p95")
+                ),
+                "paired_p95_improvement": comparison.get("p95_improvement"),
+            })
         causal = {
             "available": True,
             "integrity": integrity,

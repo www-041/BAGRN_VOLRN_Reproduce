@@ -322,6 +322,34 @@ def _finite_metric(validation: dict, name: str) -> float | None:
     return value if np.isfinite(value) else None
 
 
+def _residual_summary(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+
+    if len(values) == 0:
+        return {
+            "n": 0,
+            "median": None,
+            "rmse": None,
+            "p95": None,
+        }
+
+    return {
+        "n": int(len(values)),
+        "median": float(np.median(values)),
+        "rmse": float(np.sqrt(np.mean(values ** 2))),
+        "p95": float(np.percentile(values, 95)),
+    }
+
+
+def _finite_residual(value) -> float | None:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
+
+
 def compare_tps_support_validations(
     translation_validation: dict,
     supported_validation: dict,
@@ -336,20 +364,12 @@ def compare_tps_support_validations(
     for key in common_keys:
         translation_block = translation_lookup[key]
         supported_block = supported_lookup[key]
-        translation_residual = translation_block.get("residual_magnitude")
-        supported_residual = supported_block.get("residual_magnitude")
-        try:
-            translation_residual = float(translation_residual)
-            if not np.isfinite(translation_residual):
-                translation_residual = None
-        except (TypeError, ValueError):
-            translation_residual = None
-        try:
-            supported_residual = float(supported_residual)
-            if not np.isfinite(supported_residual):
-                supported_residual = None
-        except (TypeError, ValueError):
-            supported_residual = None
+        translation_residual = _finite_residual(
+            translation_block.get("residual_magnitude")
+        )
+        supported_residual = _finite_residual(
+            supported_block.get("residual_magnitude")
+        )
         if translation_residual is None and supported_residual is None:
             continue
         improvement = (
@@ -369,7 +389,20 @@ def compare_tps_support_validations(
         })
 
     holdout_keys_match = translation_keys == supported_keys
-    available = bool(holdout_keys_match and paired_blocks)
+    measurable_paired_blocks = [
+        block for block in paired_blocks
+        if block["translation_residual"] is not None
+        and block["supported_residual"] is not None
+    ]
+    paired_translation_values = [
+        block["translation_residual"] for block in measurable_paired_blocks
+    ]
+    paired_supported_values = [
+        block["supported_residual"] for block in measurable_paired_blocks
+    ]
+    translation_paired = _residual_summary(paired_translation_values)
+    supported_paired = _residual_summary(paired_supported_values)
+    available = bool(holdout_keys_match and measurable_paired_blocks)
     if available:
         reason = None
     elif not holdout_keys_match:
@@ -377,24 +410,48 @@ def compare_tps_support_validations(
     else:
         reason = "no measurable paired HOLDOUT blocks"
 
-    def improvement(name: str) -> float | None:
-        before = _finite_metric(translation_validation, name)
-        after = _finite_metric(supported_validation, name)
+    def paired_improvement(name: str) -> float | None:
+        before = translation_paired[name]
+        after = supported_paired[name]
         return before - after if before is not None and after is not None else None
+
+    stage_quality = {
+        "translation": {
+            "median": _finite_metric(translation_validation, "median"),
+            "rmse": _finite_metric(translation_validation, "rmse"),
+            "p95": _finite_metric(translation_validation, "p95"),
+        },
+        "supported": {
+            "median": _finite_metric(supported_validation, "median"),
+            "rmse": _finite_metric(supported_validation, "rmse"),
+            "p95": _finite_metric(supported_validation, "p95"),
+        },
+    }
+    all_measurable = {
+        "translation": translation_paired,
+        "supported": supported_paired,
+        "median_improvement": paired_improvement("median"),
+        "rmse_improvement": paired_improvement("rmse"),
+        "p95_improvement": paired_improvement("p95"),
+    }
 
     return {
         "available": available,
         "reason": reason,
         "holdout_keys_match": holdout_keys_match,
+        # Preserve the historical stage-level fields for compatibility. The
+        # causal deltas below are computed only from the same paired blocks.
         "translation_rmse": _finite_metric(translation_validation, "rmse"),
         "supported_rmse": _finite_metric(supported_validation, "rmse"),
-        "rmse_improvement": improvement("rmse"),
+        "rmse_improvement": all_measurable["rmse_improvement"],
         "translation_p95": _finite_metric(translation_validation, "p95"),
         "supported_p95": _finite_metric(supported_validation, "p95"),
-        "p95_improvement": improvement("p95"),
+        "p95_improvement": all_measurable["p95_improvement"],
         "translation_median": _finite_metric(translation_validation, "median"),
         "supported_median": _finite_metric(supported_validation, "median"),
-        "median_improvement": improvement("median"),
-        "n_paired_blocks": len(paired_blocks),
+        "median_improvement": all_measurable["median_improvement"],
+        "stage_quality": stage_quality,
+        "all_measurable": all_measurable,
+        "n_paired_blocks": len(measurable_paired_blocks),
         "paired_blocks": paired_blocks,
     }

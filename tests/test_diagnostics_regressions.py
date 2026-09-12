@@ -287,6 +287,46 @@ def _tps_support_c1_registration_fixture(*, supported_safe=True):
     }
 
 
+def _tps_support_c1_completion_fixture(comparison):
+    return {
+        "tps_support_causal": {
+            "available": True,
+            "integrity": {"integrity_pass": True},
+            "supported_geometry_safe": True,
+            "translation_validation": {"edges": []},
+            "supported_validation": {"edges": []},
+            "comparison": comparison,
+        },
+    }
+
+
+def test_tps_support_c1_completion_rejects_unavailable_comparison():
+    from scripts import diagnose_registration_pair
+
+    registration = _tps_support_c1_completion_fixture({
+        "available": False,
+        "reason": "no measurable paired HOLDOUT blocks",
+        "n_paired_blocks": 0,
+    })
+
+    assert diagnose_registration_pair._tps_support_c1_completion_reason(
+        registration
+    ) == "no measurable paired HOLDOUT blocks"
+
+
+def test_tps_support_c1_completion_rejects_zero_paired_blocks():
+    from scripts import diagnose_registration_pair
+
+    registration = _tps_support_c1_completion_fixture({
+        "available": True,
+        "n_paired_blocks": 0,
+    })
+
+    assert diagnose_registration_pair._tps_support_c1_completion_reason(
+        registration
+    ) == "TPS-SUPPORT-C1 has no measurable paired HOLDOUT blocks"
+
+
 def _tps_support_c1_scene_data(shape=(32, 40)):
     return {
         "arrays": [

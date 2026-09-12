@@ -496,6 +496,38 @@ def test_tps_support_c1_records_raw_fit_count_one(monkeypatch):
     assert result["tps_support_causal"]["integrity"]["raw_fit_count"] == 1
 
 
+def test_tps_support_c1_integrity_requires_available_holdout_comparison(monkeypatch):
+    pipe = _dummy_pipeline()
+    calls = []
+
+    def validate(*args, **kwargs):
+        calls.append(True)
+        blocks = [{
+            "validation_row": 4,
+            "validation_col": 8,
+            "block_size": 384,
+            "residual_magnitude": 1.0 if len(calls) == 1 else None,
+            "accepted": True,
+        }]
+        return (
+            {"quality": "pass", "rmse": 0.1, "p95": 0.2, "median": 0.1,
+             "confidence": 0.9, "n_blocks": 1},
+            {"edges": [{"idx_i": 0, "idx_j": 1, "blocks": blocks}],
+             "overall": {"quality": "pass"}},
+        )
+
+    _patch_c1_dependencies(monkeypatch, validate=validate)
+    result = pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    integrity = result["tps_support_causal"]["integrity"]
+    assert integrity["comparison_available"] is False
+    assert integrity["n_paired_blocks"] == 0
+    assert integrity["integrity_pass"] is False
+
+
 def test_production_klt_tps_register_scenes_does_not_enable_support_c1(monkeypatch):
     pipe = _dummy_pipeline()
     called = []

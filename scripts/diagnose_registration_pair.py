@@ -153,10 +153,17 @@ def _log_tps_support_c1_summary(registration):
         _metric_text(supported_quality.get("p95")),
     )
     comparison = causal.get("comparison", {}) or {}
+    paired = comparison.get("all_measurable", {}) or {}
     logger.info(
-        "TPS-SUPPORT-C1 translation-minus-supported RMSE/P95 improvement=%s/%s",
-        _metric_text(comparison.get("rmse_improvement")),
-        _metric_text(comparison.get("p95_improvement")),
+        "TPS-SUPPORT-C1 translation-minus-supported paired RMSE/P95 improvement=%s/%s "
+        "(n=%s)",
+        _metric_text(
+            paired.get("rmse_improvement", comparison.get("rmse_improvement"))
+        ),
+        _metric_text(
+            paired.get("p95_improvement", comparison.get("p95_improvement"))
+        ),
+        comparison.get("n_paired_blocks", 0),
     )
 
 
@@ -1053,8 +1060,16 @@ def _tps_support_c1_completion_reason(registration):
         return "TPS-SUPPORT-C1 translation HOLDOUT validation is missing"
     if causal.get("supported_validation") is None:
         return "TPS-SUPPORT-C1 supported HOLDOUT validation is missing"
-    if causal.get("comparison") is None:
+    comparison = causal.get("comparison") or {}
+    if not comparison:
         return "TPS-SUPPORT-C1 HOLDOUT comparison is missing"
+    if not comparison.get("available", False):
+        return (
+            comparison.get("reason")
+            or "TPS-SUPPORT-C1 HOLDOUT comparison is unavailable"
+        )
+    if int(comparison.get("n_paired_blocks", 0)) <= 0:
+        return "TPS-SUPPORT-C1 has no measurable paired HOLDOUT blocks"
     return None
 
 
