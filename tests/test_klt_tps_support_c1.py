@@ -149,3 +149,101 @@ def test_validation_block_keys_are_sorted_and_ignore_acceptance_status():
         (0, 1, 256, 640, 384),
         (0, 1, 512, 64, 384),
     ]
+
+
+def _field_inputs(shape=(64, 72)):
+    controls = np.asarray([
+        [10.0, 10.0], [60.0, 10.0], [60.0, 54.0], [10.0, 54.0],
+    ])
+    displacements = np.asarray([
+        [2.0, -1.0], [2.1, -0.9], [1.9, -1.1], [2.0, -1.0],
+    ])
+    y, x = np.indices(shape)
+    raw = np.stack([2.0 + 0.01 * x, -1.0 + 0.005 * y], axis=-1).astype(
+        np.float32
+    )
+    return raw, controls, displacements
+
+
+def test_tps_support_field_bundle_uses_one_raw_flow_without_refit():
+    from src.klt_tps_support_c1 import build_tps_support_c1_fields
+
+    raw, controls, displacements = _field_inputs()
+    fields = build_tps_support_c1_fields(
+        raw, controls, displacements, max_shift=50.0, taper_pixels=8,
+    )
+
+    assert fields["raw_flow_sha256"]
+    np.testing.assert_array_equal(fields["_arrays"]["raw_flow"], raw)
+    assert fields["_arrays"]["raw_flow"] is raw
+
+
+def test_tps_support_field_bundle_records_raw_translation_supported_geometry():
+    from src.klt_tps_support_c1 import build_tps_support_c1_fields
+
+    raw, controls, displacements = _field_inputs()
+    fields = build_tps_support_c1_fields(
+        raw, controls, displacements, max_shift=50.0, taper_pixels=8,
+    )
+
+    for name in ("raw_geometry", "translation_geometry", "supported_geometry"):
+        assert "geometry_safe" in fields[name]
+        assert "fold_pixels" in fields[name]
+        assert "max_displacement_pixels" in fields[name]
+    np.testing.assert_allclose(fields["translation_xy"], [2.0, -1.0])
+    assert fields["taper_pixels"] == 8
+
+
+def test_tps_support_field_integrity_requires_outside_translation_match():
+    from src.klt_tps_support_c1 import (
+        build_tps_support_c1_fields,
+        summarize_tps_support_field_integrity,
+    )
+
+    raw, controls, displacements = _field_inputs()
+    fields = build_tps_support_c1_fields(
+        raw, controls, displacements, max_shift=50.0, taper_pixels=8,
+    )
+    arrays = fields["_arrays"]
+    arrays["supported_flow"][0, 0, 0] += 0.1
+
+    integrity = summarize_tps_support_field_integrity(fields)
+
+    assert integrity["outside_max_abs_supported_minus_translation"] > 1e-6
+    assert integrity["support_formula_pass"] is False
+
+
+def test_tps_support_field_integrity_requires_deep_inside_raw_match():
+    from src.klt_tps_support_c1 import (
+        build_tps_support_c1_fields,
+        summarize_tps_support_field_integrity,
+    )
+
+    raw, controls, displacements = _field_inputs()
+    fields = build_tps_support_c1_fields(
+        raw, controls, displacements, max_shift=50.0, taper_pixels=8,
+    )
+    arrays = fields["_arrays"]
+    deep = arrays["deep_inside_mask"]
+    assert deep.any()
+    row, col = np.argwhere(deep)[0]
+    arrays["supported_flow"][row, col, 1] += 0.1
+
+    integrity = summarize_tps_support_field_integrity(fields)
+
+    assert integrity["deep_inside_max_abs_supported_minus_raw"] > 1e-6
+    assert integrity["support_formula_pass"] is False
+
+
+def test_tps_support_field_bundle_reports_supported_unsafe_without_warping():
+    from src.klt_tps_support_c1 import build_tps_support_c1_fields
+
+    raw, controls, displacements = _field_inputs()
+    raw[..., 0] = 60.0
+    fields = build_tps_support_c1_fields(
+        raw, controls, displacements, max_shift=50.0, taper_pixels=8,
+    )
+
+    assert fields["translation_geometry"]["geometry_safe"] is True
+    assert fields["supported_geometry"]["geometry_safe"] is False
+    assert fields["supported_geometry"]["rejection_reason"]

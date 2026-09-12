@@ -8,6 +8,15 @@ from typing import Any
 
 import numpy as np
 
+from src.klt_tps_registration import (
+    analyze_tps_dense_flow,
+    build_inside_hull_taper_weight,
+    build_translation_flow,
+    compose_supported_tps_flow,
+    compute_klt_translation_continuation,
+    inspect_tps_dense_flow,
+)
+
 
 TPS_SUPPORT_C1_TAPER_PIXELS: int = 64
 
@@ -129,3 +138,142 @@ def validation_block_keys(validation: dict) -> list[tuple[int, int, int, int, in
             except (KeyError, TypeError, ValueError):
                 continue
     return sorted(keys)
+
+
+def _geometry_summary(flow: np.ndarray, analysis: dict[str, Any], max_shift: float):
+    """Return compact field statistics and catch only safety-gate rejection."""
+    summary = analysis["summary"]
+    try:
+        gate = inspect_tps_dense_flow(flow, max_shift)
+    except ValueError as exc:
+        return {
+            "geometry_safe": False,
+            "rejection_reason": str(exc),
+            "fold_pixels": int(summary["fold_pixels"]),
+            "max_displacement_pixels": float(summary["displacement_max"]),
+            "jacobian_min": float(summary["jacobian_min"]),
+            "jacobian_max": float(summary["jacobian_max"]),
+        }
+    return {
+        "geometry_safe": True,
+        "rejection_reason": None,
+        "fold_pixels": int(gate["fold_pixels"]),
+        "max_displacement_pixels": float(gate["max_displacement_pixels"]),
+        "jacobian_min": float(gate["jacobian_min"]),
+        "jacobian_max": float(gate["jacobian_max"]),
+    }
+
+
+def summarize_tps_support_field_integrity(
+    fields: dict[str, Any],
+) -> dict[str, Any]:
+    """Check the causal support formula using the private in-process arrays."""
+    arrays = fields.get("_arrays", {})
+    raw_flow = np.asarray(arrays["raw_flow"])
+    translation_flow = np.asarray(arrays["translation_flow"])
+    support_weight = np.asarray(arrays["support_weight"])
+    supported_flow = np.asarray(arrays["supported_flow"])
+    hull_mask = np.asarray(arrays["support_hull_mask"], dtype=bool)
+    deep_inside_mask = np.asarray(arrays["deep_inside_mask"], dtype=bool)
+
+    if (
+        raw_flow.shape != translation_flow.shape
+        or raw_flow.shape != supported_flow.shape
+        or support_weight.shape != raw_flow.shape[:2]
+        or hull_mask.shape != raw_flow.shape[:2]
+        or deep_inside_mask.shape != raw_flow.shape[:2]
+    ):
+        raise ValueError("TPS support integrity arrays have mismatched shapes")
+
+    outside = ~hull_mask
+    nonzero_outside = int(np.count_nonzero(support_weight[outside] != 0.0))
+    if np.any(outside):
+        outside_diff = np.abs(supported_flow[outside] - translation_flow[outside])
+        outside_max = float(np.max(outside_diff))
+    else:
+        outside_max = 0.0
+    deep_count = int(np.count_nonzero(deep_inside_mask))
+    if deep_count:
+        deep_diff = np.abs(supported_flow[deep_inside_mask] - raw_flow[deep_inside_mask])
+        deep_max: float | None = float(np.max(deep_diff))
+    else:
+        deep_max = None
+
+    weight_min = float(np.min(support_weight))
+    weight_max = float(np.max(support_weight))
+    formula_pass = bool(
+        weight_min >= 0.0
+        and weight_max <= 1.0
+        and nonzero_outside == 0
+        and outside_max <= 1e-6
+        and (deep_max is None or deep_max <= 1e-6)
+    )
+    return {
+        "raw_flow_sha256": fields.get("raw_flow_sha256", array_sha256(raw_flow)),
+        "controls_sha256": fields.get("controls_sha256"),
+        "displacements_sha256": fields.get("displacements_sha256"),
+        "weight_min": weight_min,
+        "weight_max": weight_max,
+        "outside_hull_nonzero_weight_pixels": nonzero_outside,
+        "outside_max_abs_supported_minus_translation": outside_max,
+        "deep_inside_pixel_count": deep_count,
+        "deep_inside_max_abs_supported_minus_raw": deep_max,
+        "support_formula_pass": formula_pass,
+    }
+
+
+def build_tps_support_c1_fields(
+    raw_flow: np.ndarray,
+    control_points_xy: np.ndarray,
+    displacement_xy: np.ndarray,
+    *,
+    max_shift: float,
+    taper_pixels: int = TPS_SUPPORT_C1_TAPER_PIXELS,
+) -> dict[str, Any]:
+    """Build raw, translation, and supported C1 fields from one raw TPS result."""
+    raw = np.asarray(raw_flow)
+    translation_xy = compute_klt_translation_continuation(displacement_xy)
+    translation_flow = build_translation_flow(translation_xy, raw.shape[:2])
+    support = build_inside_hull_taper_weight(
+        control_points_xy, raw.shape[:2], taper_pixels,
+    )
+    supported_flow = compose_supported_tps_flow(
+        raw, translation_xy, support["weight"],
+    )
+
+    raw_analysis = analyze_tps_dense_flow(raw)
+    translation_analysis = analyze_tps_dense_flow(translation_flow)
+    supported_analysis = analyze_tps_dense_flow(supported_flow)
+    fields: dict[str, Any] = {
+        "translation_xy": translation_xy.astype(float),
+        "taper_pixels": int(taper_pixels),
+        "raw_flow_sha256": array_sha256(raw),
+        "controls_sha256": array_sha256(control_points_xy),
+        "displacements_sha256": array_sha256(displacement_xy),
+        "support": {
+            "available": bool(np.any(support["hull_mask"])),
+            "hull_pixel_count": int(np.count_nonzero(support["hull_mask"])),
+            "deep_inside_pixel_count": int(np.count_nonzero(support["deep_inside_mask"])),
+        },
+        "raw_geometry": _geometry_summary(raw, raw_analysis, max_shift),
+        "translation_geometry": _geometry_summary(
+            translation_flow, translation_analysis, max_shift,
+        ),
+        "supported_geometry": _geometry_summary(
+            supported_flow, supported_analysis, max_shift,
+        ),
+        "_arrays": {
+            "raw_flow": raw,
+            "translation_flow": translation_flow,
+            "support_weight": support["weight"],
+            "supported_flow": supported_flow,
+            "supported_jacobian": supported_analysis["jacobian_determinant"],
+            "supported_fold_mask": supported_analysis["fold_mask"],
+            "support_hull_mask": support["hull_mask"],
+            "deep_inside_mask": support["deep_inside_mask"],
+        },
+    }
+    integrity = summarize_tps_support_field_integrity(fields)
+    fields["integrity"] = integrity
+    fields["support_formula_pass"] = integrity["support_formula_pass"]
+    return fields
