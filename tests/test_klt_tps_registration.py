@@ -707,3 +707,38 @@ def test_supported_tps_rejects_shape_mismatch():
     raw = np.zeros((20, 24, 2), dtype=np.float32)
     with pytest.raises(ValueError, match="shape"):
         compose_supported_tps_flow(raw, [1.0, 2.0], np.zeros((19, 24)))
+
+
+def test_normal_klt_tps_backend_still_rejects_raw_folding(monkeypatch):
+    from src import klt_tps_registration as module
+
+    module, image = _geometry_rejection_case(monkeypatch)
+    flow = np.zeros((64, 64, 2), dtype=np.float32)
+    flow[..., 0] = -2 * np.indices(flow.shape[:2])[1]
+    monkeypatch.setattr(module, "build_tps_dense_flow", lambda *args, **kwargs: flow)
+
+    result = module.estimate_klt_tps_pair(
+        image, Affine.identity(), image, Affine.identity(), None, None,
+        _klt_params(),
+    )
+
+    assert result["available"] is False
+    assert "fold" in result["failure_reason"]
+
+
+def test_normal_klt_tps_backend_does_not_apply_support_taper(monkeypatch):
+    from src import klt_tps_registration as module
+
+    module, image = _geometry_rejection_case(monkeypatch)
+    flow = np.zeros((64, 64, 2), dtype=np.float32)
+    flow[..., 0] = 1.25
+    monkeypatch.setattr(module, "build_tps_dense_flow", lambda *args, **kwargs: flow)
+
+    result = module.estimate_klt_tps_pair(
+        image, Affine.identity(), image, Affine.identity(), None, None,
+        _klt_params(),
+    )
+
+    assert result["available"] is True
+    assert result["flow"] is flow
+    np.testing.assert_array_equal(result["flow"], flow)

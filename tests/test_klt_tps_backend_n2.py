@@ -513,3 +513,63 @@ def test_production_klt_tps_register_scenes_does_not_enable_support_c1(monkeypat
 
     assert result == {"production": True}
     assert called
+
+
+def test_tps_support_c1_does_not_change_klt_or_tps_parameters(monkeypatch):
+    pipe = _dummy_pipeline()
+    fixed = {
+        "klt_tps_window": 9,
+        "klt_tps_pyramid_level": 3,
+        "klt_tps_max_corners": 4000,
+        "klt_tps_min_corner_distance": 5.0,
+        "klt_tps_fb_threshold": 0.5,
+        "klt_tps_min_points": 30,
+        "klt_tps_neighbors": 80,
+        "klt_tps_smoothing": 3.0,
+        "klt_tps_field_step": 4,
+        "klt_tps_max_shift": 50.0,
+    }
+    pipe.config.registration_params.update(fixed)
+    before = dict(pipe.config.registration_params)
+    _patch_c1_dependencies(monkeypatch)
+
+    pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert pipe.config.registration_params == before
+
+
+def test_tps_support_c1_does_not_change_quality_thresholds(monkeypatch):
+    pipe = _dummy_pipeline()
+    thresholds = {
+        "required_quality": "pass",
+        "final_min_blocks": 5,
+        "validation_confidence_threshold": 0.45,
+        "validation_max_residual_shift": 3.0,
+    }
+    pipe.config.registration_params.update(thresholds)
+    before = dict(pipe.config.registration_params)
+    _patch_c1_dependencies(monkeypatch)
+
+    pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert pipe.config.registration_params == before
+
+
+def test_legacy_backend_dispatch_remains_unchanged(monkeypatch):
+    pipe = _dummy_pipeline(backend="legacy")
+    pipe._register_scenes_klt_tps_n2 = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("legacy dispatch entered KLT/TPS path")
+    )
+
+    result = pipe.register_scenes(
+        _c1_scene_data(), [], registration_band_idx=0,
+    )
+
+    assert result["status"] == "fail"
+    assert result.get("registration_backend") != "klt_tps"
