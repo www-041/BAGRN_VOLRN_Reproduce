@@ -33,3 +33,17 @@ Manual N=2 validation (run by the user after this branch is pushed):
 
 This branch does not run real DZ01V data and does not implement N=4/N=6,
 multi-scene TPS composition, parameter search, or BAGRN/VOLRN changes.
+
+## TPS-FOLD-D1 diagnostic
+
+TPS-FOLD-D1 is a diagnostic-only path used when the dense TPS geometry gate
+rejects a field. It preserves pre-gate controls, displacement statistics,
+Jacobian statistics, fold support, and optional visual evidence for manual
+inspection.
+
+The diagnostic does not modify TPS fitting, does not relax the Jacobian safety
+gate, and never allows an unsafe flow to warp the original imagery. Its purpose
+is to distinguish evidence associated with unsupported extrapolation,
+inconsistent control displacement, or coordinate/displacement anomalies. It
+does not assert which explanation is responsible before a real N=2 run is
+manually inspected.

@@ -710,6 +710,144 @@ def _save_field_png(path, field, title):
     plt.close(fig)
 
 
+def _save_klt_tps_failure_map(path, moving_band, registration, fold_mask):
+    """Draw pre-gate KLT controls, hull, overlap bbox, and fold evidence."""
+    import matplotlib
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch, Rectangle
+
+    klt = registration.get("klt_tps", {}) or {}
+    failure = registration.get("failure_diagnostics") or klt.get(
+        "failure_diagnostics", {}
+    ) or {}
+    support = failure.get("control_support", {}) or {}
+    background = _stretch_for_overlay(moving_band, None)
+    folds = np.asarray(fold_mask, dtype=bool)
+    fig, ax = plt.subplots(figsize=(9, 6), dpi=140)
+    ax.imshow(background, cmap="gray", origin="upper")
+    if folds.shape == background.shape and np.any(folds):
+        overlay = np.ma.masked_where(~folds, folds.astype(float))
+        ax.imshow(overlay, cmap="Reds", alpha=0.55, vmin=0, vmax=1, origin="upper")
+
+    controls = np.asarray(klt.get("control_points_moving_xy", []), dtype=float)
+    if controls.size:
+        controls = controls.reshape((-1, 2))
+        ax.scatter(controls[:, 0], controls[:, 1], s=8, c="cyan", linewidths=0)
+
+    vertices = np.asarray(support.get("control_hull_vertices_xy", []), dtype=float)
+    if vertices.size:
+        vertices = vertices.reshape((-1, 2))
+        closed = np.vstack([vertices, vertices[0]])
+        ax.plot(closed[:, 0], closed[:, 1], color="yellow", linewidth=1.4)
+
+    window = support.get("target_overlap_window")
+    if window is not None and len(window) == 4:
+        row_start, row_end, col_start, col_end = (float(value) for value in window)
+        ax.add_patch(Rectangle(
+            (col_start, row_start), col_end - col_start, row_end - row_start,
+            fill=False, edgecolor="lime", linewidth=1.2,
+        ))
+
+    fold_pixels = int(np.count_nonzero(folds))
+    fold_fraction = fold_pixels / folds.size if folds.size else 0.0
+    ax.set_title(
+        f"KLT/TPS pre-gate evidence: accepted KLT controls="
+        f"{klt.get('accepted_point_count', 0)}, fold_pixels={fold_pixels}, "
+        f"fold_fraction={fold_fraction:.6f}"
+    )
+    ax.set_xlabel("moving-native pixel x")
+    ax.set_ylabel("moving-native pixel y")
+    handles = [
+        Line2D([], [], marker="o", color="cyan", linestyle="None", markersize=4,
+               label="KLT controls"),
+        Line2D([], [], color="yellow", linewidth=1.4, label="Control convex hull"),
+        Line2D([], [], color="lime", linewidth=1.2, label="Target overlap bbox"),
+        Patch(facecolor="red", alpha=0.55, label="Jacobian <= 0 folds"),
+    ]
+    ax.legend(handles=handles, loc="best")
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def write_klt_tps_failure_artifacts(
+    registration,
+    scene_data,
+    output_dir,
+    *,
+    registration_band_idx=0,
+):
+    """Write only pre-gate KLT/TPS evidence for a blocked geometry failure."""
+    if registration.get("registration_backend") != "klt_tps":
+        return {}
+    klt = registration.get("klt_tps", {}) or {}
+    if klt.get("failure_diagnostics") is None:
+        return {}
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "klt_tps_control_points": _write_klt_tps_control_points_csv(
+            registration, output_dir,
+        ),
+    }
+    arrays = klt.get("_failure_diagnostic_arrays", {}) or {}
+    moving_band = _registration_band(
+        scene_data["arrays"][1], int(registration_band_idx),
+    )
+    shape = moving_band.shape
+    transform = scene_data["transforms"][1]
+    crs = scene_data["crs"]
+    flow = np.asarray(arrays.get("flow"))
+    if flow.shape == (*shape, 2):
+        flow_path = output_path / "klt_tps_pregate_displacement.tif"
+        write_geotiff(
+            str(flow_path), np.moveaxis(flow.astype(np.float32), -1, 0),
+            transform, crs, dtype="float32",
+        )
+        paths["klt_tps_pregate_displacement"] = str(flow_path)
+        magnitude_path = output_path / "klt_tps_pregate_displacement_magnitude.png"
+        _save_field_png(
+            str(magnitude_path), np.linalg.norm(flow.astype(float), axis=2),
+            "KLT/TPS pre-gate displacement magnitude",
+        )
+        paths["klt_tps_pregate_displacement_magnitude"] = str(magnitude_path)
+
+    fold_mask = np.asarray(arrays.get("fold_mask"), dtype=bool)
+    if fold_mask.shape == shape:
+        fold_path = output_path / "klt_tps_fold_mask.tif"
+        write_geotiff(
+            str(fold_path), fold_mask.astype(np.uint8), transform, crs,
+            dtype="uint8",
+        )
+        paths["klt_tps_fold_mask"] = str(fold_path)
+
+    jacobian = np.asarray(arrays.get("jacobian_determinant"), dtype=float)
+    if jacobian.shape == shape:
+        finite = jacobian[np.isfinite(jacobian)]
+        if finite.size:
+            low, high = np.percentile(finite, [1, 99])
+            jacobian_visual = np.clip(jacobian, low, high)
+        else:
+            jacobian_visual = jacobian
+        jacobian_path = output_path / "klt_tps_jacobian_determinant.png"
+        _save_field_png(
+            str(jacobian_path), jacobian_visual,
+            "KLT/TPS Jacobian determinant (visualized p01-p99)",
+        )
+        paths["klt_tps_jacobian_determinant"] = str(jacobian_path)
+
+    if fold_mask.shape == shape:
+        failure_map_path = output_path / "klt_tps_failure_map.png"
+        _save_klt_tps_failure_map(
+            str(failure_map_path), moving_band, registration, fold_mask,
+        )
+        paths["klt_tps_failure_map"] = str(failure_map_path)
+    return paths
+
+
 def _save_validation_holdout_png(path, validation, shape, title=None):
     """Draw final validation blocks and their rejection/acceptance state."""
     import matplotlib.pyplot as plt
@@ -1203,6 +1341,14 @@ def main(argv=None):
                 ),
                 mosaic_mode=args.mosaic_mode,
                 allow_quality_fail_for_diagnostics=True,
+            )
+        elif (
+            registration.get("registration_backend") == "klt_tps"
+            and (registration.get("klt_tps", {}) or {}).get("failure_diagnostics") is not None
+        ):
+            artifacts = write_klt_tps_failure_artifacts(
+                registration, scene_data, output_dir,
+                registration_band_idx=pipeline.registration_band_idx,
             )
         else:
             artifacts = {}
