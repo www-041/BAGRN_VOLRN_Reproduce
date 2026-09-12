@@ -24,6 +24,18 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 _DEFAULT_REGISTRATION_PARAMS: Dict[str, Any] = {
+    "registration_backend": "legacy",
+    "klt_tps_window": 9,
+    "klt_tps_pyramid_level": 3,
+    "klt_tps_max_corners": 4000,
+    "klt_tps_min_corner_distance": 5.0,
+    "klt_tps_fb_threshold": 0.5,
+    "klt_tps_min_points": 30,
+    "klt_tps_neighbors": 80,
+    "klt_tps_smoothing": 3.0,
+    "klt_tps_field_step": 4,
+    "klt_tps_max_shift": 50.0,
+    "klt_tps_threads": 4,
     "global_block_size": 512,
     "global_confidence_threshold": 0.50,
     "max_global_shift": 40.0,
@@ -301,6 +313,45 @@ def validate_config(config: ExperimentConfig, skip_file_check: bool = False) -> 
         if rq not in ("pass", "warn", "fail"):
             errors.append(f"registration_params.required_quality 必须是 'pass'/'warn'/'fail'，当前: '{rq}'")
         rp = config.registration_params
+        backend = rp.get("registration_backend", "legacy")
+        if backend not in {"legacy", "klt_tps"}:
+            errors.append(
+                "registration_params.registration_backend 必须是 'legacy' 或 'klt_tps'"
+            )
+        klt_integer_minimums = {
+            "klt_tps_max_corners": 30,
+            "klt_tps_min_points": 30,
+            "klt_tps_neighbors": 6,
+            "klt_tps_field_step": 1,
+            "klt_tps_threads": 1,
+        }
+        for key, minimum in klt_integer_minimums.items():
+            value = rp.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+                errors.append(f"registration_params.{key} 必须是整数且 >= {minimum}")
+            elif int(value) < minimum:
+                errors.append(f"registration_params.{key} 必须 >= {minimum}")
+        window = rp.get("klt_tps_window")
+        if (isinstance(window, bool) or not isinstance(window, (int, np.integer))
+                or int(window) < 3 or int(window) % 2 == 0):
+            errors.append("registration_params.klt_tps_window 必须是 >=3 的奇数")
+        pyramid = rp.get("klt_tps_pyramid_level")
+        if (isinstance(pyramid, bool) or not isinstance(pyramid, (int, np.integer))
+                or not 0 <= int(pyramid) <= 8):
+            errors.append("registration_params.klt_tps_pyramid_level 必须是 0 到 8 的整数")
+        for key in ("klt_tps_min_corner_distance", "klt_tps_fb_threshold", "klt_tps_max_shift"):
+            try:
+                value = float(rp.get(key))
+            except (TypeError, ValueError):
+                value = float("nan")
+            if not np.isfinite(value) or value <= 0:
+                errors.append(f"registration_params.{key} 必须是正有限数值")
+        try:
+            smoothing = float(rp.get("klt_tps_smoothing"))
+        except (TypeError, ValueError):
+            smoothing = float("nan")
+        if not np.isfinite(smoothing) or smoothing < 0:
+            errors.append("registration_params.klt_tps_smoothing 必须是非负有限数值")
         smoothing_candidates = rp.get("local_smoothing_candidates", [0.1])
         if (not isinstance(smoothing_candidates, (list, tuple))
                 or not smoothing_candidates):

@@ -218,6 +218,42 @@ def test_default_registration_params_exist():
     assert cfg.registration_params["local_cv_buffer_pixels"] == 0
 
 
+def test_registration_backend_defaults_to_legacy():
+    cfg = _dict_to_config({
+        "experiment_name": "registration-test",
+        "selected_bands": ["B14"],
+        "registration_band": "B14",
+        "scenes": [
+            {"id": "a", "bands": {"B14": "a.tif"}},
+            {"id": "b", "bands": {"B14": "b.tif"}},
+        ],
+    })
+    assert cfg.registration_params["registration_backend"] == "legacy"
+    assert validate_config(cfg, skip_file_check=True) == []
+
+
+def test_registration_backend_rejects_unknown_value():
+    cfg = _config_with_local_rbf_params({"registration_backend": "unknown"})
+    assert any("registration_backend" in error for error in validate_config(cfg, skip_file_check=True))
+
+
+@pytest.mark.parametrize("value", [2, 4, 10])
+def test_klt_tps_window_rejects_even_values(value):
+    cfg = _config_with_local_rbf_params({"klt_tps_window": value})
+    assert any("klt_tps_window" in error for error in validate_config(cfg, skip_file_check=True))
+
+
+@pytest.mark.parametrize("value", [-1.0, float("nan"), float("inf")])
+def test_klt_tps_smoothing_rejects_negative_or_nonfinite(value):
+    cfg = _config_with_local_rbf_params({"klt_tps_smoothing": value})
+    assert any("klt_tps_smoothing" in error for error in validate_config(cfg, skip_file_check=True))
+
+
+def test_klt_tps_fb_threshold_must_be_positive():
+    cfg = _config_with_local_rbf_params({"klt_tps_fb_threshold": 0})
+    assert any("klt_tps_fb_threshold" in error for error in validate_config(cfg, skip_file_check=True))
+
+
 def _config_with_local_rbf_params(params):
     return _dict_to_config({
         "experiment_name": "registration-test",
