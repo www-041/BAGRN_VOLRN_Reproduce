@@ -10,7 +10,13 @@ from typing import Any
 
 import cv2
 import numpy as np
+from rasterio.transform import Affine
 from scipy.ndimage import gaussian_filter
+
+from src.coregistration import (
+    build_pair_overlap_context,
+    map_pixel_centers_between_grids,
+)
 
 
 def normalize_klt_image(data: np.ndarray, valid: np.ndarray) -> np.ndarray:
@@ -164,4 +170,90 @@ def match_bidirectional_klt(
         "moving_points_xy": q_acc,
         "displacement_xy": q_acc - p_acc,
         "forward_backward_error": fb_acc,
+    }
+
+
+def map_klt_matches_to_moving_grid(
+    reference_points_overlap_xy: np.ndarray,
+    moving_points_overlap_xy: np.ndarray,
+    overlap_transform: Affine,
+    moving_transform: Affine,
+) -> dict[str, np.ndarray]:
+    """Map overlap-grid output/source controls into moving-native pixels."""
+    output_xy = map_pixel_centers_between_grids(
+        reference_points_overlap_xy, overlap_transform, moving_transform,
+    )
+    source_xy = map_pixel_centers_between_grids(
+        moving_points_overlap_xy, overlap_transform, moving_transform,
+    )
+    return {
+        "control_points_xy": output_xy,
+        "source_points_xy": source_xy,
+        "displacement_xy": source_xy - output_xy,
+    }
+
+
+def _unavailable_pair_result(reason: str) -> dict[str, Any]:
+    return {
+        "available": False,
+        "failure_reason": str(reason),
+        "overlap_context": None,
+        "initial_corner_count": 0,
+        "accepted_point_count": 0,
+        "reference_points_overlap_xy": np.empty((0, 2), dtype=float),
+        "moving_points_overlap_xy": np.empty((0, 2), dtype=float),
+        "forward_backward_error": np.empty((0,), dtype=float),
+        "control_points_moving_xy": np.empty((0, 2), dtype=float),
+        "source_points_moving_xy": np.empty((0, 2), dtype=float),
+        "displacement_xy": np.empty((0, 2), dtype=float),
+        "flow": None,
+        "geometry": None,
+    }
+
+
+def estimate_klt_tps_pair(
+    reference_band: np.ndarray,
+    reference_transform: Affine,
+    moving_band: np.ndarray,
+    moving_transform: Affine,
+    reference_nodata: float | None,
+    moving_nodata: float | None,
+    params: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Estimate overlap-grid KLT controls and map them to moving-native pixels."""
+    params = params or {}
+    context = build_pair_overlap_context(
+        reference_band, reference_transform,
+        moving_band, moving_transform,
+        reference_nodata, moving_nodata,
+    )
+    if not context.get("available"):
+        return _unavailable_pair_result(context.get("failure_reason", "No geographic overlap"))
+    try:
+        match = match_bidirectional_klt(
+            context["ref_overlap"], context["tgt_overlap"],
+            context["ref_valid"], context["tgt_valid"], params,
+        )
+        mapped = map_klt_matches_to_moving_grid(
+            match["reference_points_xy"], match["moving_points_xy"],
+            context["overlap_transform"], moving_transform,
+        )
+    except (ValueError, RuntimeError) as exc:
+        result = _unavailable_pair_result(str(exc))
+        result["overlap_context"] = context
+        return result
+    return {
+        "available": True,
+        "failure_reason": None,
+        "overlap_context": context,
+        "initial_corner_count": int(match["initial_corner_count"]),
+        "accepted_point_count": int(match["accepted_point_count"]),
+        "reference_points_overlap_xy": np.asarray(match["reference_points_xy"], dtype=float),
+        "moving_points_overlap_xy": np.asarray(match["moving_points_xy"], dtype=float),
+        "forward_backward_error": np.asarray(match["forward_backward_error"], dtype=float),
+        "control_points_moving_xy": mapped["control_points_xy"],
+        "source_points_moving_xy": mapped["source_points_xy"],
+        "displacement_xy": mapped["displacement_xy"],
+        "flow": None,
+        "geometry": None,
     }

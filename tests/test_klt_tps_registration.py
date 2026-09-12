@@ -3,6 +3,7 @@
 import cv2
 import numpy as np
 import pytest
+from rasterio.transform import Affine
 
 
 def test_opencv_dependency_is_available():
@@ -97,3 +98,72 @@ def test_bidirectional_klt_rejects_collinear_controls(monkeypatch):
     valid = np.ones(image.shape, dtype=bool)
     with pytest.raises(ValueError, match="collinear"):
         module.match_bidirectional_klt(image, image, valid, valid, _klt_params())
+
+
+def test_map_klt_matches_identity_grid_preserves_displacement():
+    from src.klt_tps_registration import map_klt_matches_to_moving_grid
+
+    p = np.array([[10.0, 20.0], [30.0, 40.0]])
+    q = p + np.array([2.5, -1.25])
+    mapped = map_klt_matches_to_moving_grid(
+        p, q, Affine(14, 0, 1000, 0, -14, 2000),
+        Affine(14, 0, 1000, 0, -14, 2000),
+    )
+    np.testing.assert_allclose(mapped["control_points_xy"], p, atol=1e-9)
+    np.testing.assert_allclose(mapped["source_points_xy"], q, atol=1e-9)
+    np.testing.assert_allclose(mapped["displacement_xy"], q - p, atol=1e-9)
+
+
+def test_map_klt_matches_translated_overlap_to_moving_native_grid():
+    from src.klt_tps_registration import map_klt_matches_to_moving_grid
+
+    overlap_transform = Affine(14, 0, 696416, 0, -14, 3375974)
+    moving_transform = Affine(14, 0, 659722, 0, -14, 3371634)
+    p = np.array([[20.0, 40.0], [300.0, 500.0]])
+    q = p + np.array([2.5, -1.25])
+    mapped = map_klt_matches_to_moving_grid(
+        p, q, overlap_transform, moving_transform,
+    )
+    assert not np.allclose(mapped["control_points_xy"], p)
+    np.testing.assert_allclose(mapped["displacement_xy"], q - p, atol=1e-9)
+
+
+def test_estimate_pair_uses_existing_geographic_overlap_context(monkeypatch):
+    from src import klt_tps_registration as module
+
+    ref = np.arange(64 * 64, dtype=np.float32).reshape(64, 64)
+    moving = ref.copy()
+    transform = Affine(2, 0, 100, 0, -2, 200)
+    overlap_transform = Affine(2, 0, 500, 0, -2, 800)
+    valid = np.ones((32, 32), dtype=bool)
+    monkeypatch.setattr(module, "build_pair_overlap_context", lambda *args: {
+        "available": True,
+        "ref_window": (10, 42, 12, 44),
+        "tgt_window": (5, 37, 7, 39),
+        "shape": (32, 32),
+        "overlap_transform": overlap_transform,
+        "ref_overlap": np.ones((32, 32), dtype=np.float32),
+        "tgt_overlap": np.ones((32, 32), dtype=np.float32),
+        "ref_valid": valid,
+        "tgt_valid": valid,
+        "resampled_target": True,
+    })
+    p = np.array([[4.0, 5.0], [20.0, 25.0], [25.0, 8.0]])
+    q = p + np.array([1.5, -0.75])
+    monkeypatch.setattr(module, "match_bidirectional_klt", lambda *args: {
+        "initial_corner_count": 3,
+        "accepted_point_count": 3,
+        "reference_points_xy": p,
+        "moving_points_xy": q,
+        "displacement_xy": q - p,
+        "forward_backward_error": np.zeros(3),
+    })
+    result = module.estimate_klt_tps_pair(
+        ref, transform, moving, transform, None, None, _klt_params()
+    )
+    expected = module.map_klt_matches_to_moving_grid(
+        p, q, overlap_transform, transform,
+    )
+    np.testing.assert_allclose(result["control_points_moving_xy"], expected["control_points_xy"])
+    np.testing.assert_allclose(result["source_points_moving_xy"], expected["source_points_xy"])
+    assert result["overlap_context"]["resampled_target"] is True
