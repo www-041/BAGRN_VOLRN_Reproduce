@@ -320,6 +320,44 @@ def test_estimate_klt_tps_pair_preserves_failure_reason(monkeypatch):
     _assert_structured_geometry_rejection(result, "singular TPS")
 
 
+def test_estimate_klt_tps_pair_preserves_pregate_geometry_diagnostics(monkeypatch):
+    module, image = _geometry_rejection_case(monkeypatch)
+    flow = np.zeros((64, 64, 2), dtype=np.float32)
+    flow[..., 0] = -2 * np.indices(flow.shape[:2])[1]
+    monkeypatch.setattr(module, "build_tps_dense_flow", lambda *args, **kwargs: flow)
+
+    result = module.estimate_klt_tps_pair(
+        image, Affine.identity(), image, Affine.identity(), None, None, _klt_params(),
+    )
+
+    diagnostics = result["failure_diagnostics"]
+    assert diagnostics["stage"] == "tps_geometry_gate"
+    assert diagnostics["accepted_point_count"] == 5
+    assert diagnostics["fold_support"]["fold_pixels_total"] > 0
+    assert diagnostics["jacobian"]["min"] < 0
+    assert diagnostics["control_displacement"]["magnitude"]["count"] == 5
+    arrays = result["_failure_diagnostic_arrays"]
+    assert arrays["flow"] is flow
+    assert arrays["fold_mask"].shape == flow.shape[:2]
+    assert arrays["jacobian_determinant"].shape == flow.shape[:2]
+
+
+def test_estimate_klt_tps_pair_reports_tps_fit_stage_without_field_arrays(monkeypatch):
+    module, image = _geometry_rejection_case(monkeypatch)
+    monkeypatch.setattr(
+        module, "build_tps_dense_flow",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("TPS fit failed")),
+    )
+
+    result = module.estimate_klt_tps_pair(
+        image, Affine.identity(), image, Affine.identity(), None, None, _klt_params(),
+    )
+
+    assert result["failure_diagnostics"]["stage"] == "tps_fit"
+    assert result["failure_diagnostics"]["jacobian"] is None
+    assert result["_failure_diagnostic_arrays"] == {}
+
+
 def test_tps_dense_flow_recovers_constant_control_displacement():
     from src.klt_tps_registration import build_tps_dense_flow
 

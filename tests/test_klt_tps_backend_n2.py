@@ -229,6 +229,34 @@ def test_klt_tps_backend_does_not_fallback_to_legacy_when_estimation_fails(monke
     assert "insufficient KLT corners" in result["failure"]["reason"]
 
 
+def test_klt_tps_geometry_failure_exposes_compact_failure_diagnostics(monkeypatch):
+    import src.klt_tps_registration as klt
+
+    pipe = _dummy_pipeline()
+    estimation = {
+        "available": False,
+        "failure_reason": "KLT/TPS geometry rejected: TPS flow contains fold pixels: 7",
+        "failure_diagnostics": {"stage": "tps_geometry_gate", "fold_support": {"fold_pixels_total": 7}},
+        "_failure_diagnostic_arrays": {
+            "flow": np.zeros((48, 56, 2), dtype=np.float32),
+            "fold_mask": np.zeros((48, 56), dtype=bool),
+        },
+    }
+    monkeypatch.setattr(klt, "estimate_klt_tps_pair", lambda *args, **kwargs: estimation)
+
+    result = pipe.register_scenes(
+        {"arrays": [np.ones((2, 48, 56))] * 2,
+         "transforms": [Affine.identity()] * 2,
+         "nodata_values": [None, None]},
+        [{"idx_i": 0, "idx_j": 1}],
+    )
+
+    compact = result["diagnostics"]["klt_tps"]
+    assert compact["failure_diagnostics"]["stage"] == "tps_geometry_gate"
+    assert "_failure_diagnostic_arrays" not in compact
+    assert result["klt_tps"]["_failure_diagnostic_arrays"]["flow"].shape == (48, 56, 2)
+
+
 def test_legacy_backend_dispatch_still_uses_existing_path(monkeypatch):
     pipe = _dummy_pipeline(backend="legacy")
     pipe._register_scenes_klt_tps_n2 = lambda *args, **kwargs: (_ for _ in ()).throw(

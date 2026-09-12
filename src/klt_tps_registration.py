@@ -212,6 +212,8 @@ def _unavailable_pair_result(
     context: dict[str, Any] | None = None,
     match: dict[str, Any] | None = None,
     mapped: dict[str, np.ndarray] | None = None,
+    failure_diagnostics: dict[str, Any] | None = None,
+    diagnostic_arrays: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Any]:
     result = {
         "available": False,
@@ -246,7 +248,100 @@ def _unavailable_pair_result(
             "displacement_xy": np.asarray(
                 mapped.get("displacement_xy", []), dtype=float).reshape((-1, 2)),
         })
+    if failure_diagnostics is not None:
+        result["failure_diagnostics"] = failure_diagnostics
+    if diagnostic_arrays is not None:
+        result["_failure_diagnostic_arrays"] = diagnostic_arrays
     return result
+
+
+def _build_tps_control_support_diagnostics(
+    mapped: dict[str, np.ndarray],
+    context: dict[str, Any],
+    shape: tuple[int, int],
+) -> dict[str, Any]:
+    """Build compact control/hull/overlap evidence for a TPS gate failure."""
+    controls = np.asarray(mapped["control_points_xy"], dtype=float)
+    hull = build_control_hull_mask(controls, shape)
+    overlap_bbox = build_target_overlap_bbox_mask(context, shape)
+    if len(controls):
+        control_bbox = [
+            float(np.min(controls[:, 0])), float(np.min(controls[:, 1])),
+            float(np.max(controls[:, 0])), float(np.max(controls[:, 1])),
+        ]
+    else:
+        control_bbox = []
+    return {
+        "control_bbox": control_bbox,
+        "control_hull_available": bool(hull["available"]),
+        "control_hull_vertices_xy": np.asarray(
+            hull["vertices_xy"], dtype=float).tolist(),
+        "control_hull_pixels": int(hull["pixel_count"]),
+        "control_hull_fraction": float(hull["fraction"]),
+        "target_overlap_window": (
+            list(overlap_bbox["window"])
+            if overlap_bbox["window"] is not None else None
+        ),
+        "target_overlap_bbox_pixels": int(overlap_bbox["pixel_count"]),
+        "target_overlap_bbox_fraction": float(overlap_bbox["fraction"]),
+        "_hull_mask": hull["mask"],
+        "_overlap_bbox_mask": overlap_bbox["mask"],
+    }
+
+
+def _build_tps_failure_diagnostics(
+    stage: str,
+    match: dict[str, Any],
+    mapped: dict[str, np.ndarray],
+    context: dict[str, Any],
+    shape: tuple[int, int],
+    *,
+    analysis: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+    """Return JSON-safe pre-gate evidence and private arrays for artifact writers."""
+    support = _build_tps_control_support_diagnostics(mapped, context, shape)
+    hull_mask = support.pop("_hull_mask")
+    overlap_bbox_mask = support.pop("_overlap_bbox_mask")
+    diagnostics = {
+        "stage": str(stage),
+        "accepted_point_count": int(match.get("accepted_point_count", 0)),
+        "control_displacement": summarize_control_displacements(
+            mapped["displacement_xy"]
+        ),
+        "control_support": support,
+        "field_displacement": None,
+        "jacobian": None,
+        "fold_support": None,
+    }
+    arrays: dict[str, np.ndarray] = {}
+    if analysis is not None:
+        summary = analysis["summary"]
+        diagnostics["field_displacement"] = {
+            "min": summary["displacement_min"],
+            "p01": summary["displacement_p01"],
+            "p05": summary["displacement_p05"],
+            "median": summary["displacement_median"],
+            "p95": summary["displacement_p95"],
+            "p99": summary["displacement_p99"],
+            "max": summary["displacement_max"],
+        }
+        diagnostics["jacobian"] = {
+            "min": summary["jacobian_min"],
+            "p01": summary["jacobian_p01"],
+            "p05": summary["jacobian_p05"],
+            "median": summary["jacobian_median"],
+            "p95": summary["jacobian_p95"],
+            "p99": summary["jacobian_p99"],
+            "max": summary["jacobian_max"],
+        }
+        diagnostics["fold_support"] = summarize_fold_support(
+            analysis["fold_mask"], hull_mask, overlap_bbox_mask,
+        )
+        arrays.update({
+            "jacobian_determinant": analysis["jacobian_determinant"],
+            "fold_mask": analysis["fold_mask"],
+        })
+    return diagnostics, arrays
 
 
 def estimate_klt_tps_pair(
@@ -289,11 +384,29 @@ def estimate_klt_tps_pair(
         result = _unavailable_pair_result(str(exc))
         result["overlap_context"] = context
         return result
+    moving_shape = tuple(np.asarray(moving_band).shape)
     try:
         flow = build_tps_dense_flow(
             mapped["control_points_xy"], mapped["displacement_xy"],
-            np.asarray(moving_band).shape, params,
+            moving_shape, params,
         )
+    except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
+        failure_diagnostics, diagnostic_arrays = _build_tps_failure_diagnostics(
+            "tps_fit", match, mapped, context, moving_shape,
+        )
+        return _unavailable_pair_result(
+            f"KLT/TPS geometry rejected: {exc}",
+            context=context, match=match, mapped=mapped,
+            failure_diagnostics=failure_diagnostics,
+            diagnostic_arrays=diagnostic_arrays,
+        )
+    analysis = analyze_tps_dense_flow(flow)
+    failure_diagnostics, diagnostic_arrays = _build_tps_failure_diagnostics(
+        "tps_geometry_gate", match, mapped, context, moving_shape,
+        analysis=analysis,
+    )
+    diagnostic_arrays["flow"] = flow
+    try:
         geometry = inspect_tps_dense_flow(
             flow, float(params.get("klt_tps_max_shift", 50.0)),
         )
@@ -301,6 +414,8 @@ def estimate_klt_tps_pair(
         return _unavailable_pair_result(
             f"KLT/TPS geometry rejected: {exc}",
             context=context, match=match, mapped=mapped,
+            failure_diagnostics=failure_diagnostics,
+            diagnostic_arrays=diagnostic_arrays,
         )
     controls = mapped["control_points_xy"]
     xmin, ymin = np.min(controls, axis=0)

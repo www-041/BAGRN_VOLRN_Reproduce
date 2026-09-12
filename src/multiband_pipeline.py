@@ -2882,9 +2882,10 @@ class MultibandPipeline:
                 "validation_band_name": validation_band_name,
                 "klt_tps": estimation,
             })
-            result["diagnostics"]["klt_tps"] = {
-                "available": False, "failure_reason": reason,
-            }
+            compact = {"available": False, "failure_reason": reason}
+            if estimation.get("failure_diagnostics") is not None:
+                compact["failure_diagnostics"] = estimation["failure_diagnostics"]
+            result["diagnostics"]["klt_tps"] = compact
             return result
 
         try:
