@@ -109,6 +109,13 @@ _DEFAULT_REGISTRATION_PARAMS: Dict[str, Any] = {
     "affine_cv_min_p95_improvement": 0.15,
 }
 
+_KLT_TPS_PARAM_KEYS = frozenset({
+    "klt_tps_window", "klt_tps_pyramid_level", "klt_tps_max_corners",
+    "klt_tps_min_corner_distance", "klt_tps_fb_threshold", "klt_tps_min_points",
+    "klt_tps_neighbors", "klt_tps_smoothing", "klt_tps_field_step",
+    "klt_tps_max_shift", "klt_tps_threads",
+})
+
 
 _DEFAULT_VOLRN_PARAMS: Dict[str, Any] = {
     "block_size": 400,
@@ -754,6 +761,18 @@ def _merge_registration_params(raw: Any) -> Dict[str, Any]:
                 merged[k] = v
             else:
                 print(f"[experiment_config] 警告: 未知 registration_params 字段 '{k}'", file=sys.stderr)
+        # Keep the legacy parameter fingerprint byte-for-byte stable for old
+        # configs that do not opt into the new backend.  KLT values are still
+        # merged whenever the backend is explicitly selected.
+        if (raw.get("registration_backend", "legacy") == "legacy"
+                and not any(key in raw for key in _KLT_TPS_PARAM_KEYS)):
+            for key in _KLT_TPS_PARAM_KEYS:
+                merged.pop(key, None)
+        if "registration_backend" not in raw:
+            merged.pop("registration_backend", None)
+    else:
+        for key in _KLT_TPS_PARAM_KEYS:
+            merged.pop(key, None)
     return merged
 
 
