@@ -247,3 +247,91 @@ def test_tps_support_field_bundle_reports_supported_unsafe_without_warping():
     assert fields["translation_geometry"]["geometry_safe"] is True
     assert fields["supported_geometry"]["geometry_safe"] is False
     assert fields["supported_geometry"]["rejection_reason"]
+
+
+def _validation_fixture(*, supported=False, include_second=True):
+    first = {
+        "validation_row": 10,
+        "validation_col": 20,
+        "block_size": 384,
+        "residual_magnitude": 2.0 if supported else 3.0,
+        "accepted": True if supported else False,
+        "reject_reason": None if supported else "low_confidence",
+    }
+    blocks = [first]
+    if include_second:
+        blocks.append({
+            "validation_row": 40,
+            "validation_col": 50,
+            "block_size": 384,
+            "residual_magnitude": 4.0 if supported else 5.0,
+            "accepted": True,
+            "reject_reason": None,
+        })
+    return {
+        "edges": [{
+            "idx_i": 0,
+            "idx_j": 1,
+            "validation_block_size_selected": 384,
+            "blocks": blocks,
+        }],
+        "overall": {
+            "median": 3.0 if supported else 4.0,
+            "rmse": 3.0 if supported else 4.0,
+            "p95": 4.0 if supported else 5.0,
+        },
+    }
+
+
+def test_compare_tps_support_validations_pairs_identical_fixed_windows():
+    from src.klt_tps_support_c1 import compare_tps_support_validations
+
+    comparison = compare_tps_support_validations(
+        _validation_fixture(), _validation_fixture(supported=True)
+    )
+
+    assert comparison["holdout_keys_match"] is True
+    assert len(comparison["paired_blocks"]) == 2
+    assert comparison["paired_blocks"][0]["key"] == [0, 1, 10, 20, 384]
+
+
+def test_compare_tps_support_validations_preserves_rejected_blocks():
+    from src.klt_tps_support_c1 import compare_tps_support_validations
+
+    comparison = compare_tps_support_validations(
+        _validation_fixture(include_second=False),
+        _validation_fixture(supported=True, include_second=False),
+    )
+
+    block = comparison["paired_blocks"][0]
+    assert block["translation_accepted"] is False
+    assert block["translation_reject_reason"] == "low_confidence"
+    assert block["translation_residual"] == pytest.approx(3.0)
+    assert block["supported_residual"] == pytest.approx(2.0)
+    assert block["improvement"] == pytest.approx(1.0)
+
+
+def test_compare_tps_support_validations_reports_translation_minus_supported_improvement():
+    from src.klt_tps_support_c1 import compare_tps_support_validations
+
+    comparison = compare_tps_support_validations(
+        _validation_fixture(), _validation_fixture(supported=True)
+    )
+
+    assert comparison["rmse_improvement"] == pytest.approx(1.0)
+    assert comparison["p95_improvement"] == pytest.approx(1.0)
+    assert comparison["median_improvement"] == pytest.approx(1.0)
+    assert all(block["improvement"] > 0 for block in comparison["paired_blocks"])
+
+
+def test_compare_tps_support_validations_marks_holdout_mismatch_unavailable():
+    from src.klt_tps_support_c1 import compare_tps_support_validations
+
+    comparison = compare_tps_support_validations(
+        _validation_fixture(),
+        _validation_fixture(supported=True, include_second=False),
+    )
+
+    assert comparison["holdout_keys_match"] is False
+    assert comparison["available"] is False
+    assert comparison["paired_blocks"]

@@ -277,3 +277,124 @@ def build_tps_support_c1_fields(
     fields["integrity"] = integrity
     fields["support_formula_pass"] = integrity["support_formula_pass"]
     return fields
+
+
+def _validation_block_lookup(validation: dict) -> dict[tuple[int, int, int, int, int], dict]:
+    """Normalize validation blocks to the fixed C1 five-part key."""
+    validation = validation or {}
+    top_level_size = validation.get("validation_block_size_selected")
+    lookup: dict[tuple[int, int, int, int, int], dict] = {}
+    for edge in validation.get("edges", []) or []:
+        try:
+            idx_i = int(edge["idx_i"])
+            idx_j = int(edge["idx_j"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        edge_size = edge.get("validation_block_size_selected", top_level_size)
+        for block in edge.get("blocks", []) or []:
+            try:
+                row = int(block["validation_row"])
+                col = int(block["validation_col"])
+                size = block.get("block_size", edge_size)
+                if size is None:
+                    size = 192
+                key = (idx_i, idx_j, row, col, int(size))
+            except (KeyError, TypeError, ValueError):
+                continue
+            normalized = dict(block)
+            normalized.update({
+                "idx_i": idx_i,
+                "idx_j": idx_j,
+                "validation_row": row,
+                "validation_col": col,
+                "block_size": key[-1],
+            })
+            lookup[key] = normalized
+    return lookup
+
+
+def _finite_metric(validation: dict, name: str) -> float | None:
+    value = (validation or {}).get("overall", {}).get(name)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
+
+
+def compare_tps_support_validations(
+    translation_validation: dict,
+    supported_validation: dict,
+) -> dict[str, Any]:
+    """Compare translation and supported stages on exactly the same HOLDOUT."""
+    translation_lookup = _validation_block_lookup(translation_validation)
+    supported_lookup = _validation_block_lookup(supported_validation)
+    translation_keys = set(translation_lookup)
+    supported_keys = set(supported_lookup)
+    common_keys = sorted(translation_keys & supported_keys)
+    paired_blocks = []
+    for key in common_keys:
+        translation_block = translation_lookup[key]
+        supported_block = supported_lookup[key]
+        translation_residual = translation_block.get("residual_magnitude")
+        supported_residual = supported_block.get("residual_magnitude")
+        try:
+            translation_residual = float(translation_residual)
+            if not np.isfinite(translation_residual):
+                translation_residual = None
+        except (TypeError, ValueError):
+            translation_residual = None
+        try:
+            supported_residual = float(supported_residual)
+            if not np.isfinite(supported_residual):
+                supported_residual = None
+        except (TypeError, ValueError):
+            supported_residual = None
+        if translation_residual is None and supported_residual is None:
+            continue
+        improvement = (
+            translation_residual - supported_residual
+            if translation_residual is not None and supported_residual is not None
+            else None
+        )
+        paired_blocks.append({
+            "key": list(key),
+            "translation_residual": translation_residual,
+            "supported_residual": supported_residual,
+            "translation_accepted": translation_block.get("accepted"),
+            "supported_accepted": supported_block.get("accepted"),
+            "translation_reject_reason": translation_block.get("reject_reason"),
+            "supported_reject_reason": supported_block.get("reject_reason"),
+            "improvement": improvement,
+        })
+
+    holdout_keys_match = translation_keys == supported_keys
+    available = bool(holdout_keys_match and paired_blocks)
+    if available:
+        reason = None
+    elif not holdout_keys_match:
+        reason = "translation and supported HOLDOUT keys differ"
+    else:
+        reason = "no measurable paired HOLDOUT blocks"
+
+    def improvement(name: str) -> float | None:
+        before = _finite_metric(translation_validation, name)
+        after = _finite_metric(supported_validation, name)
+        return before - after if before is not None and after is not None else None
+
+    return {
+        "available": available,
+        "reason": reason,
+        "holdout_keys_match": holdout_keys_match,
+        "translation_rmse": _finite_metric(translation_validation, "rmse"),
+        "supported_rmse": _finite_metric(supported_validation, "rmse"),
+        "rmse_improvement": improvement("rmse"),
+        "translation_p95": _finite_metric(translation_validation, "p95"),
+        "supported_p95": _finite_metric(supported_validation, "p95"),
+        "p95_improvement": improvement("p95"),
+        "translation_median": _finite_metric(translation_validation, "median"),
+        "supported_median": _finite_metric(supported_validation, "median"),
+        "median_improvement": improvement("median"),
+        "n_paired_blocks": len(paired_blocks),
+        "paired_blocks": paired_blocks,
+    }
