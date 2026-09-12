@@ -11,7 +11,7 @@ from typing import Any
 import cv2
 import numpy as np
 from rasterio.transform import Affine
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import distance_transform_edt, gaussian_filter
 from scipy.interpolate import RBFInterpolator
 from scipy.ndimage import map_coordinates
 
@@ -627,6 +627,84 @@ def build_control_hull_mask(
         "pixel_count": pixel_count,
         "fraction": float(pixel_count / (height * width)),
     }
+
+
+def compute_klt_translation_continuation(
+    displacement_xy: np.ndarray,
+) -> np.ndarray:
+    """Return the component-wise median of the TRAIN KLT displacements."""
+    displacement = np.asarray(displacement_xy, dtype=float)
+    if displacement.ndim != 2 or displacement.shape[1] != 2 or len(displacement) == 0:
+        raise ValueError("KLT displacement must have shape (N, 2) and be non-empty")
+    if not np.isfinite(displacement).all():
+        raise ValueError("KLT displacement must be finite")
+    return np.median(displacement, axis=0)
+
+
+def build_translation_flow(
+    translation_xy: np.ndarray,
+    shape: tuple[int, int],
+    *,
+    dtype=np.float32,
+) -> np.ndarray:
+    """Build a constant dense flow for the KLT median translation."""
+    translation = np.asarray(translation_xy, dtype=float)
+    if translation.shape != (2,) or not np.isfinite(translation).all():
+        raise ValueError("translation must have shape (2,) and be finite")
+    if len(shape) != 2:
+        raise ValueError("translation flow shape must be two-dimensional")
+    height, width = (int(shape[0]), int(shape[1]))
+    if height <= 0 or width <= 0:
+        raise ValueError("translation flow shape must be positive")
+    flow = np.empty((height, width, 2), dtype=dtype)
+    flow[...] = translation
+    return flow
+
+
+def build_inside_hull_taper_weight(
+    control_points_xy: np.ndarray,
+    shape: tuple[int, int],
+    taper_pixels: int,
+) -> dict[str, Any]:
+    """Build the fixed inside-only smoothstep weight over the control hull."""
+    taper_pixels = int(taper_pixels)
+    if taper_pixels <= 0:
+        raise ValueError("taper_pixels must be positive")
+    hull = build_control_hull_mask(control_points_xy, shape)
+    hull_mask = np.asarray(hull["mask"], dtype=bool)
+    distance_inside = np.maximum(distance_transform_edt(hull_mask) - 1.0, 0.0)
+    u = np.clip(distance_inside / float(taper_pixels), 0.0, 1.0)
+    weight = 3.0 * u ** 2 - 2.0 * u ** 3
+    weight[~hull_mask] = 0.0
+    return {
+        "weight": weight.astype(np.float32),
+        "hull_mask": hull_mask,
+        "distance_inside": distance_inside.astype(np.float32),
+        "taper_pixels": taper_pixels,
+        "deep_inside_mask": hull_mask & (distance_inside >= taper_pixels),
+    }
+
+
+def compose_supported_tps_flow(
+    raw_flow: np.ndarray,
+    translation_xy: np.ndarray,
+    support_weight: np.ndarray,
+) -> np.ndarray:
+    """Blend one raw TPS field toward translation outside its supported hull."""
+    raw = np.asarray(raw_flow)
+    weight = np.asarray(support_weight)
+    translation = np.asarray(translation_xy, dtype=float)
+    if raw.ndim != 3 or raw.shape[2] != 2 or weight.shape != raw.shape[:2]:
+        raise ValueError("raw TPS flow and support weight shape mismatch")
+    if translation.shape != (2,) or not np.isfinite(translation).all():
+        raise ValueError("translation must have shape (2,) and be finite")
+    if not np.isfinite(raw).all() or not np.isfinite(weight).all():
+        raise ValueError("raw TPS flow and support weight must be finite")
+    supported = (
+        translation
+        + weight[..., None] * (raw.astype(np.float32) - translation)
+    )
+    return np.asarray(supported, dtype=np.float32)
 
 
 def build_target_overlap_bbox_mask(

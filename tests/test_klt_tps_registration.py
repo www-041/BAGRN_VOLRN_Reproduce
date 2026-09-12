@@ -601,3 +601,109 @@ def test_fold_support_summary_distinguishes_inside_and_outside_overlap_bbox():
     assert result["fold_pixels_outside_overlap_bbox"] == 1
     assert result["fold_fraction_inside_overlap_bbox"] == pytest.approx(1 / 20)
     assert result["fold_fraction_outside_overlap_bbox"] == pytest.approx(1 / (120 - 20))
+
+
+def test_klt_translation_continuation_uses_componentwise_median():
+    from src.klt_tps_registration import compute_klt_translation_continuation
+
+    displacement = np.asarray([[2.0, -1.0], [4.0, 3.0], [6.0, 5.0]])
+
+    np.testing.assert_allclose(
+        compute_klt_translation_continuation(displacement), [4.0, 3.0]
+    )
+
+
+def test_klt_translation_continuation_keeps_extreme_outlier_out_of_median():
+    from src.klt_tps_registration import compute_klt_translation_continuation
+
+    displacement = np.asarray([
+        [1.0, 2.0], [1.1, 1.9], [0.9, 2.1], [1.0, 2.0], [1000.0, -1000.0],
+    ])
+
+    np.testing.assert_allclose(
+        compute_klt_translation_continuation(displacement), [1.0, 2.0]
+    )
+
+
+def _support_square(shape=(100, 120), taper_pixels=8):
+    from src.klt_tps_registration import build_inside_hull_taper_weight
+
+    points = np.asarray([
+        [10.0, 10.0], [90.0, 10.0], [90.0, 90.0], [10.0, 90.0],
+    ])
+    return build_inside_hull_taper_weight(points, shape, taper_pixels)
+
+
+def test_inside_hull_taper_is_zero_outside_and_on_boundary():
+    result = _support_square()
+    weight = result["weight"]
+
+    assert weight[9, 40] == 0.0
+    assert weight[10, 40] == 0.0
+    assert result["hull_mask"][10, 40]
+
+
+def test_inside_hull_taper_reaches_one_deep_inside():
+    result = _support_square()
+
+    assert result["weight"][50, 50] == pytest.approx(1.0)
+    assert result["deep_inside_mask"][50, 50]
+
+
+def test_inside_hull_taper_is_bounded_and_monotone_inward():
+    result = _support_square()
+    weights = result["weight"][50, 10:51]
+
+    assert np.all((result["weight"] >= 0.0) & (result["weight"] <= 1.0))
+    assert np.all(np.diff(weights) >= -1e-7)
+
+
+def test_supported_tps_equals_translation_outside_hull():
+    from src.klt_tps_registration import compose_supported_tps_flow
+
+    result = _support_square(shape=(64, 72), taper_pixels=8)
+    translation = np.asarray([2.0, -1.5])
+    raw = np.zeros((64, 72, 2), dtype=np.float32)
+    raw[..., 0] = 5.0
+    raw[..., 1] = 3.0
+    supported = compose_supported_tps_flow(raw, translation, result["weight"])
+
+    outside = supported[~result["hull_mask"]]
+    np.testing.assert_allclose(outside, np.broadcast_to(translation, outside.shape))
+
+
+def test_supported_tps_equals_raw_flow_where_weight_is_one():
+    from src.klt_tps_registration import compose_supported_tps_flow
+
+    result = _support_square()
+    translation = np.asarray([2.0, -1.5])
+    raw = np.zeros((100, 120, 2), dtype=np.float32)
+    raw[..., 0] = np.indices(raw.shape[:2])[1] * 0.01
+    raw[..., 1] = np.indices(raw.shape[:2])[0] * -0.02
+    supported = compose_supported_tps_flow(raw, translation, result["weight"])
+
+    np.testing.assert_allclose(
+        supported[result["deep_inside_mask"]],
+        raw[result["deep_inside_mask"]],
+        atol=1e-6,
+    )
+
+
+def test_supported_tps_constant_translation_is_identity_counterfactual():
+    from src.klt_tps_registration import compose_supported_tps_flow
+
+    result = _support_square()
+    translation = np.asarray([2.0, -1.5])
+    raw = np.broadcast_to(translation, (100, 120, 2)).astype(np.float32).copy()
+
+    np.testing.assert_allclose(
+        compose_supported_tps_flow(raw, translation, result["weight"]), raw
+    )
+
+
+def test_supported_tps_rejects_shape_mismatch():
+    from src.klt_tps_registration import compose_supported_tps_flow
+
+    raw = np.zeros((20, 24, 2), dtype=np.float32)
+    with pytest.raises(ValueError, match="shape"):
+        compose_supported_tps_flow(raw, [1.0, 2.0], np.zeros((19, 24)))
