@@ -1,3 +1,4 @@
+import copy
 import json
 from pathlib import Path
 
@@ -470,6 +471,223 @@ def test_fold_d2_does_not_mutate_any_input_array():
 
     for name, value in before.items():
         np.testing.assert_array_equal(data[name], value)
+
+
+def _density_d3_fixture(*, shape=(9, 10), step=4, fold_pixels=None):
+    height, width = shape
+    raw_flow = np.zeros((height, width, 2), dtype=float)
+    yy, xx = np.indices(shape, dtype=float)
+    raw_flow[..., 0] = xx
+    raw_flow[..., 1] = 2.0 * yy
+    hull = np.ones(shape, dtype=bool)
+    if fold_pixels is None:
+        fold_pixels = [{"row": 3, "col": 3, "region": "deep_inside",
+                        "weight_class": "one"}]
+    components = []
+    for index, pixel in enumerate(fold_pixels, start=1):
+        row = int(pixel["row"])
+        col = int(pixel["col"])
+        components.append({
+            "component_id": index,
+            "pixel_count": 1,
+            "row_min": row,
+            "row_max": row,
+            "col_min": col,
+            "col_max": col,
+            "n_outside_hull": 0,
+            "n_taper": int(pixel.get("region") == "taper"),
+            "n_deep_inside": int(pixel.get("region") == "deep_inside"),
+        })
+    return {
+        "raw_flow": raw_flow,
+        "control_points_xy": np.asarray([
+            [0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0],
+        ]),
+        "support_hull_mask": hull,
+        "fold_d2": {
+            "available": True,
+            "pixels": copy.deepcopy(fold_pixels),
+            "components": components,
+        },
+        "field_step": step,
+        "neighbor_count": 2,
+    }
+
+
+def _run_density_d3(fixture=None, **overrides):
+    from src.klt_tps_support_c1 import diagnose_tps_control_density
+
+    data = _density_d3_fixture() if fixture is None else fixture
+    data = {**data, **overrides}
+    return diagnose_tps_control_density(**data)
+
+
+def test_density_d3_uses_same_query_grid_semantics_as_raw_tps():
+    result = _run_density_d3()
+    arrays = result.pop("_arrays")
+
+    assert np.array_equal(arrays["coarse_x"][0], [0, 4, 8, 12])
+    assert np.array_equal(arrays["coarse_y"][:, 0], [0, 4, 8, 12])
+    assert arrays["coarse_inside_hull"].shape == (4, 4)
+    assert not arrays["coarse_inside_hull"][2, 3]
+    assert result["global_density"]["coarse_hull_sample_count"] == 9
+
+
+def test_density_d3_global_baseline_uses_only_scene_interior_hull_queries():
+    fixture = _density_d3_fixture()
+    fixture["support_hull_mask"][:] = False
+    fixture["support_hull_mask"][:5, :5] = True
+
+    result = _run_density_d3(fixture)
+
+    assert result["global_density"]["coarse_hull_sample_count"] == 4
+    assert result["_arrays"]["coarse_d1"][0, 0] == 0.0
+    assert np.isnan(result["_arrays"]["coarse_d1"][2, 2])
+
+
+def test_density_d3_reports_exact_fold_d1_and_dk():
+    fixture = _density_d3_fixture(shape=(12, 12), step=4,
+                                  fold_pixels=[{
+                                      "row": 0, "col": 0,
+                                      "region": "deep_inside",
+                                      "weight_class": "one",
+                                  }])
+    result = _run_density_d3(fixture, neighbor_count=2)
+
+    fold = result["fold_pixels"][0]
+    assert fold["d1_pixels"] == 0.0
+    assert fold["dk_pixels"] == 10.0
+
+
+def test_density_d3_reports_fold_density_percentiles():
+    result = _run_density_d3()
+    fold = result["fold_pixels"][0]
+    coarse = result["_arrays"]["coarse_d1"][
+        result["_arrays"]["coarse_inside_hull"]
+    ]
+
+    assert fold["d1_percentile"] == pytest.approx(
+        100.0 * np.mean(coarse <= fold["d1_pixels"])
+    )
+    assert 0.0 <= fold["dk_percentile"] <= 100.0
+
+
+def test_density_d3_fold_percentiles_are_relative_to_coarse_hull_baseline():
+    fixture = _density_d3_fixture(shape=(9, 10), step=4,
+                                  fold_pixels=[{
+                                      "row": 3, "col": 3,
+                                      "region": "deep_inside",
+                                      "weight_class": "one",
+                                  }])
+    fixture["control_points_xy"] = np.asarray([[0.0, 0.0]])
+    result = _run_density_d3(fixture, neighbor_count=1)
+    fold = result["fold_pixels"][0]
+    coarse = result["_arrays"]["coarse_d1"][
+        result["_arrays"]["coarse_inside_hull"]
+    ]
+
+    assert fold["d1_percentile"] == pytest.approx(
+        100.0 * np.mean(coarse <= fold["d1_pixels"])
+    )
+    dense_distance = np.linalg.norm(
+        fixture["control_points_xy"][:1] - np.asarray([[3.0, 3.0]]), axis=1,
+    )[0]
+    dense_xy = np.stack(np.indices(fixture["raw_flow"].shape[:2])[::-1], axis=-1)
+    dense_baseline = np.linalg.norm(
+        dense_xy - fixture["control_points_xy"][:1], axis=2,
+    )
+    dense_percentile = 100.0 * np.mean(dense_baseline <= dense_distance)
+    assert fold["d1_percentile"] != pytest.approx(dense_percentile)
+
+
+def test_density_d3_neighbor_jaccard_identical_sets_is_one():
+    result = _run_density_d3(neighbor_count=4)
+
+    assert result["neighbor_set_baseline"]["jaccard"]["min"] == 1.0
+    assert result["neighbor_set_baseline"]["jaccard"]["max"] == 1.0
+
+
+def test_density_d3_neighbor_jaccard_detects_one_replaced_neighbor():
+    from src.klt_tps_support_c1 import _density_d3_neighbor_metrics
+
+    result = _density_d3_neighbor_metrics(
+        np.asarray([1, 2, 3, 4]), np.asarray([1, 2, 3, 5]), 4,
+    )
+
+    assert result == {
+        "intersection_count": 3,
+        "jaccard": pytest.approx(0.6),
+        "replaced_neighbor_count": 1,
+    }
+
+
+def test_density_d3_global_neighbor_baseline_is_deterministic():
+    first = _run_density_d3()
+    second = _run_density_d3()
+    first_arrays = first.pop("_arrays")
+    second_arrays = second.pop("_arrays")
+
+    assert first == second
+    for key in first_arrays:
+        assert np.array_equal(first_arrays[key], second_arrays[key], equal_nan=True)
+
+
+def test_density_d3_local_patch_uses_coarse_field_step():
+    result = _run_density_d3()
+
+    points = result["component_patches"][0]["query_points"]
+    assert {point["query_x"] % 4 for point in points} <= {0}
+    assert {point["query_y"] % 4 for point in points} <= {0}
+    assert all(
+        pair["x1"] - pair["x0"] == 4
+        or pair["y1"] - pair["y0"] == 4
+        for pair in result["component_patches"][0]["adjacent_pairs"]
+    )
+
+
+def test_density_d3_local_patch_reports_raw_flow_change():
+    result = _run_density_d3()
+
+    pair = next(
+        pair for pair in result["component_patches"][0]["adjacent_pairs"]
+        if pair["x1"] - pair["x0"] == 4
+    )
+    assert pair["raw_dx_delta"] == pytest.approx(4.0)
+    assert pair["raw_dy_delta"] == pytest.approx(0.0)
+    assert pair["raw_displacement_delta_magnitude"] == pytest.approx(4.0)
+
+
+def test_density_d3_does_not_mutate_inputs():
+    fixture = _density_d3_fixture()
+    original = {
+        "raw_flow": fixture["raw_flow"].copy(),
+        "control_points_xy": fixture["control_points_xy"].copy(),
+        "support_hull_mask": fixture["support_hull_mask"].copy(),
+        "fold_d2": copy.deepcopy(fixture["fold_d2"]),
+    }
+
+    _run_density_d3(fixture)
+
+    assert np.array_equal(fixture["raw_flow"], original["raw_flow"])
+    assert np.array_equal(
+        fixture["control_points_xy"], original["control_points_xy"]
+    )
+    assert np.array_equal(
+        fixture["support_hull_mask"], original["support_hull_mask"]
+    )
+    assert fixture["fold_d2"] == original["fold_d2"]
+
+
+def test_density_d3_handles_zero_fold_pixels():
+    fixture = _density_d3_fixture(fold_pixels=[])
+    fixture["fold_d2"] = {"available": True, "pixels": [], "components": []}
+
+    result = _run_density_d3(fixture)
+
+    assert result["available"] is True
+    assert result["global_density"]["coarse_hull_sample_count"] > 0
+    assert result["fold_pixels"] == []
+    assert result["component_patches"] == []
 
 
 def _validation_fixture(*, supported=False, include_second=True):

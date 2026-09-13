@@ -22,6 +22,8 @@ from src.klt_tps_registration import (
 
 TPS_SUPPORT_C1_TAPER_PIXELS: int = 64
 TPS_FOLD_D2_WEIGHT_EPS: float = 1e-6
+TPS_DENSITY_D3_LOCAL_RADIUS_CELLS: int = 2
+TPS_DENSITY_D3_GLOBAL_PAIR_SAMPLE_LIMIT: int = 4096
 
 
 def _value(source: Any, name: str, default: Any = None) -> Any:
@@ -314,6 +316,487 @@ def _d2_summary(values: np.ndarray) -> dict[str, float]:
         "median": float(np.median(values)),
         "p95": float(np.percentile(values, 95)),
         "max": float(np.max(values)),
+    }
+
+
+def _density_d3_summary(values: np.ndarray) -> dict[str, Any]:
+    """Summarize one finite, non-empty D3 diagnostic distribution."""
+    values = np.asarray(values, dtype=float).reshape(-1)
+    if values.size == 0:
+        raise ValueError("D3 summary requires at least one value")
+    if not np.isfinite(values).all():
+        raise ValueError("D3 summary values must be finite")
+    return {
+        "count": int(values.size),
+        "min": float(np.min(values)),
+        "p01": float(np.percentile(values, 1)),
+        "p05": float(np.percentile(values, 5)),
+        "median": float(np.median(values)),
+        "p75": float(np.percentile(values, 75)),
+        "p90": float(np.percentile(values, 90)),
+        "p95": float(np.percentile(values, 95)),
+        "p99": float(np.percentile(values, 99)),
+        "max": float(np.max(values)),
+    }
+
+
+def _density_d3_percentile(reference: np.ndarray, value: float) -> float:
+    """Return the deterministic empirical percentile used by D3."""
+    reference = np.asarray(reference, dtype=float).reshape(-1)
+    value = float(value)
+    if reference.size == 0:
+        raise ValueError("D3 percentile reference requires at least one value")
+    if not np.isfinite(reference).all() or not np.isfinite(value):
+        raise ValueError("D3 percentile inputs must be finite")
+    return float(100.0 * np.mean(reference <= value))
+
+
+def _density_d3_empty_summary() -> dict[str, Any]:
+    """Represent an empty optional pair distribution without NaN JSON values."""
+    return {
+        "count": 0,
+        "min": None,
+        "p01": None,
+        "p05": None,
+        "median": None,
+        "p75": None,
+        "p90": None,
+        "p95": None,
+        "p99": None,
+        "max": None,
+    }
+
+
+def _density_d3_neighbor_metrics(
+    indices_a: np.ndarray,
+    indices_b: np.ndarray,
+    k_used: int,
+) -> dict[str, Any]:
+    """Compare two ordered cKDTree neighbor sets without changing their size."""
+    set_a = {int(index) for index in np.asarray(indices_a).reshape(-1)}
+    set_b = {int(index) for index in np.asarray(indices_b).reshape(-1)}
+    intersection_count = int(len(set_a.intersection(set_b)))
+    union_count = int(2 * k_used - intersection_count)
+    jaccard = float(intersection_count / union_count) if union_count else 1.0
+    return {
+        "intersection_count": intersection_count,
+        "jaccard": jaccard,
+        "replaced_neighbor_count": int(k_used - intersection_count),
+    }
+
+
+def _density_d3_query_distances(
+    tree: cKDTree,
+    positions_xy: np.ndarray,
+    k_used: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Query selected d1/dK distances or a full K-neighbor index set."""
+    positions_xy = np.asarray(positions_xy, dtype=float)
+    if k_used == 1:
+        distances, indices = tree.query(positions_xy, k=1)
+        return (
+            np.asarray(distances, dtype=float).reshape(-1, 1),
+            np.asarray(indices, dtype=int).reshape(-1, 1),
+        )
+    distances, indices = tree.query(positions_xy, k=[1, k_used])
+    return (
+        np.asarray(distances, dtype=float).reshape(-1, 2),
+        np.asarray(indices, dtype=int).reshape(-1, 2),
+    )
+
+
+def _density_d3_query_full_neighbors(
+    tree: cKDTree,
+    positions_xy: np.ndarray,
+    k_used: int,
+) -> np.ndarray:
+    """Query exactly the K nearest indices for the bounded pair diagnostic."""
+    positions_xy = np.asarray(positions_xy, dtype=float)
+    _, indices = tree.query(positions_xy, k=k_used)
+    return np.asarray(indices, dtype=int).reshape((-1, k_used))
+
+
+def _density_d3_pair_indices(
+    valid_scene: np.ndarray,
+    coarse_inside_hull: np.ndarray,
+) -> list[tuple[int, int, int, int, str]]:
+    """Build deterministic row-major horizontal then vertical coarse pairs."""
+    rows, cols = coarse_inside_hull.shape
+    eligible = valid_scene & coarse_inside_hull
+    pairs: list[tuple[int, int, int, int, str]] = []
+    for row in range(rows):
+        for col in range(cols - 1):
+            if eligible[row, col] and eligible[row, col + 1]:
+                pairs.append((row, col, row, col + 1, "horizontal"))
+    for row in range(rows - 1):
+        for col in range(cols):
+            if eligible[row, col] and eligible[row + 1, col]:
+                pairs.append((row, col, row + 1, col, "vertical"))
+    return pairs
+
+
+def _density_d3_component_patch_indices(
+    component: Mapping[str, Any],
+    *,
+    coarse_shape: tuple[int, int],
+    valid_scene: np.ndarray,
+    field_step: int,
+    radius_cells: int,
+) -> tuple[float, float, int, int, range, range]:
+    """Return the rounded/clamped center and its nominal coarse patch indices."""
+    center_row = 0.5 * (
+        float(component["row_min"]) + float(component["row_max"])
+    )
+    center_col = 0.5 * (
+        float(component["col_min"]) + float(component["col_max"])
+    )
+    center_row_index = int(np.floor(center_row / field_step + 0.5))
+    center_col_index = int(np.floor(center_col / field_step + 0.5))
+    valid_rows = np.flatnonzero(np.any(valid_scene, axis=1))
+    valid_cols = np.flatnonzero(np.any(valid_scene, axis=0))
+    center_row_index = int(np.clip(
+        center_row_index, valid_rows.min(), valid_rows.max(),
+    ))
+    center_col_index = int(np.clip(
+        center_col_index, valid_cols.min(), valid_cols.max(),
+    ))
+    row_start = max(0, center_row_index - radius_cells)
+    row_stop = min(coarse_shape[0], center_row_index + radius_cells + 1)
+    col_start = max(0, center_col_index - radius_cells)
+    col_stop = min(coarse_shape[1], center_col_index + radius_cells + 1)
+    return (
+        center_row,
+        center_col,
+        center_row_index,
+        center_col_index,
+        range(row_start, row_stop),
+        range(col_start, col_stop),
+    )
+
+
+def diagnose_tps_control_density(
+    *,
+    raw_flow: np.ndarray,
+    control_points_xy: np.ndarray,
+    support_hull_mask: np.ndarray,
+    fold_d2: dict[str, Any],
+    field_step: int,
+    neighbor_count: int,
+    local_radius_cells: int = TPS_DENSITY_D3_LOCAL_RADIUS_CELLS,
+    global_pair_sample_limit: int = TPS_DENSITY_D3_GLOBAL_PAIR_SAMPLE_LIMIT,
+) -> dict[str, Any]:
+    """Diagnose control density and neighbor-set stability without altering TPS."""
+    raw = np.asarray(raw_flow)
+    if raw.ndim != 3 or raw.shape[2] != 2:
+        raise ValueError("raw_flow must have shape (H, W, 2)")
+    if not np.isfinite(raw).all():
+        raise ValueError("raw_flow must contain only finite values")
+    height, width = raw.shape[:2]
+
+    hull = np.asarray(support_hull_mask)
+    if hull.shape != (height, width):
+        raise ValueError("support_hull_mask must match raw_flow spatial shape")
+    hull = hull.astype(bool, copy=False)
+
+    controls = np.asarray(control_points_xy, dtype=float)
+    if controls.ndim != 2 or controls.shape[1] != 2:
+        raise ValueError("control_points_xy must have shape (N, 2)")
+    if len(controls) == 0:
+        raise ValueError("control_points_xy must contain at least one control")
+    if not np.isfinite(controls).all():
+        raise ValueError("control_points_xy must contain only finite values")
+
+    try:
+        field_step = int(field_step)
+        neighbor_count = int(neighbor_count)
+        local_radius_cells = int(local_radius_cells)
+        global_pair_sample_limit = int(global_pair_sample_limit)
+    except (TypeError, ValueError):
+        raise ValueError("D3 integer parameters are invalid") from None
+    if field_step <= 0:
+        raise ValueError("field_step must be positive")
+    if neighbor_count <= 0:
+        raise ValueError("neighbor_count must be positive")
+    if local_radius_cells < 1:
+        raise ValueError("local_radius_cells must be at least one")
+    if global_pair_sample_limit <= 0:
+        raise ValueError("global_pair_sample_limit must be positive")
+
+    k_used = min(neighbor_count, len(controls))
+    gy, gx = np.mgrid[
+        0:height + field_step:field_step,
+        0:width + field_step:field_step,
+    ]
+    valid_scene = (gx >= 0) & (gx < width) & (gy >= 0) & (gy < height)
+    coarse_inside_hull = np.zeros_like(valid_scene, dtype=bool)
+    coarse_inside_hull[valid_scene] = hull[gy[valid_scene], gx[valid_scene]]
+    coarse_positions = np.column_stack((
+        gx[valid_scene & coarse_inside_hull],
+        gy[valid_scene & coarse_inside_hull],
+    )).astype(float, copy=False)
+    if len(coarse_positions) == 0:
+        raise ValueError("support_hull_mask has no interior coarse query points")
+
+    tree = cKDTree(controls)
+    global_distances, _ = _density_d3_query_distances(
+        tree, coarse_positions, k_used,
+    )
+    global_d1 = global_distances[:, 0]
+    global_dk = global_distances[:, 1] if k_used > 1 else global_d1.copy()
+    coarse_d1 = np.full(gx.shape, np.nan, dtype=float)
+    coarse_dk = np.full(gx.shape, np.nan, dtype=float)
+    global_mask = valid_scene & coarse_inside_hull
+    coarse_d1[global_mask] = global_d1
+    coarse_dk[global_mask] = global_dk
+
+    fold_pixels = []
+    for pixel in (fold_d2 or {}).get("pixels", []) or []:
+        row = int(pixel["row"])
+        col = int(pixel["col"])
+        if not (0 <= row < height and 0 <= col < width):
+            raise ValueError("fold_d2 pixel is outside raw_flow")
+        query = np.asarray([[float(col), float(row)]])
+        distances, _ = _density_d3_query_distances(tree, query, k_used)
+        fold_d1 = float(distances[0, 0])
+        fold_dk = float(distances[0, 1]) if k_used > 1 else fold_d1
+        fold_pixels.append({
+            "row": row,
+            "col": col,
+            "region": pixel.get("region"),
+            "weight_class": pixel.get("weight_class"),
+            "d1_pixels": fold_d1,
+            "dk_pixels": fold_dk,
+            "d1_percentile": _density_d3_percentile(global_d1, fold_d1),
+            "dk_percentile": _density_d3_percentile(global_dk, fold_dk),
+        })
+
+    candidate_pairs = _density_d3_pair_indices(
+        valid_scene, coarse_inside_hull,
+    )
+    candidate_pair_count = len(candidate_pairs)
+    if candidate_pair_count <= global_pair_sample_limit:
+        selected_pair_indices = np.arange(candidate_pair_count, dtype=np.int64)
+    else:
+        selected_pair_indices = (
+            np.arange(global_pair_sample_limit, dtype=np.int64)
+            * candidate_pair_count
+            // global_pair_sample_limit
+        )
+    sampled_pairs = [candidate_pairs[int(index)] for index in selected_pair_indices]
+    if sampled_pairs:
+        endpoints = np.asarray([
+            [gx[row0, col0], gy[row0, col0]]
+            for row0, col0, row1, col1, _ in sampled_pairs
+        ] + [
+            [gx[row1, col1], gy[row1, col1]]
+            for row0, col0, row1, col1, _ in sampled_pairs
+        ], dtype=float)
+        neighbor_indices = _density_d3_query_full_neighbors(
+            tree, endpoints, k_used,
+        )
+        global_jaccards = []
+        global_replaced = []
+        for index in range(len(sampled_pairs)):
+            metrics = _density_d3_neighbor_metrics(
+                neighbor_indices[index],
+                neighbor_indices[index + len(sampled_pairs)],
+                k_used,
+            )
+            global_jaccards.append(metrics["jaccard"])
+            global_replaced.append(metrics["replaced_neighbor_count"])
+        global_jaccards_array = np.asarray(global_jaccards, dtype=float)
+        global_replaced_array = np.asarray(global_replaced, dtype=float)
+    else:
+        global_jaccards_array = np.empty(0, dtype=float)
+        global_replaced_array = np.empty(0, dtype=float)
+    neighbor_set_baseline = {
+        "candidate_pair_count": int(candidate_pair_count),
+        "sampled_pair_count": int(len(sampled_pairs)),
+        "jaccard": (
+            _density_d3_summary(global_jaccards_array)
+            if len(global_jaccards_array) else _density_d3_empty_summary()
+        ),
+        "replaced_neighbor_count": (
+            _density_d3_summary(global_replaced_array)
+            if len(global_replaced_array) else _density_d3_empty_summary()
+        ),
+    }
+
+    component_patches = []
+    for component in (fold_d2 or {}).get("components", []) or []:
+        (
+            center_row, center_col, center_row_index, center_col_index,
+            patch_rows, patch_cols,
+        ) = _density_d3_component_patch_indices(
+            component,
+            coarse_shape=gx.shape,
+            valid_scene=valid_scene,
+            field_step=field_step,
+            radius_cells=local_radius_cells,
+        )
+        query_points = []
+        point_lookup: dict[tuple[int, int], dict[str, Any]] = {}
+        for grid_row_index in patch_rows:
+            for grid_col_index in patch_cols:
+                inside_scene = bool(valid_scene[grid_row_index, grid_col_index])
+                inside_hull = bool(
+                    inside_scene and coarse_inside_hull[grid_row_index, grid_col_index]
+                )
+                raw_sample = None
+                d1_pixels = None
+                dk_pixels = None
+                if inside_scene:
+                    query = np.asarray([[
+                        float(gx[grid_row_index, grid_col_index]),
+                        float(gy[grid_row_index, grid_col_index]),
+                    ]])
+                    distances, _ = _density_d3_query_distances(
+                        tree, query, k_used,
+                    )
+                    d1_pixels = float(distances[0, 0])
+                    dk_pixels = (
+                        float(distances[0, 1]) if k_used > 1 else d1_pixels
+                    )
+                    raw_sample = raw[
+                        int(gy[grid_row_index, grid_col_index]),
+                        int(gx[grid_row_index, grid_col_index]),
+                    ].astype(float, copy=True)
+                point = {
+                    "component_id": int(component["component_id"]),
+                    "grid_row_index": int(grid_row_index),
+                    "grid_col_index": int(grid_col_index),
+                    "query_x": float(gx[grid_row_index, grid_col_index]),
+                    "query_y": float(gy[grid_row_index, grid_col_index]),
+                    "inside_scene": inside_scene,
+                    "inside_hull": inside_hull,
+                    "d1_pixels": d1_pixels,
+                    "dk_pixels": dk_pixels,
+                    "raw_dx": None if raw_sample is None else float(raw_sample[0]),
+                    "raw_dy": None if raw_sample is None else float(raw_sample[1]),
+                    "raw_dense_flow_sample": (
+                        None if raw_sample is None else [
+                            float(raw_sample[0]), float(raw_sample[1]),
+                        ]
+                    ),
+                }
+                query_points.append(point)
+                point_lookup[(grid_row_index, grid_col_index)] = point
+
+        adjacent_pairs = []
+        for orientation, row_delta, col_delta in (
+            ("horizontal", 0, 1), ("vertical", 1, 0),
+        ):
+            for grid_row_index in patch_rows:
+                for grid_col_index in patch_cols:
+                    first_key = (grid_row_index, grid_col_index)
+                    second_key = (
+                        grid_row_index + row_delta,
+                        grid_col_index + col_delta,
+                    )
+                    if second_key not in point_lookup:
+                        continue
+                    first = point_lookup[first_key]
+                    second = point_lookup[second_key]
+                    if not (
+                        first["inside_scene"] and first["inside_hull"]
+                        and second["inside_scene"] and second["inside_hull"]
+                    ):
+                        continue
+                    endpoints = np.asarray([
+                        [first["query_x"], first["query_y"]],
+                        [second["query_x"], second["query_y"]],
+                    ])
+                    neighbors = _density_d3_query_full_neighbors(
+                        tree, endpoints, k_used,
+                    )
+                    metrics = _density_d3_neighbor_metrics(
+                        neighbors[0], neighbors[1], k_used,
+                    )
+                    raw_delta = np.asarray(second["raw_dense_flow_sample"])
+                    raw_delta -= np.asarray(first["raw_dense_flow_sample"])
+                    pair = {
+                        "component_id": int(component["component_id"]),
+                        "orientation": orientation,
+                        "x0": float(first["query_x"]),
+                        "y0": float(first["query_y"]),
+                        "x1": float(second["query_x"]),
+                        "y1": float(second["query_y"]),
+                        "jaccard": metrics["jaccard"],
+                        "jaccard_percentile": (
+                            _density_d3_percentile(
+                                global_jaccards_array, metrics["jaccard"]
+                            )
+                            if len(global_jaccards_array) else None
+                        ),
+                        "intersection_count": metrics["intersection_count"],
+                        "replaced_neighbor_count": metrics["replaced_neighbor_count"],
+                        "raw_dx_delta": float(raw_delta[0]),
+                        "raw_dy_delta": float(raw_delta[1]),
+                        "raw_displacement_delta_magnitude": float(
+                            np.linalg.norm(raw_delta)
+                        ),
+                    }
+                    adjacent_pairs.append(pair)
+        if adjacent_pairs:
+            jaccards = np.asarray([
+                pair["jaccard"] for pair in adjacent_pairs
+            ], dtype=float)
+            raw_changes = np.asarray([
+                pair["raw_displacement_delta_magnitude"]
+                for pair in adjacent_pairs
+            ], dtype=float)
+            local_summary = {
+                "pair_count": int(len(adjacent_pairs)),
+                "jaccard_min": float(np.min(jaccards)),
+                "jaccard_median": float(np.median(jaccards)),
+                "jaccard_p05": float(np.percentile(jaccards, 5)),
+                "replaced_neighbor_count_max": int(max(
+                    pair["replaced_neighbor_count"] for pair in adjacent_pairs
+                )),
+                "raw_displacement_delta_max": float(np.max(raw_changes)),
+            }
+        else:
+            local_summary = {
+                "pair_count": 0,
+                "jaccard_min": None,
+                "jaccard_median": None,
+                "jaccard_p05": None,
+                "replaced_neighbor_count_max": 0,
+                "raw_displacement_delta_max": None,
+            }
+        component_patches.append({
+            "component_id": int(component["component_id"]),
+            "center_row": float(center_row),
+            "center_col": float(center_col),
+            "coarse_center_x": float(gx[center_row_index, center_col_index]),
+            "coarse_center_y": float(gy[center_row_index, center_col_index]),
+            "query_points": query_points,
+            "adjacent_pairs": adjacent_pairs,
+            "local_summary": local_summary,
+        })
+
+    return {
+        "available": True,
+        "field_step": int(field_step),
+        "requested_neighbor_count": int(neighbor_count),
+        "k_used": int(k_used),
+        "local_radius_cells": int(local_radius_cells),
+        "percentile_definition": "100 * mean(reference <= value)",
+        "global_density": {
+            "coarse_hull_sample_count": int(len(coarse_positions)),
+            "d1": _density_d3_summary(global_d1),
+            "dk": _density_d3_summary(global_dk),
+        },
+        "fold_pixels": fold_pixels,
+        "neighbor_set_baseline": neighbor_set_baseline,
+        "component_patches": component_patches,
+        "_arrays": {
+            "coarse_d1": coarse_d1,
+            "coarse_dk": coarse_dk,
+            "coarse_inside_hull": coarse_inside_hull,
+            "coarse_x": np.asarray(gx).copy(),
+            "coarse_y": np.asarray(gy).copy(),
+        },
     }
 
 

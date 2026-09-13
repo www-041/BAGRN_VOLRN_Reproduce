@@ -3013,6 +3013,7 @@ class MultibandPipeline:
             build_tps_support_c1_fields,
             compare_tps_support_validations,
             diagnose_supported_fold_pixels,
+            diagnose_tps_control_density,
         )
 
         if not holdout_reservation_overrides:
@@ -3102,6 +3103,7 @@ class MultibandPipeline:
             "supported_validation": None,
             "comparison": None,
             "fold_d2": None,
+            "density_d3": None,
             "paired_holdout_blocks": [],
             "failure_reason": estimation.get(
                 "failure_reason", "KLT/TPS estimation unavailable"
@@ -3192,6 +3194,15 @@ class MultibandPipeline:
             displacement_xy=estimation["displacement_xy"],
             neighbor_count=int(reg_params.get("klt_tps_neighbors", 80)),
         )
+        density_d3_result = diagnose_tps_control_density(
+            raw_flow=fields["_arrays"]["raw_flow"],
+            control_points_xy=estimation["control_points_moving_xy"],
+            support_hull_mask=fields["_arrays"]["support_hull_mask"],
+            fold_d2=fold_d2,
+            field_step=int(reg_params.get("klt_tps_field_step", 4)),
+            neighbor_count=int(reg_params.get("klt_tps_neighbors", 80)),
+        )
+        density_d3_arrays = density_d3_result.pop("_arrays")
         supported_registered = None
         supported_valid = None
         supported_quality = None
@@ -3288,6 +3299,7 @@ class MultibandPipeline:
             "supported_validation": supported_validation,
             "comparison": comparison,
             "fold_d2": fold_d2,
+            "density_d3": density_d3_result,
             "paired_holdout_blocks": paired_holdout_blocks,
             "failure_reason": None,
         }
@@ -3308,6 +3320,13 @@ class MultibandPipeline:
                 "supported_fold_mask": fields["_arrays"]["supported_fold_mask"],
                 "translation_valid": translation_valid,
                 "supported_valid": supported_valid,
+                "density_d3_coarse_d1": density_d3_arrays["coarse_d1"],
+                "density_d3_coarse_dk": density_d3_arrays["coarse_dk"],
+                "density_d3_coarse_inside_hull": density_d3_arrays[
+                    "coarse_inside_hull"
+                ],
+                "density_d3_coarse_x": density_d3_arrays["coarse_x"],
+                "density_d3_coarse_y": density_d3_arrays["coarse_y"],
             },
         }
 

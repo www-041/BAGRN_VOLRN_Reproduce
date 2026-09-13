@@ -526,6 +526,117 @@ def test_tps_support_c1_fold_d2_does_not_allow_unsafe_supported_warp(monkeypatch
     assert len(calls) == 1
 
 
+def _fake_density_d3_result(shape=(48, 56)):
+    coarse_shape = (3, 3)
+    return {
+        "available": True,
+        "field_step": 4,
+        "requested_neighbor_count": 80,
+        "k_used": 4,
+        "local_radius_cells": 2,
+        "percentile_definition": "100 * mean(reference <= value)",
+        "global_density": {
+            "coarse_hull_sample_count": 1,
+            "d1": {"count": 1, "min": 1.0, "p01": 1.0,
+                    "p05": 1.0, "median": 1.0, "p75": 1.0,
+                    "p90": 1.0, "p95": 1.0, "p99": 1.0, "max": 1.0},
+            "dk": {"count": 1, "min": 2.0, "p01": 2.0,
+                   "p05": 2.0, "median": 2.0, "p75": 2.0,
+                   "p90": 2.0, "p95": 2.0, "p99": 2.0, "max": 2.0},
+        },
+        "fold_pixels": [],
+        "neighbor_set_baseline": {
+            "candidate_pair_count": 0,
+            "sampled_pair_count": 0,
+            "jaccard": {"count": 0},
+            "replaced_neighbor_count": {"count": 0},
+        },
+        "component_patches": [],
+        "_arrays": {
+            "coarse_d1": np.zeros(coarse_shape),
+            "coarse_dk": np.zeros(coarse_shape),
+            "coarse_inside_hull": np.ones(coarse_shape, dtype=bool),
+            "coarse_x": np.zeros(coarse_shape),
+            "coarse_y": np.zeros(coarse_shape),
+        },
+    }
+
+
+def test_tps_support_c1_records_density_d3_when_supported_is_unsafe(monkeypatch):
+    import src.klt_tps_support_c1 as support
+
+    pipe = _dummy_pipeline()
+    estimation = _fake_estimation()
+    estimation["flow"][..., 0] = 1000.0
+    _patch_c1_dependencies(monkeypatch, estimation=estimation)
+    seen = []
+
+    def fake_d3(**kwargs):
+        seen.append(kwargs)
+        return _fake_density_d3_result()
+
+    monkeypatch.setattr(support, "diagnose_tps_control_density", fake_d3)
+
+    result = pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    causal = result["tps_support_causal"]
+    assert seen
+    assert causal["density_d3"]["available"] is True
+    assert causal["supported_geometry_safe"] is False
+    assert causal["supported_validation"] is None
+    assert "_arrays" not in causal["density_d3"]
+    assert result["_tps_support_causal_arrays"]["density_d3_coarse_d1"].shape == (3, 3)
+
+
+def test_tps_density_d3_receives_configured_field_step_and_neighbor_count(monkeypatch):
+    import src.klt_tps_support_c1 as support
+
+    pipe = _dummy_pipeline()
+    pipe.config.registration_params["klt_tps_field_step"] = 7
+    pipe.config.registration_params["klt_tps_neighbors"] = 13
+    _patch_c1_dependencies(monkeypatch)
+    seen = []
+
+    def fake_d3(**kwargs):
+        seen.append(kwargs)
+        return _fake_density_d3_result()
+
+    monkeypatch.setattr(support, "diagnose_tps_control_density", fake_d3)
+
+    pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert seen[0]["field_step"] == 7
+    assert seen[0]["neighbor_count"] == 13
+
+
+def test_tps_density_d3_does_not_change_supported_geometry_gate(monkeypatch):
+    import src.klt_tps_support_c1 as support
+
+    pipe = _dummy_pipeline()
+    estimation = _fake_estimation()
+    estimation["flow"][..., 0] = 1000.0
+    _patch_c1_dependencies(monkeypatch, estimation=estimation)
+    monkeypatch.setattr(
+        support, "diagnose_tps_control_density",
+        lambda **kwargs: _fake_density_d3_result(),
+    )
+
+    result = pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert result["tps_support_causal"]["density_d3"]["available"] is True
+    assert result["tps_support_causal"]["supported_geometry_safe"] is False
+    assert result["_tps_support_causal_arrays"]["supported_registered"] is None
+
+
 def test_tps_support_c1_passes_configured_tps_neighbor_count_to_d2(monkeypatch):
     import src.klt_tps_support_c1 as support
 
