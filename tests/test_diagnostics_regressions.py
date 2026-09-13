@@ -350,6 +350,91 @@ def _tps_support_c1_fold_d2_fixture():
     }
 
 
+def _tps_support_c1_density_d3_fixture(shape=(32, 40)):
+    coarse_shape = (9, 11)
+    density = {
+        "available": True,
+        "field_step": 4,
+        "requested_neighbor_count": 80,
+        "k_used": 4,
+        "local_radius_cells": 2,
+        "percentile_definition": "100 * mean(reference <= value)",
+        "global_density": {
+            "coarse_hull_sample_count": 4,
+            "d1": {"count": 4, "min": 1.0, "p01": 1.0,
+                    "p05": 1.0, "median": 2.0, "p75": 3.0,
+                    "p90": 3.0, "p95": 3.0, "p99": 3.0, "max": 3.0},
+            "dk": {"count": 4, "min": 4.0, "p01": 4.0,
+                   "p05": 4.0, "median": 5.0, "p75": 6.0,
+                   "p90": 6.0, "p95": 6.0, "p99": 6.0, "max": 6.0},
+        },
+        "fold_pixels": [{
+            "row": 4, "col": 8, "region": "taper", "weight_class": "partial",
+            "d1_pixels": 12.5, "dk_pixels": 48.0,
+            "d1_percentile": 75.0, "dk_percentile": 100.0,
+        }],
+        "neighbor_set_baseline": {
+            "candidate_pair_count": 8,
+            "sampled_pair_count": 8,
+            "jaccard": {"count": 8, "min": 0.5, "p01": 0.5,
+                        "p05": 0.5, "median": 0.75, "p75": 1.0,
+                        "p90": 1.0, "p95": 1.0, "p99": 1.0, "max": 1.0},
+            "replaced_neighbor_count": {"count": 8, "min": 0.0, "p01": 0.0,
+                                         "p05": 0.0, "median": 1.0,
+                                         "p75": 2.0, "p90": 2.0,
+                                         "p95": 2.0, "p99": 2.0, "max": 2.0},
+        },
+        "component_patches": [{
+            "component_id": 1,
+            "center_row": 4.0,
+            "center_col": 8.0,
+            "coarse_center_x": 8.0,
+            "coarse_center_y": 4.0,
+            "query_points": [],
+            "adjacent_pairs": [{
+                "component_id": 1,
+                "orientation": "horizontal",
+                "x0": 4.0, "y0": 4.0, "x1": 8.0, "y1": 4.0,
+                "jaccard": 0.5, "jaccard_percentile": 25.0,
+                "intersection_count": 2, "replaced_neighbor_count": 2,
+                "raw_dx_delta": 3.0, "raw_dy_delta": 1.0,
+                "raw_displacement_delta_magnitude": float(np.sqrt(10.0)),
+            }],
+            "local_summary": {
+                "pair_count": 1, "jaccard_min": 0.5,
+                "jaccard_median": 0.5, "jaccard_p05": 0.5,
+                "replaced_neighbor_count_max": 2,
+                "raw_displacement_delta_max": float(np.sqrt(10.0)),
+            },
+        }],
+    }
+    arrays = {
+        "density_d3_coarse_d1": np.full(coarse_shape, np.nan, dtype=float),
+        "density_d3_coarse_dk": np.full(coarse_shape, np.nan, dtype=float),
+        "density_d3_coarse_inside_hull": np.zeros(coarse_shape, dtype=bool),
+        "density_d3_coarse_x": np.broadcast_to(
+            np.arange(coarse_shape[1], dtype=float) * 4.0,
+            coarse_shape,
+        ).copy(),
+        "density_d3_coarse_y": np.broadcast_to(
+            np.arange(coarse_shape[0], dtype=float)[:, None] * 4.0,
+            coarse_shape,
+        ).copy(),
+    }
+    arrays["density_d3_coarse_inside_hull"][1:5, 1:5] = True
+    arrays["density_d3_coarse_d1"][1:5, 1:5] = np.arange(16).reshape(4, 4)
+    arrays["density_d3_coarse_dk"][1:5, 1:5] = np.arange(16).reshape(4, 4) + 10.0
+    return density, arrays
+
+
+def _registration_with_density_d3():
+    registration = _tps_support_c1_registration_fixture()
+    density, arrays = _tps_support_c1_density_d3_fixture()
+    registration["tps_support_causal"]["density_d3"] = density
+    registration["_tps_support_causal_arrays"].update(arrays)
+    return registration
+
+
 def _tps_support_c1_completion_fixture(comparison):
     return {
         "tps_support_causal": {
@@ -495,6 +580,111 @@ def test_fold_d2_json_does_not_serialize_dense_arrays(tmp_path):
     for forbidden in (
         "raw_flow", "supported_flow", "translation_flow",
         "jacobian_determinant", "fold_mask",
+    ):
+        assert forbidden not in text
+
+
+def test_tps_density_d3_writes_summary_json(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = _registration_with_density_d3()
+    density = registration["tps_support_causal"]["density_d3"]
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        registration, _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+
+    summary_path = Path(paths["tps_density_d3_summary"])
+    assert json.loads(summary_path.read_text(encoding="utf-8")) == density
+
+
+def test_tps_density_d3_writes_fold_pixels_csv(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _registration_with_density_d3(), _tps_support_c1_scene_data(),
+        ["ref", "moving"], tmp_path, registration_band_idx=0,
+        validation_band_idx=1,
+    )
+
+    with Path(paths["tps_density_d3_fold_pixels"]).open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert rows[0]["row"] == "4"
+    assert rows[0]["d1_pixels"] == "12.5"
+    assert reader.fieldnames == [
+        "row", "col", "region", "weight_class", "d1_pixels", "dk_pixels",
+        "d1_percentile", "dk_percentile", "requested_neighbor_count", "k_used",
+    ]
+
+
+def test_tps_density_d3_writes_local_pairs_csv(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _registration_with_density_d3(), _tps_support_c1_scene_data(),
+        ["ref", "moving"], tmp_path, registration_band_idx=0,
+        validation_band_idx=1,
+    )
+
+    with Path(paths["tps_density_d3_local_pairs"]).open(
+        newline="", encoding="utf-8"
+    ) as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert rows[0]["component_id"] == "1"
+    assert rows[0]["orientation"] == "horizontal"
+    assert reader.fieldnames == [
+        "component_id", "orientation", "x0", "y0", "x1", "y1", "jaccard",
+        "jaccard_percentile", "intersection_count", "replaced_neighbor_count",
+        "raw_dx_delta", "raw_dy_delta", "raw_displacement_delta_magnitude",
+    ]
+
+
+def test_tps_density_d3_writes_d1_map(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _registration_with_density_d3(), _tps_support_c1_scene_data(),
+        ["ref", "moving"], tmp_path, registration_band_idx=0,
+        validation_band_idx=1,
+    )
+
+    map_path = Path(paths["klt_tps_density_d1_map"])
+    assert map_path.exists()
+    assert map_path.stat().st_size > 0
+
+
+def test_tps_density_d3_writes_dk_map(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _registration_with_density_d3(), _tps_support_c1_scene_data(),
+        ["ref", "moving"], tmp_path, registration_band_idx=0,
+        validation_band_idx=1,
+    )
+
+    map_path = Path(paths["klt_tps_density_dk_map"])
+    assert map_path.exists()
+    assert map_path.stat().st_size > 0
+
+
+def test_tps_density_d3_json_excludes_private_arrays(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _registration_with_density_d3(), _tps_support_c1_scene_data(),
+        ["ref", "moving"], tmp_path, registration_band_idx=0,
+        validation_band_idx=1,
+    )
+    text = Path(paths["tps_density_d3_summary"]).read_text(encoding="utf-8")
+
+    assert "_arrays" not in text
+    for forbidden in (
+        "coarse_d1", "coarse_dk", "coarse_inside_hull", "raw_flow",
+        "supported_flow",
     ):
         assert forbidden not in text
 
@@ -649,6 +839,20 @@ def test_tps_support_c1_logging_reports_fold_d2_evidence(caplog):
         "TPS-FOLD-D2: folds=1, outside=0, taper=1, deep_inside=0, "
         "weight_zero=0, weight_partial=1, weight_one=0, components=1"
     ) in messages
+
+
+def test_tps_support_c1_logging_reports_density_d3_evidence(caplog):
+    from scripts import diagnose_registration_pair
+
+    with caplog.at_level("INFO"):
+        diagnose_registration_pair._log_tps_support_c1_summary(
+            _registration_with_density_d3()
+        )
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "TPS-DENSITY-D3: coarse_hull_samples=4, K=4" in messages
+    assert "TPS-DENSITY-D3 folds: d1 percentile min/median/max" in messages
+    assert "TPS-DENSITY-D3 neighbor stability:" in messages
 
 
 def test_hull_causal_payload_excludes_large_field_arrays(tmp_path):

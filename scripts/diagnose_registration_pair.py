@@ -180,6 +180,61 @@ def _log_tps_support_c1_summary(registration):
         weight_classes.get("one", 0),
         fold_d2.get("component_count", 0),
     )
+    density = causal.get("density_d3", {}) or {}
+    if not density.get("available"):
+        return
+    global_density = density.get("global_density", {}) or {}
+    d1 = global_density.get("d1", {}) or {}
+    dk = global_density.get("dk", {}) or {}
+    logger.info(
+        "TPS-DENSITY-D3: coarse_hull_samples=%s, K=%s, "
+        "d1 p50/p95/p99=%s/%s/%s, dK p50/p95/p99=%s/%s/%s",
+        global_density.get("coarse_hull_sample_count", 0),
+        density.get("k_used"),
+        _metric_text(d1.get("median")), _metric_text(d1.get("p95")),
+        _metric_text(d1.get("p99")), _metric_text(dk.get("median")),
+        _metric_text(dk.get("p95")), _metric_text(dk.get("p99")),
+    )
+    fold_pixels = density.get("fold_pixels", []) or []
+    d1_percentiles = np.asarray([
+        pixel.get("d1_percentile") for pixel in fold_pixels
+        if pixel.get("d1_percentile") is not None
+    ], dtype=float)
+    dk_percentiles = np.asarray([
+        pixel.get("dk_percentile") for pixel in fold_pixels
+        if pixel.get("dk_percentile") is not None
+    ], dtype=float)
+    logger.info(
+        "TPS-DENSITY-D3 folds: d1 percentile min/median/max=%s/%s/%s, "
+        "dK percentile min/median/max=%s/%s/%s",
+        _metric_text(np.min(d1_percentiles) if d1_percentiles.size else None),
+        _metric_text(np.median(d1_percentiles) if d1_percentiles.size else None),
+        _metric_text(np.max(d1_percentiles) if d1_percentiles.size else None),
+        _metric_text(np.min(dk_percentiles) if dk_percentiles.size else None),
+        _metric_text(np.median(dk_percentiles) if dk_percentiles.size else None),
+        _metric_text(np.max(dk_percentiles) if dk_percentiles.size else None),
+    )
+    baseline = density.get("neighbor_set_baseline", {}) or {}
+    global_jaccard = baseline.get("jaccard", {}) or {}
+    component_patches = density.get("component_patches", []) or []
+    local_jaccard = [
+        patch.get("local_summary", {}).get("jaccard_min")
+        for patch in component_patches
+        if patch.get("local_summary", {}).get("jaccard_min") is not None
+    ]
+    local_raw_delta = [
+        patch.get("local_summary", {}).get("raw_displacement_delta_max")
+        for patch in component_patches
+        if patch.get("local_summary", {}).get("raw_displacement_delta_max") is not None
+    ]
+    logger.info(
+        "TPS-DENSITY-D3 neighbor stability: global Jaccard p05/median=%s/%s, "
+        "local component min Jaccard=%s, local max raw-flow delta=%s",
+        _metric_text(global_jaccard.get("p05")),
+        _metric_text(global_jaccard.get("median")),
+        [_metric_text(value) for value in local_jaccard],
+        [_metric_text(value) for value in local_raw_delta],
+    )
 
 
 _KLT_TPS_CONTROL_COLUMNS = [
@@ -494,6 +549,15 @@ _TPS_SUPPORT_C1_FOLD_D2_COLUMNS = [
     "local_vector_deviation_median", "local_vector_deviation_p95",
     "local_vector_deviation_max",
 ]
+_TPS_DENSITY_D3_FOLD_COLUMNS = [
+    "row", "col", "region", "weight_class", "d1_pixels", "dk_pixels",
+    "d1_percentile", "dk_percentile", "requested_neighbor_count", "k_used",
+]
+_TPS_DENSITY_D3_PAIR_COLUMNS = [
+    "component_id", "orientation", "x0", "y0", "x1", "y1", "jaccard",
+    "jaccard_percentile", "intersection_count", "replaced_neighbor_count",
+    "raw_dx_delta", "raw_dy_delta", "raw_displacement_delta_magnitude",
+]
 
 
 def _write_tps_support_c1_stage_metrics_csv(registration, output_dir):
@@ -587,6 +651,49 @@ def _write_tps_support_c1_fold_d2_pixels_csv(registration, output_dir):
     return csv_path
 
 
+def _write_tps_density_d3_fold_pixels_csv(registration, output_dir):
+    """Write compact D3 density statistics for every supported fold pixel."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "tps_density_d3_fold_pixels.csv"
+    causal = registration.get("tps_support_causal", {}) or {}
+    density = causal.get("density_d3", {}) or {}
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_TPS_DENSITY_D3_FOLD_COLUMNS)
+        writer.writeheader()
+        for pixel in density.get("fold_pixels", []) or []:
+            row = dict(pixel)
+            row["requested_neighbor_count"] = density.get(
+                "requested_neighbor_count"
+            )
+            row["k_used"] = density.get("k_used")
+            writer.writerow({
+                key: _json_safe(row.get(key))
+                for key in _TPS_DENSITY_D3_FOLD_COLUMNS
+            })
+    return csv_path
+
+
+def _write_tps_density_d3_local_pairs_csv(registration, output_dir):
+    """Flatten all D3 component-patch adjacent pairs into one CSV."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "tps_density_d3_local_pairs.csv"
+    density = (registration.get("tps_support_causal", {}) or {}).get(
+        "density_d3", {}
+    ) or {}
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_TPS_DENSITY_D3_PAIR_COLUMNS)
+        writer.writeheader()
+        for component in density.get("component_patches", []) or []:
+            for pair in component.get("adjacent_pairs", []) or []:
+                writer.writerow({
+                    key: _json_safe(pair.get(key))
+                    for key in _TPS_DENSITY_D3_PAIR_COLUMNS
+                })
+    return csv_path
+
+
 def _tps_support_c1_stage_overlay(
     output_path,
     prefix,
@@ -660,6 +767,48 @@ def write_tps_support_c1_artifacts(
         np.asarray(arrays.get("support_weight")),
         fold_d2,
     )
+    density_d3 = causal.get("density_d3", {}) or {}
+    density_array_names = (
+        "density_d3_coarse_d1", "density_d3_coarse_dk",
+        "density_d3_coarse_inside_hull", "density_d3_coarse_x",
+        "density_d3_coarse_y",
+    )
+    density_available = bool(
+        density_d3.get("available")
+        and all(arrays.get(name) is not None for name in density_array_names)
+    )
+    density_summary_path = None
+    density_fold_csv = None
+    density_pairs_csv = None
+    density_d1_map_path = None
+    density_dk_map_path = None
+    if density_available:
+        density_summary_path = output_path / "tps_density_d3_summary.json"
+        density_summary_path.write_text(
+            json.dumps(_json_safe(density_d3), indent=2, ensure_ascii=False,
+                       allow_nan=False),
+            encoding="utf-8",
+        )
+        density_fold_csv = _write_tps_density_d3_fold_pixels_csv(
+            registration, output_dir,
+        )
+        density_pairs_csv = _write_tps_density_d3_local_pairs_csv(
+            registration, output_dir,
+        )
+        density_d1_map_path = output_path / "klt_tps_density_d1_map.png"
+        density_dk_map_path = output_path / "klt_tps_density_dk_map.png"
+        _save_tps_density_d3_map(
+            str(density_d1_map_path),
+            _registration_band(scene_data["arrays"][1], registration_band_idx),
+            density_d3, arrays, "density_d3_coarse_d1",
+            "TPS-DENSITY-D3 nearest-control distance d1",
+        )
+        _save_tps_density_d3_map(
+            str(density_dk_map_path),
+            _registration_band(scene_data["arrays"][1], registration_band_idx),
+            density_d3, arrays, "density_d3_coarse_dk",
+            f"TPS-DENSITY-D3 Kth-neighbor radius K={density_d3.get('k_used')}",
+        )
     integrity_path = output_path / "tps_support_c1_integrity.json"
     integrity_path.write_text(
         json.dumps(_json_safe(causal.get("integrity", {})), indent=2,
@@ -686,6 +835,21 @@ def write_tps_support_c1_artifacts(
         "tps_support_c1_fold_d2_pixels": str(fold_d2_csv),
         "tps_support_c1_fold_d2_summary": str(fold_d2_summary_path),
         "klt_tps_supported_fold_d2_map": str(fold_d2_map_path),
+        "tps_density_d3_summary": (
+            None if density_summary_path is None else str(density_summary_path)
+        ),
+        "tps_density_d3_fold_pixels": (
+            None if density_fold_csv is None else str(density_fold_csv)
+        ),
+        "tps_density_d3_local_pairs": (
+            None if density_pairs_csv is None else str(density_pairs_csv)
+        ),
+        "klt_tps_density_d1_map": (
+            None if density_d1_map_path is None else str(density_d1_map_path)
+        ),
+        "klt_tps_density_dk_map": (
+            None if density_dk_map_path is None else str(density_dk_map_path)
+        ),
         "tps_support_c1_integrity": str(integrity_path),
     }
     for filename, field, title in field_specs:
@@ -1104,6 +1268,69 @@ def _save_tps_support_fold_d2_map(
     )
     ax.set_xlabel("moving-native pixel x")
     ax.set_ylabel("moving-native pixel y")
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def _save_tps_density_d3_map(
+    path,
+    moving_band,
+    density_d3,
+    arrays,
+    field_name,
+    title,
+):
+    """Plot one coarse D3 density field in moving-native coordinates."""
+    import matplotlib
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    field = np.asarray(arrays[field_name], dtype=float)
+    coarse_x = np.asarray(arrays["density_d3_coarse_x"], dtype=float)
+    coarse_y = np.asarray(arrays["density_d3_coarse_y"], dtype=float)
+    if field.shape != coarse_x.shape or field.shape != coarse_y.shape:
+        raise ValueError("D3 map arrays must have identical coarse shapes")
+    finite = np.isfinite(field)
+    if not finite.any():
+        raise ValueError("D3 map field has no finite values")
+    density_key = "d1" if field_name.endswith("_d1") else "dk"
+    stats = density_d3.get("global_density", {}).get(density_key, {}) or {}
+    vmin = stats.get("p05")
+    vmax = stats.get("p99")
+    if vmin is None or not np.isfinite(float(vmin)):
+        vmin = float(np.min(field[finite]))
+    if vmax is None or not np.isfinite(float(vmax)):
+        vmax = float(np.max(field[finite]))
+    vmin = float(vmin)
+    vmax = float(vmax)
+    if vmax <= vmin:
+        vmax = vmin + 1.0
+
+    background = _stretch_for_overlay(moving_band, None)
+    height, width = background.shape
+    fig, ax = plt.subplots(figsize=(9, 6), dpi=140)
+    ax.imshow(
+        background, cmap="gray", origin="upper",
+        extent=(0, width, height, 0),
+    )
+    mesh = ax.pcolormesh(
+        coarse_x, coarse_y, np.ma.masked_invalid(field),
+        cmap="viridis", alpha=0.58, shading="nearest",
+        vmin=vmin, vmax=vmax,
+    )
+    folds = density_d3.get("fold_pixels", []) or []
+    if folds:
+        rows = np.asarray([pixel["row"] for pixel in folds], dtype=float)
+        cols = np.asarray([pixel["col"] for pixel in folds], dtype=float)
+        ax.scatter(cols, rows, c="red", marker="x", s=42, linewidths=1.5)
+    ax.set_title(
+        f"{title}\nvisualized p05-p99; fold_pixels={len(folds)}"
+    )
+    ax.set_xlabel("moving-native pixel x")
+    ax.set_ylabel("moving-native pixel y")
+    colorbar = fig.colorbar(mesh, ax=ax, shrink=0.8)
+    colorbar.set_label("distance (pixels), visualized p05-p99")
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
