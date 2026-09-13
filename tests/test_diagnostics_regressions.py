@@ -253,6 +253,7 @@ def _tps_support_c1_registration_fixture(*, supported_safe=True):
             "translation_validation": validation,
             "supported_quality": supported_validation["overall"] if supported_safe else None,
             "supported_validation": supported_validation if supported_safe else None,
+            "fold_d2": _tps_support_c1_fold_d2_fixture(),
             "comparison": {
                 "available": supported_safe,
                 "holdout_keys_match": True,
@@ -284,6 +285,68 @@ def _tps_support_c1_registration_fixture(*, supported_safe=True):
             "supported_jacobian": np.ones(shape, dtype=np.float32),
             "supported_fold_mask": np.zeros(shape, dtype=bool),
         },
+    }
+
+
+def _tps_support_c1_fold_d2_fixture():
+    return {
+        "available": True,
+        "fold_pixel_count": 1,
+        "classification_counts": {
+            "outside_hull": 0, "taper": 1, "deep_inside": 0,
+        },
+        "weight_class_counts": {"zero": 0, "partial": 1, "one": 0},
+        "component_count": 1,
+        "components": [{
+            "component_id": 1,
+            "pixel_count": 1,
+            "row_min": 4,
+            "row_max": 4,
+            "col_min": 8,
+            "col_max": 8,
+            "n_outside_hull": 0,
+            "n_taper": 1,
+            "n_deep_inside": 0,
+        }],
+        "pixels": [{
+            "row": 4,
+            "col": 8,
+            "region": "taper",
+            "weight_class": "partial",
+            "support_weight": 0.5,
+            "inside_hull": True,
+            "distance_inside_pixels": 32.0,
+            "deep_inside": False,
+            "raw_jacobian": 1.0,
+            "supported_jacobian": -0.1,
+            "raw_dx": 2.0,
+            "raw_dy": 3.0,
+            "translation_dx": 1.0,
+            "translation_dy": 1.0,
+            "supported_dx": 1.5,
+            "supported_dy": 2.0,
+            "nearest_control_index": 0,
+            "nearest_control_distance_pixels": 4.0,
+            "nearest_control_x": 8.0,
+            "nearest_control_y": 4.0,
+            "nearest_control_dx": 2.0,
+            "nearest_control_dy": 3.0,
+            "local_neighbor_count": 4,
+            "neighbor_distance_min": 4.0,
+            "neighbor_distance_median": 12.0,
+            "neighbor_distance_p95": 20.0,
+            "neighbor_distance_max": 24.0,
+            "local_dx_min": 1.0,
+            "local_dx_median": 2.0,
+            "local_dx_max": 3.0,
+            "local_dy_min": 1.0,
+            "local_dy_median": 2.0,
+            "local_dy_max": 4.0,
+            "local_median_xy": [2.0, 2.0],
+            "local_vector_deviation_median": 1.0,
+            "local_vector_deviation_p95": 2.0,
+            "local_vector_deviation_max": 3.0,
+        }],
     }
 
 
@@ -356,6 +419,86 @@ def test_tps_support_c1_writes_stage_metrics_csv(tmp_path):
     ]
 
 
+def test_tps_support_c1_writes_fold_d2_pixels_csv(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _tps_support_c1_registration_fixture(),
+        _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+
+    path = Path(paths["tps_support_c1_fold_d2_pixels"])
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+    assert rows[0]["row"] == "4"
+    assert rows[0]["region"] == "taper"
+    assert rows[0]["weight_class"] == "partial"
+    assert reader.fieldnames == [
+        "row", "col", "region", "weight_class", "support_weight",
+        "inside_hull", "distance_inside_pixels", "deep_inside",
+        "raw_jacobian", "supported_jacobian", "raw_dx", "raw_dy",
+        "translation_dx", "translation_dy", "supported_dx", "supported_dy",
+        "nearest_control_index", "nearest_control_distance_pixels",
+        "nearest_control_x", "nearest_control_y", "nearest_control_dx",
+        "nearest_control_dy", "local_neighbor_count", "neighbor_distance_min",
+        "neighbor_distance_median", "neighbor_distance_p95",
+        "neighbor_distance_max", "local_dx_min", "local_dx_median",
+        "local_dx_max", "local_dy_min", "local_dy_median", "local_dy_max",
+        "local_vector_deviation_median", "local_vector_deviation_p95",
+        "local_vector_deviation_max",
+    ]
+
+
+def test_tps_support_c1_writes_fold_d2_summary_json(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    registration = _tps_support_c1_registration_fixture()
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        registration, _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+
+    summary_path = Path(paths["tps_support_c1_fold_d2_summary"])
+    assert json.loads(summary_path.read_text(encoding="utf-8")) == (
+        registration["tps_support_causal"]["fold_d2"]
+    )
+
+
+def test_tps_support_c1_writes_fold_d2_map_when_supported_is_unsafe(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _tps_support_c1_registration_fixture(supported_safe=False),
+        _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+
+    map_path = Path(paths["klt_tps_supported_fold_d2_map"])
+    assert map_path.exists()
+    assert map_path.stat().st_size > 0
+
+
+def test_fold_d2_json_does_not_serialize_dense_arrays(tmp_path):
+    from scripts import diagnose_registration_pair
+
+    paths = diagnose_registration_pair.write_tps_support_c1_artifacts(
+        _tps_support_c1_registration_fixture(),
+        _tps_support_c1_scene_data(), ["ref", "moving"], tmp_path,
+        registration_band_idx=0, validation_band_idx=1,
+    )
+
+    text = Path(paths["tps_support_c1_fold_d2_summary"]).read_text(
+        encoding="utf-8"
+    )
+    for forbidden in (
+        "raw_flow", "supported_flow", "translation_flow",
+        "jacobian_determinant", "fold_mask",
+    ):
+        assert forbidden not in text
+
+
 def test_tps_support_c1_writes_paired_holdout_csv(tmp_path):
     from scripts import diagnose_registration_pair
 
@@ -386,7 +529,7 @@ def test_tps_support_c1_writes_integrity_json_without_full_arrays(tmp_path):
 
     for forbidden in (
         "_tps_support_causal_arrays", "raw_flow", "translation_flow",
-        "supported_flow", "support_weight", "supported_jacobian",
+        "supported_flow",
         "supported_fold_mask",
     ):
         assert forbidden not in text
@@ -472,7 +615,7 @@ def test_tps_support_c1_payload_excludes_private_arrays(tmp_path):
 
     for forbidden in (
         "_tps_support_causal_arrays", "raw_flow", "translation_flow",
-        "supported_flow", "support_weight", "supported_jacobian",
+        "supported_flow",
         "supported_fold_mask",
     ):
         assert forbidden not in serialized
@@ -491,6 +634,21 @@ def test_tps_support_c1_logging_reports_raw_translation_supported_stages(caplog)
     assert "translation B14 median" in messages
     assert "supported B14 median" in messages
     assert "RMSE/P95 improvement" in messages
+
+
+def test_tps_support_c1_logging_reports_fold_d2_evidence(caplog):
+    from scripts import diagnose_registration_pair
+
+    with caplog.at_level("INFO"):
+        diagnose_registration_pair._log_tps_support_c1_summary(
+            _tps_support_c1_registration_fixture()
+        )
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert (
+        "TPS-FOLD-D2: folds=1, outside=0, taper=1, deep_inside=0, "
+        "weight_zero=0, weight_partial=1, weight_one=0, components=1"
+    ) in messages
 
 
 def test_hull_causal_payload_excludes_large_field_arrays(tmp_path):

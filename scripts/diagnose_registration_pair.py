@@ -165,6 +165,21 @@ def _log_tps_support_c1_summary(registration):
         ),
         comparison.get("n_paired_blocks", 0),
     )
+    fold_d2 = causal.get("fold_d2", {}) or {}
+    classification = fold_d2.get("classification_counts", {}) or {}
+    weight_classes = fold_d2.get("weight_class_counts", {}) or {}
+    logger.info(
+        "TPS-FOLD-D2: folds=%s, outside=%s, taper=%s, deep_inside=%s, "
+        "weight_zero=%s, weight_partial=%s, weight_one=%s, components=%s",
+        fold_d2.get("fold_pixel_count", 0),
+        classification.get("outside_hull", 0),
+        classification.get("taper", 0),
+        classification.get("deep_inside", 0),
+        weight_classes.get("zero", 0),
+        weight_classes.get("partial", 0),
+        weight_classes.get("one", 0),
+        fold_d2.get("component_count", 0),
+    )
 
 
 _KLT_TPS_CONTROL_COLUMNS = [
@@ -465,6 +480,20 @@ _TPS_SUPPORT_C1_HOLDOUT_COLUMNS = [
     "translation_accepted", "supported_accepted",
     "translation_reject_reason", "supported_reject_reason",
 ]
+_TPS_SUPPORT_C1_FOLD_D2_COLUMNS = [
+    "row", "col", "region", "weight_class", "support_weight",
+    "inside_hull", "distance_inside_pixels", "deep_inside",
+    "raw_jacobian", "supported_jacobian", "raw_dx", "raw_dy",
+    "translation_dx", "translation_dy", "supported_dx", "supported_dy",
+    "nearest_control_index", "nearest_control_distance_pixels",
+    "nearest_control_x", "nearest_control_y", "nearest_control_dx",
+    "nearest_control_dy", "local_neighbor_count", "neighbor_distance_min",
+    "neighbor_distance_median", "neighbor_distance_p95",
+    "neighbor_distance_max", "local_dx_min", "local_dx_median",
+    "local_dx_max", "local_dy_min", "local_dy_median", "local_dy_max",
+    "local_vector_deviation_median", "local_vector_deviation_p95",
+    "local_vector_deviation_max",
+]
 
 
 def _write_tps_support_c1_stage_metrics_csv(registration, output_dir):
@@ -539,6 +568,25 @@ def _write_tps_support_c1_holdout_pairs_csv(registration, output_dir):
     return csv_path
 
 
+def _write_tps_support_c1_fold_d2_pixels_csv(registration, output_dir):
+    """Write one fixed-column row for each supported TPS fold pixel."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / "tps_support_c1_fold_d2_pixels.csv"
+    fold_d2 = (registration.get("tps_support_causal", {}) or {}).get(
+        "fold_d2", {}
+    ) or {}
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_TPS_SUPPORT_C1_FOLD_D2_COLUMNS)
+        writer.writeheader()
+        for pixel in fold_d2.get("pixels", []) or []:
+            writer.writerow({
+                key: _json_safe(pixel.get(key))
+                for key in _TPS_SUPPORT_C1_FOLD_D2_COLUMNS
+            })
+    return csv_path
+
+
 def _tps_support_c1_stage_overlay(
     output_path,
     prefix,
@@ -595,6 +643,23 @@ def write_tps_support_c1_artifacts(
 
     stage_csv = _write_tps_support_c1_stage_metrics_csv(registration, output_dir)
     holdout_csv = _write_tps_support_c1_holdout_pairs_csv(registration, output_dir)
+    fold_d2 = causal.get("fold_d2", {}) or {}
+    fold_d2_csv = _write_tps_support_c1_fold_d2_pixels_csv(
+        registration, output_dir,
+    )
+    fold_d2_summary_path = output_path / "tps_support_c1_fold_d2_summary.json"
+    fold_d2_summary_path.write_text(
+        json.dumps(_json_safe(fold_d2), indent=2, ensure_ascii=False,
+                   allow_nan=False),
+        encoding="utf-8",
+    )
+    fold_d2_map_path = output_path / "klt_tps_supported_fold_d2_map.png"
+    _save_tps_support_fold_d2_map(
+        str(fold_d2_map_path),
+        _registration_band(scene_data["arrays"][1], registration_band_idx),
+        np.asarray(arrays.get("support_weight")),
+        fold_d2,
+    )
     integrity_path = output_path / "tps_support_c1_integrity.json"
     integrity_path.write_text(
         json.dumps(_json_safe(causal.get("integrity", {})), indent=2,
@@ -618,6 +683,9 @@ def write_tps_support_c1_artifacts(
     paths: dict[str, str | None] = {
         "tps_support_c1_stage_metrics": str(stage_csv),
         "tps_support_c1_holdout_pairs": str(holdout_csv),
+        "tps_support_c1_fold_d2_pixels": str(fold_d2_csv),
+        "tps_support_c1_fold_d2_summary": str(fold_d2_summary_path),
+        "klt_tps_supported_fold_d2_map": str(fold_d2_map_path),
         "tps_support_c1_integrity": str(integrity_path),
     }
     for filename, field, title in field_specs:
@@ -977,6 +1045,65 @@ def _save_field_png(path, field, title):
     image = ax.imshow(np.asarray(field, dtype=float), cmap="coolwarm")
     ax.set_title(title)
     fig.colorbar(image, ax=ax, shrink=0.8)
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def _save_tps_support_fold_d2_map(
+    path,
+    moving_band,
+    support_weight,
+    fold_d2,
+):
+    """Draw the supported fold locations over moving B12 and support weight."""
+    import matplotlib
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    background = _stretch_for_overlay(moving_band, None)
+    weight = np.asarray(support_weight, dtype=float)
+    fig, ax = plt.subplots(figsize=(9, 6), dpi=140)
+    ax.imshow(background, cmap="gray", origin="upper")
+    finite = np.isfinite(weight)
+    if finite.any():
+        weight_overlay = np.ma.masked_where(~finite, weight)
+        ax.imshow(
+            weight_overlay, cmap="viridis", alpha=0.35,
+            vmin=0.0, vmax=1.0, origin="upper",
+        )
+        weight_min = float(np.min(weight[finite]))
+        weight_max = float(np.max(weight[finite]))
+        levels = [
+            level for level in (0.01, 0.5, 0.99)
+            if weight_min <= level <= weight_max
+        ]
+        if levels:
+            ax.contour(weight, levels=levels, colors=("cyan", "yellow", "lime")[:len(levels)])
+
+    pixels = fold_d2.get("pixels", []) or []
+    if pixels:
+        rows = np.asarray([pixel["row"] for pixel in pixels], dtype=float)
+        cols = np.asarray([pixel["col"] for pixel in pixels], dtype=float)
+        ax.scatter(cols, rows, c="red", marker="x", s=42, linewidths=1.5)
+        for pixel in pixels:
+            ax.annotate(
+                f"({pixel['row']}, {pixel['col']})\n"
+                f"w={float(pixel['support_weight']):.4f}",
+                (pixel["col"], pixel["row"]), color="white", fontsize=7,
+                xytext=(4, 4), textcoords="offset points",
+            )
+    counts = fold_d2.get("classification_counts", {}) or {}
+    ax.set_title(
+        "Supported TPS fold D2\n"
+        f"fold_pixels={fold_d2.get('fold_pixel_count', 0)}, "
+        f"outside={counts.get('outside_hull', 0)}, "
+        f"taper={counts.get('taper', 0)}, "
+        f"deep={counts.get('deep_inside', 0)}, "
+        f"components={fold_d2.get('component_count', 0)}"
+    )
+    ax.set_xlabel("moving-native pixel x")
+    ax.set_ylabel("moving-native pixel y")
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
