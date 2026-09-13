@@ -3012,6 +3012,7 @@ class MultibandPipeline:
         from src.klt_tps_support_c1 import (
             build_tps_support_c1_fields,
             compare_tps_support_validations,
+            diagnose_supported_fold_pixels,
         )
 
         if not holdout_reservation_overrides:
@@ -3100,6 +3101,7 @@ class MultibandPipeline:
             "supported_quality": None,
             "supported_validation": None,
             "comparison": None,
+            "fold_d2": None,
             "paired_holdout_blocks": [],
             "failure_reason": estimation.get(
                 "failure_reason", "KLT/TPS estimation unavailable"
@@ -3175,6 +3177,20 @@ class MultibandPipeline:
 
         supported_geometry_safe = bool(
             fields["supported_geometry"].get("geometry_safe", False)
+        )
+        fold_d2 = diagnose_supported_fold_pixels(
+            raw_flow=fields["_arrays"]["raw_flow"],
+            translation_flow=fields["_arrays"]["translation_flow"],
+            supported_flow=fields["_arrays"]["supported_flow"],
+            support_weight=fields["_arrays"]["support_weight"],
+            support_hull_mask=fields["_arrays"]["support_hull_mask"],
+            deep_inside_mask=fields["_arrays"]["deep_inside_mask"],
+            distance_inside=fields["_arrays"]["support_distance_inside"],
+            supported_fold_mask=fields["_arrays"]["supported_fold_mask"],
+            supported_jacobian=fields["_arrays"]["supported_jacobian"],
+            control_points_xy=estimation["control_points_moving_xy"],
+            displacement_xy=estimation["displacement_xy"],
+            neighbor_count=int(reg_params.get("klt_tps_neighbors", 80)),
         )
         supported_registered = None
         supported_valid = None
@@ -3271,6 +3287,7 @@ class MultibandPipeline:
             "supported_quality": supported_quality,
             "supported_validation": supported_validation,
             "comparison": comparison,
+            "fold_d2": fold_d2,
             "paired_holdout_blocks": paired_holdout_blocks,
             "failure_reason": None,
         }

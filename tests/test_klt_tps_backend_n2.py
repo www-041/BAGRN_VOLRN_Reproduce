@@ -484,6 +484,80 @@ def test_tps_support_c1_does_not_warp_supported_when_geometry_unsafe(monkeypatch
     assert result["tps_support_causal"]["supported_validation"] is None
 
 
+def test_tps_support_c1_records_fold_d2_when_supported_geometry_is_unsafe(monkeypatch):
+    pipe = _dummy_pipeline()
+    estimation = _fake_estimation()
+    estimation["flow"][..., 0] = 1000.0
+    _patch_c1_dependencies(monkeypatch, estimation=estimation)
+
+    result = pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    causal = result["tps_support_causal"]
+    assert causal["fold_d2"]["available"] is True
+    assert causal["supported_geometry_safe"] is False
+
+
+def test_tps_support_c1_fold_d2_does_not_allow_unsafe_supported_warp(monkeypatch):
+    import src.klt_tps_registration as klt
+
+    pipe = _dummy_pipeline()
+    estimation = _fake_estimation()
+    estimation["flow"][..., 0] = 1000.0
+    _patch_c1_dependencies(monkeypatch, estimation=estimation)
+    calls = []
+    monkeypatch.setattr(
+        klt, "warp_multiband_with_tps_flow",
+        lambda source, flow, nodata: (
+            calls.append(flow) or (source.copy(), np.ones(source.shape[1:], bool))
+        ),
+    )
+
+    result = pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert result["tps_support_causal"]["fold_d2"]["available"] is True
+    assert result["tps_support_causal"]["supported_geometry_safe"] is False
+    assert result["_tps_support_causal_arrays"]["supported_registered"] is None
+    assert len(calls) == 1
+
+
+def test_tps_support_c1_passes_configured_tps_neighbor_count_to_d2(monkeypatch):
+    import src.klt_tps_support_c1 as support
+
+    pipe = _dummy_pipeline()
+    pipe.config.registration_params["klt_tps_neighbors"] = 17
+    _patch_c1_dependencies(monkeypatch)
+    seen = []
+
+    def fake_d2(**kwargs):
+        seen.append(kwargs["neighbor_count"])
+        return {
+            "available": True,
+            "fold_pixel_count": 0,
+            "classification_counts": {
+                "outside_hull": 0, "taper": 0, "deep_inside": 0,
+            },
+            "weight_class_counts": {"zero": 0, "partial": 0, "one": 0},
+            "component_count": 0,
+            "components": [],
+            "pixels": [],
+        }
+
+    monkeypatch.setattr(support, "diagnose_supported_fold_pixels", fake_d2)
+
+    pipe.run_klt_tps_support_c1_n2(
+        _c1_scene_data(), [{"idx_i": 0, "idx_j": 1}], 0,
+        holdout_reservation_overrides={(0, 1): [(4, 4, 384, 384)] * 7},
+    )
+
+    assert seen == [17]
+
+
 def test_tps_support_c1_records_raw_fit_count_one(monkeypatch):
     pipe = _dummy_pipeline()
     _patch_c1_dependencies(monkeypatch)

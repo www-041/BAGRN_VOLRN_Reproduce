@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
+from scipy.ndimage import label
+from scipy.spatial import cKDTree
 
 from src.klt_tps_registration import (
     analyze_tps_dense_flow,
@@ -19,6 +21,7 @@ from src.klt_tps_registration import (
 
 
 TPS_SUPPORT_C1_TAPER_PIXELS: int = 64
+TPS_FOLD_D2_WEIGHT_EPS: float = 1e-6
 
 
 def _value(source: Any, name: str, default: Any = None) -> Any:
@@ -271,12 +274,242 @@ def build_tps_support_c1_fields(
             "supported_fold_mask": supported_analysis["fold_mask"],
             "support_hull_mask": support["hull_mask"],
             "deep_inside_mask": support["deep_inside_mask"],
+            "support_distance_inside": support["distance_inside"],
         },
     }
     integrity = summarize_tps_support_field_integrity(fields)
     fields["integrity"] = integrity
     fields["support_formula_pass"] = integrity["support_formula_pass"]
     return fields
+
+
+def _d2_flow_array(name: str, value: np.ndarray) -> np.ndarray:
+    array = np.asarray(value)
+    if array.ndim != 3 or array.shape[2] != 2:
+        raise ValueError(f"{name} must have shape (H, W, 2)")
+    if not np.isfinite(array).all():
+        raise ValueError(f"{name} must contain only finite values")
+    return array
+
+
+def _d2_spatial_array(
+    name: str,
+    value: np.ndarray,
+    shape: tuple[int, int],
+    *,
+    finite: bool = False,
+) -> np.ndarray:
+    array = np.asarray(value)
+    if array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if finite and not np.isfinite(array).all():
+        raise ValueError(f"{name} must contain only finite values")
+    return array
+
+
+def _d2_summary(values: np.ndarray) -> dict[str, float]:
+    values = np.asarray(values, dtype=float)
+    return {
+        "min": float(np.min(values)),
+        "median": float(np.median(values)),
+        "p95": float(np.percentile(values, 95)),
+        "max": float(np.max(values)),
+    }
+
+
+def diagnose_supported_fold_pixels(
+    *,
+    raw_flow: np.ndarray,
+    translation_flow: np.ndarray,
+    supported_flow: np.ndarray,
+    support_weight: np.ndarray,
+    support_hull_mask: np.ndarray,
+    deep_inside_mask: np.ndarray,
+    distance_inside: np.ndarray,
+    supported_fold_mask: np.ndarray,
+    supported_jacobian: np.ndarray,
+    control_points_xy: np.ndarray,
+    displacement_xy: np.ndarray,
+    neighbor_count: int,
+) -> dict[str, Any]:
+    """Classify supported TPS folds using only already-produced diagnostics."""
+    raw = _d2_flow_array("raw_flow", raw_flow)
+    translation = _d2_flow_array("translation_flow", translation_flow)
+    supported = _d2_flow_array("supported_flow", supported_flow)
+    shape = raw.shape[:2]
+    if translation.shape != raw.shape or supported.shape != raw.shape:
+        raise ValueError("D2 flow arrays must have identical shapes")
+    weight = _d2_spatial_array(
+        "support_weight", support_weight, shape, finite=True,
+    ).astype(float, copy=False)
+    hull_mask = _d2_spatial_array(
+        "support_hull_mask", support_hull_mask, shape,
+    ).astype(bool, copy=False)
+    deep_inside = _d2_spatial_array(
+        "deep_inside_mask", deep_inside_mask, shape,
+    ).astype(bool, copy=False)
+    distance = _d2_spatial_array(
+        "distance_inside", distance_inside, shape, finite=True,
+    ).astype(float, copy=False)
+    fold_mask = _d2_spatial_array(
+        "supported_fold_mask", supported_fold_mask, shape,
+    ).astype(bool, copy=False)
+    supported_jacobian = _d2_spatial_array(
+        "supported_jacobian", supported_jacobian, shape, finite=True,
+    ).astype(float, copy=False)
+
+    controls = np.asarray(control_points_xy, dtype=float)
+    displacements = np.asarray(displacement_xy, dtype=float)
+    if controls.ndim != 2 or controls.shape[1] != 2:
+        raise ValueError("control_points_xy must have shape (N, 2)")
+    if displacements.ndim != 2 or displacements.shape[1] != 2:
+        raise ValueError("displacement_xy must have shape (N, 2)")
+    if len(controls) != len(displacements):
+        raise ValueError(
+            "control_points_xy and displacement_xy must have equal counts"
+        )
+    if len(controls) == 0:
+        raise ValueError("control_points_xy must contain at least one control")
+    if not np.isfinite(controls).all():
+        raise ValueError("control_points_xy must contain only finite values")
+    if not np.isfinite(displacements).all():
+        raise ValueError("displacement_xy must contain only finite values")
+    try:
+        neighbor_count = int(neighbor_count)
+    except (TypeError, ValueError):
+        raise ValueError("neighbor_count must be positive") from None
+    if neighbor_count <= 0:
+        raise ValueError("neighbor_count must be positive")
+
+    raw_analysis = analyze_tps_dense_flow(raw)
+    raw_jacobian = np.asarray(raw_analysis["jacobian_determinant"])
+    tree = cKDTree(controls)
+    local_count = min(neighbor_count, len(controls))
+    fold_positions = np.argwhere(fold_mask)
+    pixels = []
+    classification_counts = {
+        "outside_hull": 0,
+        "taper": 0,
+        "deep_inside": 0,
+    }
+    weight_class_counts = {"zero": 0, "partial": 0, "one": 0}
+    for row, col in fold_positions:
+        row = int(row)
+        col = int(col)
+        pixel_weight = float(weight[row, col])
+        if not hull_mask[row, col]:
+            region = "outside_hull"
+        elif (
+            deep_inside[row, col]
+            or pixel_weight >= 1.0 - TPS_FOLD_D2_WEIGHT_EPS
+        ):
+            region = "deep_inside"
+        else:
+            region = "taper"
+        if pixel_weight <= TPS_FOLD_D2_WEIGHT_EPS:
+            weight_class = "zero"
+        elif pixel_weight >= 1.0 - TPS_FOLD_D2_WEIGHT_EPS:
+            weight_class = "one"
+        else:
+            weight_class = "partial"
+        classification_counts[region] += 1
+        weight_class_counts[weight_class] += 1
+
+        query_xy = np.asarray([float(col), float(row)])
+        nearest_distances, nearest_indices = tree.query(
+            query_xy, k=local_count,
+        )
+        nearest_distances = np.asarray(nearest_distances, dtype=float).reshape(-1)
+        nearest_indices = np.asarray(nearest_indices, dtype=int).reshape(-1)
+        local_displacements = displacements[nearest_indices]
+        local_median_xy = np.median(local_displacements, axis=0)
+        vector_deviation = np.linalg.norm(
+            local_displacements - local_median_xy, axis=1,
+        )
+        distance_summary = _d2_summary(nearest_distances)
+        dx_summary = _d2_summary(local_displacements[:, 0])
+        dy_summary = _d2_summary(local_displacements[:, 1])
+        deviation_summary = _d2_summary(vector_deviation)
+        nearest_index = int(nearest_indices[0])
+        pixels.append({
+            "row": row,
+            "col": col,
+            "region": region,
+            "weight_class": weight_class,
+            "support_weight": pixel_weight,
+            "inside_hull": bool(hull_mask[row, col]),
+            "distance_inside_pixels": float(distance[row, col]),
+            "deep_inside": bool(deep_inside[row, col]),
+            "raw_jacobian": float(raw_jacobian[row, col]),
+            "supported_jacobian": float(supported_jacobian[row, col]),
+            "raw_dx": float(raw[row, col, 0]),
+            "raw_dy": float(raw[row, col, 1]),
+            "translation_dx": float(translation[row, col, 0]),
+            "translation_dy": float(translation[row, col, 1]),
+            "supported_dx": float(supported[row, col, 0]),
+            "supported_dy": float(supported[row, col, 1]),
+            "nearest_control_index": nearest_index,
+            "nearest_control_distance_pixels": float(nearest_distances[0]),
+            "nearest_control_x": float(controls[nearest_index, 0]),
+            "nearest_control_y": float(controls[nearest_index, 1]),
+            "nearest_control_dx": float(displacements[nearest_index, 0]),
+            "nearest_control_dy": float(displacements[nearest_index, 1]),
+            "local_neighbor_count": int(local_count),
+            "neighbor_distance_min": distance_summary["min"],
+            "neighbor_distance_median": distance_summary["median"],
+            "neighbor_distance_p95": distance_summary["p95"],
+            "neighbor_distance_max": distance_summary["max"],
+            "local_dx_min": dx_summary["min"],
+            "local_dx_median": dx_summary["median"],
+            "local_dx_max": dx_summary["max"],
+            "local_dy_min": dy_summary["min"],
+            "local_dy_median": dy_summary["median"],
+            "local_dy_max": dy_summary["max"],
+            "local_median_xy": [
+                float(local_median_xy[0]), float(local_median_xy[1]),
+            ],
+            "local_vector_deviation_median": deviation_summary["median"],
+            "local_vector_deviation_p95": deviation_summary["p95"],
+            "local_vector_deviation_max": deviation_summary["max"],
+        })
+
+    labels, component_count = label(
+        fold_mask, structure=np.ones((3, 3), dtype=int),
+    )
+    components = []
+    for component_id in range(1, int(component_count) + 1):
+        component_positions = np.argwhere(labels == component_id)
+        component_pixels = [
+            pixels[index] for index, (row, col) in enumerate(fold_positions)
+            if labels[int(row), int(col)] == component_id
+        ]
+        components.append({
+            "component_id": int(component_id),
+            "pixel_count": int(len(component_positions)),
+            "row_min": int(np.min(component_positions[:, 0])),
+            "row_max": int(np.max(component_positions[:, 0])),
+            "col_min": int(np.min(component_positions[:, 1])),
+            "col_max": int(np.max(component_positions[:, 1])),
+            "n_outside_hull": int(sum(
+                pixel["region"] == "outside_hull" for pixel in component_pixels
+            )),
+            "n_taper": int(sum(
+                pixel["region"] == "taper" for pixel in component_pixels
+            )),
+            "n_deep_inside": int(sum(
+                pixel["region"] == "deep_inside" for pixel in component_pixels
+            )),
+        })
+
+    return {
+        "available": True,
+        "fold_pixel_count": int(len(fold_positions)),
+        "classification_counts": classification_counts,
+        "weight_class_counts": weight_class_counts,
+        "component_count": int(component_count),
+        "components": components,
+        "pixels": pixels,
+    }
 
 
 def _validation_block_lookup(validation: dict) -> dict[tuple[int, int, int, int, int], dict]:
