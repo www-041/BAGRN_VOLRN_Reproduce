@@ -236,6 +236,33 @@ def select_translation_or_rbf(local_cv_summary, min_p95_improvement=0.10):
     }
 
 
+def apply_registration_warps(
+    arr2_orig, global_dx, global_dy, local_dx_field, local_dy_field,
+    nodata, use_local, warp_fn=None,
+):
+    """Apply comparable global-only and final warps from the original target.
+
+    The global-only result is the baseline for post-warp diagnostics.  When
+    local registration is disabled, the final result is that same baseline;
+    otherwise both results are independently sampled from ``arr2_orig``.
+    """
+    if warp_fn is None:
+        from src.coregistration import warp_with_displacement_field
+        warp_fn = warp_with_displacement_field
+
+    zero_dx = np.zeros_like(arr2_orig, dtype=np.float64)
+    zero_dy = np.zeros_like(arr2_orig, dtype=np.float64)
+    global_warp = warp_fn(
+        arr2_orig, global_dx, global_dy, zero_dx, zero_dy, nodata)
+    if use_local:
+        final_warp = warp_fn(
+            arr2_orig, global_dx, global_dy,
+            local_dx_field, local_dy_field, nodata)
+    else:
+        final_warp = global_warp
+    return global_warp, final_warp
+
+
 def build_registration_metrics(
     matches, screening, global_dx, global_dy, phase_confidence,
     reference_shape, reference_transform, block_stats=None,
@@ -466,12 +493,16 @@ def process_band(band):
             cdy[~in_hull] = 0
             local_dx_field.ravel()[i:i+chunk] = cdx
             local_dy_field.ravel()[i:i+chunk] = cdy
-        arr2_coreg = warp_with_displacement_field(arr2_orig, lag_x, lag_y, local_dx_field, local_dy_field, nd2)
-    else:
-        from scipy.ndimage import shift as ndimage_shift
-        arr2_coreg = arr2_orig.astype(np.float64)
-        if abs(lag_y) > 0.01 or abs(lag_x) > 0.01:
-            arr2_coreg = ndimage_shift(arr2_coreg, [lag_y, lag_x], order=1, mode='constant', cval=nd2, prefilter=False)
+    arr2_global, arr2_coreg = apply_registration_warps(
+        arr2_orig,
+        global_dx=lag_x,
+        global_dy=lag_y,
+        local_dx_field=local_dx_field,
+        local_dy_field=local_dy_field,
+        nodata=nd2,
+        use_local=use_local and ctrl['n_valid'] >= 3,
+        warp_fn=warp_with_displacement_field,
+    )
 
     tr2_coreg = tr2_orig
 

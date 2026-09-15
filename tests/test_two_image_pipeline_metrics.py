@@ -66,3 +66,38 @@ def test_rbf_requires_minimum_p95_improvement():
     result = tip.select_translation_or_rbf(summary, 0.10)
 
     assert result["selected_model"] == "translation"
+
+
+def test_global_only_and_final_warps_use_the_same_original_based_path():
+    original = np.arange(24, dtype=np.float64).reshape(4, 6)
+    local_dx = np.zeros_like(original)
+    local_dy = np.zeros_like(original)
+    calls = []
+
+    def fake_warp(arr, global_dx, global_dy, local_dx_field, local_dy_field, nodata):
+        calls.append({
+            "arr": arr,
+            "global_dx": global_dx,
+            "global_dy": global_dy,
+            "local_dx": local_dx_field.copy(),
+            "local_dy": local_dy_field.copy(),
+            "nodata": nodata,
+        })
+        return arr.copy()
+
+    global_warp, final_warp = tip.apply_registration_warps(
+        original,
+        global_dx=1.5,
+        global_dy=-0.5,
+        local_dx_field=local_dx,
+        local_dy_field=local_dy,
+        nodata=0.0,
+        use_local=False,
+        warp_fn=fake_warp,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["arr"] is original
+    assert np.array_equal(calls[0]["local_dx"], np.zeros_like(original))
+    assert np.array_equal(calls[0]["local_dy"], np.zeros_like(original))
+    assert final_warp is global_warp
