@@ -473,3 +473,156 @@ def build_reference_common_grid_overlap(
         'overlap_transform': overlap_transform,
         'reprojected_target': True,
     }
+
+
+def _add_common_grid_summary_metrics(summary, candidates):
+    for field, output_key in [
+        ('zero_shift_ncc', 'zero_shift_ncc'),
+        ('best_shift_ncc', 'best_shift_ncc'),
+        ('ncc_gain', 'ncc_gain'),
+    ]:
+        values = []
+        for row in candidates:
+            value = row.get(field)
+            if value is not None and np.isfinite(value):
+                values.append(float(value))
+        summary[output_key] = {
+            'median': float(np.median(values)) if values else None,
+            'p90': float(np.percentile(values, 90)) if values else None,
+            'max': float(np.max(values)) if values else None,
+        }
+    return summary
+
+
+def collect_common_grid_candidate_diagnostics(
+    ref_overlap,
+    tgt_on_ref_grid,
+    common_valid,
+    block_size=512,
+    confidence_threshold=0.5,
+    max_residual_shift=40,
+    min_valid_ratio=0.30,
+):
+    """Run the raw block evidence logic after both arrays share one grid."""
+    ref_overlap = np.asarray(ref_overlap)
+    tgt_on_ref_grid = np.asarray(tgt_on_ref_grid)
+    common_valid = np.asarray(common_valid, dtype=bool)
+    if (
+        ref_overlap.ndim != 2
+        or tgt_on_ref_grid.shape != ref_overlap.shape
+        or common_valid.shape != ref_overlap.shape
+    ):
+        return {
+            'available': False,
+            'failure_reason': 'common-grid arrays have incompatible shapes',
+            'screening': {
+                'total': 0, 'low_valid': 0, 'low_texture': 0,
+                'low_conf': 0, 'large_shift': 0, 'accepted': 0,
+            },
+            'candidates': [],
+                'summary': _add_common_grid_summary_metrics(
+                summarize_candidate_rows([]), []),
+        }
+
+    valid_ref = common_valid & np.isfinite(ref_overlap)
+    valid_tgt = common_valid & np.isfinite(tgt_on_ref_grid)
+    struct_ref = structural_image(ref_overlap, valid_ref)
+    struct_tgt = structural_image(tgt_on_ref_grid, valid_tgt)
+    global_texture_std = (
+        float(np.std(struct_ref[valid_ref]))
+        if valid_ref.sum() > 0 else 1.0
+    )
+    texture_threshold = max(global_texture_std * 0.10, 1e-4)
+    ph, pw = ref_overlap.shape
+    stride = max(block_size // 2, 1)
+    screening = {
+        'total': 0,
+        'low_valid': 0,
+        'low_texture': 0,
+        'low_conf': 0,
+        'large_shift': 0,
+        'accepted': 0,
+    }
+    candidates = []
+    candidate_index = 0
+
+    for br in range(0, ph - block_size + 1, stride):
+        for bc in range(0, pw - block_size + 1, stride):
+            br2 = min(br + block_size, ph)
+            bc2 = min(bc + block_size, pw)
+            screening['total'] += 1
+            joint = valid_ref[br:br2, bc:bc2] & valid_tgt[br:br2, bc:bc2]
+            valid_count = int(joint.sum())
+            valid_ratio = float(valid_count / (block_size * block_size))
+            row = {
+                'candidate_index': int(candidate_index),
+                'block_row_offset': int(br),
+                'block_col_offset': int(bc),
+                'ref_x': float(bc + block_size // 2),
+                'ref_y': float(br + block_size // 2),
+                'tgt_x': float(bc + block_size // 2),
+                'tgt_y': float(br + block_size // 2),
+                'valid_count': valid_count,
+                'valid_ratio': valid_ratio,
+                'texture_std': None,
+                'texture_threshold': float(texture_threshold),
+                'shift_dx_pixels': None,
+                'shift_dy_pixels': None,
+                'shift_magnitude_pixels': None,
+                'confidence': None,
+                'zero_shift_ncc': None,
+                'best_shift_ncc': None,
+                'ncc_gain': None,
+                'reject_reason': None,
+            }
+            candidate_index += 1
+
+            if valid_ratio < min_valid_ratio:
+                screening['low_valid'] += 1
+                row['reject_reason'] = 'low_valid'
+                candidates.append(row)
+                continue
+
+            blk_ref = struct_ref[br:br2, bc:bc2]
+            blk_tgt = struct_tgt[br:br2, bc:bc2]
+            texture_std = float(np.std(blk_ref[joint]))
+            row['texture_std'] = texture_std
+            if texture_std < texture_threshold:
+                screening['low_texture'] += 1
+                row['reject_reason'] = 'low_texture'
+                candidates.append(row)
+                continue
+
+            row['zero_shift_ncc'] = masked_ncc(blk_ref, blk_tgt, joint)
+            sy, sx, conf = phase_correlation(
+                blk_ref, blk_tgt,
+                valid_ref=joint,
+                valid_tgt=joint,
+            )
+            row['shift_dx_pixels'] = float(sx)
+            row['shift_dy_pixels'] = float(sy)
+            row['shift_magnitude_pixels'] = float(np.hypot(sx, sy))
+            row['confidence'] = float(conf)
+            row['best_shift_ncc'] = float(conf)
+            if row['zero_shift_ncc'] is not None:
+                row['ncc_gain'] = float(conf - row['zero_shift_ncc'])
+
+            if conf <= confidence_threshold:
+                screening['low_conf'] += 1
+                row['reject_reason'] = 'low_conf'
+            elif abs(sy) >= max_residual_shift or abs(sx) >= max_residual_shift:
+                screening['large_shift'] += 1
+                row['reject_reason'] = 'large_shift'
+            else:
+                screening['accepted'] += 1
+                row['reject_reason'] = 'accepted'
+            candidates.append(row)
+
+    summary = summarize_candidate_rows(candidates)
+    return {
+        'available': True,
+        'failure_reason': None,
+        'screening': screening,
+        'candidates': candidates,
+        'summary': _add_common_grid_summary_metrics(summary, candidates),
+    }

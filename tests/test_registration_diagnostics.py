@@ -1,9 +1,11 @@
 import numpy as np
 from rasterio.transform import Affine
+from scipy.ndimage import shift as ndimage_shift
 
-from src.coregistration import collect_block_matches
+from src.coregistration import collect_block_matches, phase_correlation
 from src.registration_diagnostics import (
     build_reference_common_grid_overlap,
+    collect_common_grid_candidate_diagnostics,
     collect_raw_grid_candidate_diagnostics,
     compute_grid_relationship,
     masked_ncc,
@@ -194,3 +196,62 @@ def test_common_grid_reprojection_removes_fractional_source_phase():
     assert result["reprojected_target"] is True
     assert value is not None
     assert value > 0.95
+
+
+def test_common_grid_identity_has_high_zero_shift_ncc():
+    yy, xx = np.mgrid[0:512, 0:512]
+    arr = np.sin(xx / 15.0) + np.cos(yy / 19.0)
+    result = collect_common_grid_candidate_diagnostics(
+        arr, arr.copy(), np.ones(arr.shape, dtype=bool), block_size=512)
+
+    measured = [
+        row for row in result["candidates"]
+        if row["confidence"] is not None
+    ]
+
+    assert result["available"] is True
+    assert measured
+    row = measured[0]
+    assert row["zero_shift_ncc"] > 0.99
+    assert abs(row["shift_dx_pixels"]) < 0.1
+    assert abs(row["shift_dy_pixels"]) < 0.1
+    assert abs(row["ncc_gain"]) < 0.05
+
+
+def test_phase_correlation_return_is_a_correction_for_target():
+    yy, xx = np.mgrid[0:256, 0:256]
+    ref = np.sin(xx / 11.0) + np.cos(yy / 17.0)
+    tgt = ndimage_shift(ref, [2.0, -3.0], order=1, mode="nearest")
+    valid = np.ones(ref.shape, dtype=bool)
+    shift_y, shift_x, _ = phase_correlation(
+        ref, tgt, valid_ref=valid, valid_tgt=valid)
+
+    before = np.mean((ref[8:-8, 8:-8] - tgt[8:-8, 8:-8]) ** 2)
+    corrected = ndimage_shift(
+        tgt, [shift_y, shift_x], order=1, mode="nearest")
+    after = np.mean((ref[8:-8, 8:-8] - corrected[8:-8, 8:-8]) ** 2)
+
+    assert after < before
+
+
+def test_common_grid_recovers_known_small_shift_and_improves_ncc():
+    yy, xx = np.mgrid[0:512, 0:512]
+    ref = np.sin(xx / 15.0) + np.cos(yy / 19.0)
+    tgt = ndimage_shift(ref, [2.0, -3.0], order=1, mode="nearest")
+    common_valid = np.ones(ref.shape, dtype=bool)
+    result = collect_common_grid_candidate_diagnostics(
+        ref, tgt, common_valid, block_size=256)
+
+    measured = [
+        row for row in result["candidates"]
+        if row["confidence"] is not None
+    ]
+
+    assert measured
+    assert any(abs(row["shift_dy_pixels"] + 2.0) < 0.6 for row in measured)
+    assert any(abs(row["shift_dx_pixels"] - 3.0) < 0.6 for row in measured)
+    accepted = [
+        row for row in measured if row["reject_reason"] == "accepted"
+    ]
+    assert accepted
+    assert all(row["best_shift_ncc"] > row["zero_shift_ncc"] for row in accepted)
