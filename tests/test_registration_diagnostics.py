@@ -3,6 +3,7 @@ from rasterio.transform import Affine
 
 from src.coregistration import collect_block_matches
 from src.registration_diagnostics import (
+    build_reference_common_grid_overlap,
     collect_raw_grid_candidate_diagnostics,
     compute_grid_relationship,
     masked_ncc,
@@ -139,3 +140,57 @@ def test_raw_diagnostic_accepted_rows_match_baseline_matcher(monkeypatch):
         assert np.isclose(row["shift_dx_pixels"], match["shift_dx"])
         assert np.isclose(row["shift_dy_pixels"], match["shift_dy"])
         assert np.isclose(row["confidence"], match["confidence"])
+
+
+def test_common_grid_identical_transforms_use_same_values_without_reprojection():
+    yy, xx = np.mgrid[0:128, 0:128]
+    arr_ref = np.sin(xx / 7.0) + np.cos(yy / 11.0)
+    arr_tgt = arr_ref.copy()
+    tr = Affine(14.0, 0.0, 1000.0, 0.0, -14.0, 5000.0)
+
+    result = build_reference_common_grid_overlap(
+        arr_ref, tr, arr_tgt, tr, "EPSG:4326", "EPSG:4326")
+
+    assert result["available"] is True
+    assert np.allclose(
+        result["ref_overlap"], result["tgt_on_ref_grid"], equal_nan=True)
+    assert result["reprojected_target"] is False
+
+
+def test_common_grid_reprojection_removes_fractional_source_phase():
+    def world_signal(x, y):
+        return (
+            np.sin(x / 70.0)
+            + 0.7 * np.cos(y / 55.0)
+            + 0.2 * np.sin((x + y) / 31.0)
+        )
+
+    ref_transform = Affine(14.0, 0.0, 1000.0, 0.0, -14.0, 5000.0)
+    tgt_transform = Affine(
+        14.0, 0.0, 1000.0 + 14.0 * 0.35,
+        0.0, -14.0, 5000.0 - 14.0 * 0.40,
+    )
+    yy, xx = np.mgrid[0:128, 0:128]
+    ref_x, ref_y = ref_transform * (xx + 0.5, yy + 0.5)
+    tgt_x, tgt_y = tgt_transform * (xx + 0.5, yy + 0.5)
+    arr_ref = world_signal(ref_x, ref_y)
+    arr_tgt = world_signal(tgt_x, tgt_y)
+
+    result = build_reference_common_grid_overlap(
+        arr_ref,
+        ref_transform,
+        arr_tgt,
+        tgt_transform,
+        "EPSG:4326",
+        "EPSG:4326",
+    )
+
+    value = masked_ncc(
+        result["ref_overlap"],
+        result["tgt_on_ref_grid"],
+        result["common_valid"],
+    )
+    assert result["available"] is True
+    assert result["reprojected_target"] is True
+    assert value is not None
+    assert value > 0.95

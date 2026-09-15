@@ -7,6 +7,8 @@ Global + RBF registration pipeline.
 from collections import Counter
 
 import numpy as np
+from rasterio.transform import Affine
+from rasterio.warp import Resampling, reproject
 
 from src.coregistration import phase_correlation, structural_image
 
@@ -351,4 +353,123 @@ def collect_raw_grid_candidate_diagnostics(
         'screening': screening,
         'candidates': candidates,
         'summary': summarize_candidate_rows(candidates),
+    }
+
+
+def _empty_common_grid_result(failure_reason):
+    return {
+        'available': False,
+        'failure_reason': failure_reason,
+        'ref_overlap': None,
+        'tgt_on_ref_grid': None,
+        'valid_ref': None,
+        'valid_tgt': None,
+        'common_valid': None,
+        'ref_window': None,
+        'tgt_window': None,
+        'overlap_transform': None,
+        'reprojected_target': False,
+    }
+
+
+def _valid_mask(array, nodata):
+    valid = np.isfinite(array)
+    if nodata is not None:
+        valid &= array != nodata
+    return valid
+
+
+def build_reference_common_grid_overlap(
+    arr_ref,
+    tr_ref,
+    arr_tgt,
+    tr_tgt,
+    crs_ref,
+    crs_tgt,
+    nodata_ref=0,
+    nodata_tgt=0,
+):
+    """Map target to the reference overlap grid using metadata only."""
+    if crs_ref != crs_tgt:
+        return _empty_common_grid_result('CRS mismatch')
+
+    arr_ref = np.asarray(arr_ref)
+    arr_tgt = np.asarray(arr_tgt)
+    windows = _overlap_windows(arr_ref, tr_ref, arr_tgt, tr_tgt)
+    if windows is None:
+        return _empty_common_grid_result('no geographic overlap')
+
+    ref_window, tgt_window = windows
+    r0, r1, c0, c1 = ref_window
+    ref_overlap = arr_ref[r0:r1, c0:c1]
+    overlap_transform = tr_ref * Affine.translation(c0, r0)
+    valid_ref = _valid_mask(ref_overlap, nodata_ref)
+
+    same_grid = tr_ref == tr_tgt
+    if same_grid:
+        tr0, tr1, tc0, tc1 = tgt_window
+        tgt_on_ref_grid = arr_tgt[tr0:tr1, tc0:tc1].astype(
+            np.float64, copy=True)
+        valid_tgt = _valid_mask(tgt_on_ref_grid, nodata_tgt)
+        common_valid = valid_ref & valid_tgt
+        return {
+            'available': True,
+            'failure_reason': None,
+            'ref_overlap': ref_overlap.astype(np.float64, copy=True),
+            'tgt_on_ref_grid': tgt_on_ref_grid,
+            'valid_ref': valid_ref,
+            'valid_tgt': valid_tgt,
+            'common_valid': common_valid,
+            'ref_window': list(ref_window),
+            'tgt_window': list(tgt_window),
+            'overlap_transform': overlap_transform,
+            'reprojected_target': False,
+        }
+
+    dst_shape = ref_overlap.shape
+    tgt_valid_source = _valid_mask(arr_tgt, nodata_tgt)
+    # Use a finite sentinel for invalid data so valid zero-valued pixels are
+    # never mistaken for NoData during bilinear resampling.
+    sentinel = np.finfo(np.float64).max
+    source_data = arr_tgt.astype(np.float64, copy=True)
+    source_data[~tgt_valid_source] = sentinel
+    tgt_on_ref_grid = np.full(dst_shape, np.nan, dtype=np.float64)
+    reproject(
+        source=source_data,
+        destination=tgt_on_ref_grid,
+        src_transform=tr_tgt,
+        src_crs=crs_tgt,
+        src_nodata=sentinel,
+        dst_transform=overlap_transform,
+        dst_crs=crs_ref,
+        dst_nodata=np.nan,
+        resampling=Resampling.bilinear,
+    )
+
+    valid_tgt_float = np.zeros(dst_shape, dtype=np.float32)
+    reproject(
+        source=tgt_valid_source.astype(np.uint8),
+        destination=valid_tgt_float,
+        src_transform=tr_tgt,
+        src_crs=crs_tgt,
+        src_nodata=0,
+        dst_transform=overlap_transform,
+        dst_crs=crs_ref,
+        dst_nodata=0,
+        resampling=Resampling.nearest,
+    )
+    valid_tgt = (valid_tgt_float > 0.5) & np.isfinite(tgt_on_ref_grid)
+    common_valid = valid_ref & valid_tgt
+    return {
+        'available': True,
+        'failure_reason': None,
+        'ref_overlap': ref_overlap.astype(np.float64, copy=True),
+        'tgt_on_ref_grid': tgt_on_ref_grid,
+        'valid_ref': valid_ref,
+        'valid_tgt': valid_tgt,
+        'common_valid': common_valid,
+        'ref_window': list(ref_window),
+        'tgt_window': list(tgt_window),
+        'overlap_transform': overlap_transform,
+        'reprojected_target': True,
     }
