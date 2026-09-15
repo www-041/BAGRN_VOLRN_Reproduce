@@ -216,3 +216,109 @@ def test_post_warp_match_rows_use_residual_to_zero_fields():
         "residual_magnitude_pixels": 2.5,
         "confidence": 0.88,
     }]
+
+
+def test_post_warp_without_matches_is_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        "src.coregistration.collect_block_matches",
+        lambda *args, **kwargs: ([], {"total": 3, "accepted": 0}),
+    )
+
+    result = tip.evaluate_post_warp_registration(
+        np.ones((512, 512)), None,
+        np.ones((512, 512)), None,
+        0.0, 0.0,
+    )
+
+    assert result["available"] is False
+    assert result["failure_reason"] == "no accepted post-warp block matches"
+    assert result["residual_to_zero"]["rmse_pixels"] is None
+
+
+def test_post_warp_single_match_preserves_count_one(monkeypatch):
+    match = {
+        "shift_dx": 2.0, "shift_dy": 0.0, "confidence": 0.8,
+        "ref_x": 100, "ref_y": 100, "tgt_x": 100, "tgt_y": 100,
+    }
+    monkeypatch.setattr(
+        "src.coregistration.collect_block_matches",
+        lambda *args, **kwargs: ([match], {"total": 1, "accepted": 1}),
+    )
+
+    result = tip.evaluate_post_warp_registration(
+        np.ones((512, 512)), None,
+        np.ones((512, 512)), None,
+        0.0, 0.0,
+    )
+
+    assert result["available"] is True
+    assert result["residual_to_zero"]["count"] == 1
+    assert result["residual_to_zero"]["mean_magnitude_pixels"] == 2.0
+
+
+def test_post_warp_systematic_residual_is_not_centered_to_zero(monkeypatch):
+    matches = [
+        {
+            "shift_dx": 1.0, "shift_dy": 0.0, "confidence": 0.8,
+            "ref_x": 100, "ref_y": 100, "tgt_x": 100, "tgt_y": 100,
+        },
+        {
+            "shift_dx": 1.0, "shift_dy": 0.0, "confidence": 0.9,
+            "ref_x": 200, "ref_y": 200, "tgt_x": 200, "tgt_y": 200,
+        },
+    ]
+    monkeypatch.setattr(
+        "src.coregistration.collect_block_matches",
+        lambda *args, **kwargs: (matches, {"total": 2, "accepted": 2}),
+    )
+
+    result = tip.evaluate_post_warp_registration(
+        np.ones((512, 512)), None,
+        np.ones((512, 512)), None,
+        0.0, 0.0,
+    )
+
+    assert result["residual_to_zero"]["rmse_pixels"] == 1.0
+    assert result["residual_to_zero"]["mean_residual_dx_pixels"] == 1.0
+
+
+def test_stage_comparison_reports_negative_improvement_when_rbf_worsens():
+    global_post = {
+        "available": True,
+        "residual_to_zero": {
+            "median_magnitude_pixels": 1.0,
+            "rmse_pixels": 1.0,
+            "p95_magnitude_pixels": 1.0,
+        },
+    }
+    final_post = {
+        "available": True,
+        "residual_to_zero": {
+            "median_magnitude_pixels": 1.5,
+            "rmse_pixels": 2.0,
+            "p95_magnitude_pixels": 3.0,
+        },
+    }
+
+    result = tip.compare_post_warp_stages(global_post, final_post)
+
+    assert result["median_improvement_pixels"] == -0.5
+    assert result["rmse_improvement_pixels"] == -1.0
+    assert result["p95_improvement_pixels"] == -2.0
+
+
+def test_stage_comparison_does_not_fake_improvement_without_local_model():
+    global_post = {
+        "available": True,
+        "residual_to_zero": {
+            "median_magnitude_pixels": 1.0,
+            "rmse_pixels": 2.0,
+            "p95_magnitude_pixels": 3.0,
+        },
+    }
+
+    result = tip.compare_post_warp_stages(global_post, global_post)
+
+    assert result["median_improvement_pixels"] == 0.0
+    assert result["rmse_improvement_pixels"] == 0.0
+    assert result["p95_improvement_pixels"] == 0.0
