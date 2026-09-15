@@ -202,6 +202,26 @@ def build_registration_match_rows(matches, global_dx, global_dy):
     return rows
 
 
+def build_post_warp_match_rows(matches):
+    """Build CSV rows whose displacement fields are residuals to zero."""
+    rows = []
+    for index, match in enumerate(matches):
+        dx = float(match['shift_dx'])
+        dy = float(match['shift_dy'])
+        rows.append({
+            'match_index': int(index),
+            'ref_x': float(match['ref_x']),
+            'ref_y': float(match['ref_y']),
+            'tgt_x': float(match['tgt_x']),
+            'tgt_y': float(match['tgt_y']),
+            'residual_dx_pixels': dx,
+            'residual_dy_pixels': dy,
+            'residual_magnitude_pixels': float(np.hypot(dx, dy)),
+            'confidence': float(match['confidence']),
+        })
+    return rows
+
+
 def select_translation_or_rbf(local_cv_summary, min_p95_improvement=0.10):
     """Select only a model that the two-image baseline can actually apply."""
     translation_p95 = local_cv_summary.get('translation', {}).get('p95')
@@ -389,11 +409,9 @@ def compare_post_warp_stages(global_post, final_post):
 def build_registration_metrics(
     matches, screening, global_dx, global_dy, phase_confidence,
     reference_shape, reference_transform, block_stats=None,
-    local_control_points=0, local_model='translation',
-    local_cv_summary=None, rbf_smoothing=None, reference_overlap_window=None,
-    smoothing_candidates=None, selection_diagnostics=None,
+    reference_overlap_window=None,
 ):
-    """Build registration diagnostics from the existing block-match results."""
+    """Build only initial model-fit diagnostics from block-match results."""
     residual_dx, residual_dy = _residual_arrays(matches, global_dx, global_dy)
     inliers = _residual_inlier_mask(residual_dx, residual_dy)
     inlier_matches = [m for m, keep in zip(matches, inliers) if keep]
@@ -424,21 +442,34 @@ def build_registration_metrics(
             'inlier_ratio': float(inliers.sum() / accepted) if accepted else 0.0,
             'screening': _json_safe(screening),
         },
-        'residual': _summarize_residuals(residual_dx, residual_dy),
-        'inlier_residual': _summarize_residuals(residual_dx[inliers], residual_dy[inliers]),
+        'residual_relative_to_global_model': _summarize_residuals(
+            residual_dx, residual_dy),
+        'inlier_residual_relative_to_global_model': _summarize_residuals(
+            residual_dx[inliers], residual_dy[inliers]),
         'spatial_coverage': _spatial_coverage(
             matches, reference_shape, overlap_window=reference_overlap_window),
         'inlier_spatial_coverage': _spatial_coverage(
             inlier_matches, reference_shape, overlap_window=reference_overlap_window),
-        'local': {
-            'model_used': str(local_model),
-            'control_points': int(local_control_points),
-            'selection': _json_safe(selection_diagnostics or {}),
-            'rbf_smoothing': float(rbf_smoothing) if rbf_smoothing is not None else None,
-            'cross_validation': _json_safe(local_cv_summary or {}),
-            'smoothing_candidates': _json_safe(smoothing_candidates or []),
-        },
         'phase_block_stats': _json_safe(block_stats or {}),
+    }
+
+
+def build_registration_schema(
+    initial_model_fit, local, global_post, final_post, comparison,
+):
+    """Assemble the versioned schema separating fit and post-warp metrics."""
+    return {
+        'schema_version': 2,
+        'metric_scope_note': (
+            'post_warp metrics are same-data diagnostics, not independent HOLDOUT'
+        ),
+        'initial_model_fit': initial_model_fit,
+        'local': local,
+        'post_warp': {
+            'global_only': global_post,
+            'final': final_post,
+            'comparison': comparison,
+        },
     }
 
 
@@ -534,7 +565,7 @@ def process_band(band):
                     print(f"  => LOCAL RBF (smoothing={best_smoothing})")
 
     local_model = 'rbf' if use_local else 'translation'
-    registration_metrics = build_registration_metrics(
+    initial_model_fit = build_registration_metrics(
         matches,
         screening,
         global_dx=lag_x,
@@ -543,13 +574,7 @@ def process_band(band):
         reference_shape=arr1.shape,
         reference_transform=tr1,
         block_stats=translation_stats,
-        local_control_points=ctrl['n_valid'],
-        local_model=local_model,
-        local_cv_summary=local_cv_summary,
-        rbf_smoothing=best_smoothing,
         reference_overlap_window=ref_overlap_window,
-        smoothing_candidates=smoothing_cv,
-        selection_diagnostics=selection_diagnostics,
     )
     registration_rows = build_registration_match_rows(matches, lag_x, lag_y)
     save_csv(
@@ -562,13 +587,10 @@ def process_band(band):
             'residual_magnitude_pixels', 'inlier',
         ],
     )
-    with open(os.path.join(out_dir, f'registration_{band}_metrics.json'), 'w', encoding='utf-8') as f:
-        json.dump(registration_metrics, f, indent=2, ensure_ascii=False)
-
-    residual = registration_metrics['residual']
-    matching = registration_metrics['matching']
-    coverage = registration_metrics['spatial_coverage']
-    offset = registration_metrics['offset']
+    residual = initial_model_fit['residual_relative_to_global_model']
+    matching = initial_model_fit['matching']
+    coverage = initial_model_fit['spatial_coverage']
+    offset = initial_model_fit['offset']
     print(
         f"  Registration metrics: magnitude={offset['magnitude_pixels']:.4f}px, "
         f"direction={offset['direction_image_degrees']:.2f}deg"
@@ -640,11 +662,36 @@ def process_band(band):
     final_post = evaluate_post_warp_registration(
         arr1, tr1, arr2_coreg, tr2_coreg, nd1, nd2, **post_warp_kwargs)
     post_comparison = compare_post_warp_stages(global_post, final_post)
-    registration_metrics['post_warp'] = {
-        'global_only': global_post,
-        'final': final_post,
-        'comparison': post_comparison,
+    local_diagnostics = {
+        'model_used': str(local_model),
+        'control_points': int(ctrl['n_valid']),
+        'selection': _json_safe(selection_diagnostics or {}),
+        'cross_validation': _json_safe(local_cv_summary or {}),
+        'smoothing_candidates': _json_safe(smoothing_cv or []),
+        'rbf_smoothing': float(best_smoothing) if best_smoothing is not None else None,
     }
+    registration_metrics = build_registration_schema(
+        initial_model_fit,
+        local_diagnostics,
+        global_post,
+        final_post,
+        post_comparison,
+    )
+    post_headers = [
+        'match_index', 'ref_x', 'ref_y', 'tgt_x', 'tgt_y',
+        'residual_dx_pixels', 'residual_dy_pixels',
+        'residual_magnitude_pixels', 'confidence',
+    ]
+    save_csv(
+        os.path.join(out_dir, f'registration_{band}_global_postwarp_matches.csv'),
+        build_post_warp_match_rows(global_post['matches']),
+        post_headers,
+    )
+    save_csv(
+        os.path.join(out_dir, f'registration_{band}_final_postwarp_matches.csv'),
+        build_post_warp_match_rows(final_post['matches']),
+        post_headers,
+    )
     with open(os.path.join(out_dir, f'registration_{band}_metrics.json'), 'w', encoding='utf-8') as f:
         json.dump(_json_safe(registration_metrics), f, indent=2, ensure_ascii=False)
 

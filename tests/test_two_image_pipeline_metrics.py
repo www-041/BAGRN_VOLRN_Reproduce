@@ -164,3 +164,55 @@ def test_stage_comparison_positive_means_final_is_better():
     assert result["p95_improvement_pixels"] == 1.0
     assert result["median_improvement_pixels"] == 0.5
     assert result["interpretation"] == "positive means final is better"
+
+
+def test_registration_schema_separates_model_fit_and_post_warp_metrics():
+    initial = {
+        "offset": {"dx_pixels": 2.0},
+        "phase_confidence": 0.9,
+        "matching": {"accepted_matches": 2},
+        "residual_relative_to_global_model": {"rmse_pixels": 0.2},
+        "inlier_residual_relative_to_global_model": {"rmse_pixels": 0.1},
+        "spatial_coverage": {},
+        "inlier_spatial_coverage": {},
+        "phase_block_stats": {},
+    }
+    local = {"model_used": "translation"}
+    global_post = {"available": True}
+    final_post = {"available": True}
+    comparison = {"rmse_improvement_pixels": 0.0}
+
+    result = tip.build_registration_schema(
+        initial, local, global_post, final_post, comparison)
+
+    assert result["schema_version"] == 2
+    assert result["metric_scope_note"] == (
+        "post_warp metrics are same-data diagnostics, not independent HOLDOUT"
+    )
+    assert result["initial_model_fit"] is initial
+    assert result["local"] is local
+    assert result["post_warp"]["global_only"] is global_post
+    assert result["post_warp"]["final"] is final_post
+    assert "residual" not in result["initial_model_fit"]
+    assert "inlier_residual" not in result["initial_model_fit"]
+
+
+def test_post_warp_match_rows_use_residual_to_zero_fields():
+    matches = [{
+        "ref_x": 10, "ref_y": 20, "tgt_x": 15, "tgt_y": 18,
+        "shift_dx": 1.5, "shift_dy": -2.0, "confidence": 0.88,
+    }]
+
+    rows = tip.build_post_warp_match_rows(matches)
+
+    assert rows == [{
+        "match_index": 0,
+        "ref_x": 10.0,
+        "ref_y": 20.0,
+        "tgt_x": 15.0,
+        "tgt_y": 18.0,
+        "residual_dx_pixels": 1.5,
+        "residual_dy_pixels": -2.0,
+        "residual_magnitude_pixels": 2.5,
+        "confidence": 0.88,
+    }]

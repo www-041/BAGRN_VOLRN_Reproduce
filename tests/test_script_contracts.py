@@ -101,8 +101,8 @@ def test_registration_metrics_report_residuals_and_inlier_ratio():
     assert metrics["matching"]["accepted_matches"] == 3
     assert metrics["matching"]["inlier_matches"] == 2
     assert metrics["matching"]["inlier_ratio"] == 2 / 3
-    assert metrics["residual"]["rmse_pixels"] > 0
-    assert metrics["residual"]["median_magnitude_pixels"] < metrics["residual"]["max_magnitude_pixels"]
+    assert metrics["residual_relative_to_global_model"]["rmse_pixels"] > 0
+    assert metrics["residual_relative_to_global_model"]["median_magnitude_pixels"] < metrics["residual_relative_to_global_model"]["max_magnitude_pixels"]
     assert metrics["offset"]["dx_map_units"] == 70.0
     assert metrics["offset"]["dy_map_units"] == 28.0
 
