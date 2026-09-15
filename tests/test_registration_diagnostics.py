@@ -2,7 +2,7 @@ import numpy as np
 from rasterio.transform import Affine
 from scipy.ndimage import shift as ndimage_shift
 
-from src.coregistration import collect_block_matches, phase_correlation
+from src.coregistration import collect_block_matches, phase_correlation, structural_image
 from src.registration_diagnostics import (
     build_edge_overlay,
     build_reference_common_grid_overlap,
@@ -349,3 +349,81 @@ def test_edge_overlay_exposes_shifted_vertical_edge():
     green = overlay[..., 1].astype(int)
 
     assert np.mean(np.abs(red - green)) > 2.0
+
+
+def test_fractional_source_grid_phase_improves_common_grid_evidence():
+    def world_signal(x, y):
+        value = (
+            np.sin(x / 21.0)
+            + 0.8 * np.cos(y / 27.0)
+            + 0.4 * np.sin((x + y) / 13.0)
+        )
+        for cx, cy, scale, amplitude in (
+            (2100.0, 4100.0, 80.0, 1.5),
+            (7600.0, 3100.0, 110.0, -1.1),
+            (5200.0, 6200.0, 65.0, 0.9),
+        ):
+            value += amplitude * np.exp(
+                -((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * scale ** 2))
+        return value
+
+    ref_transform = Affine(14.0, 0.0, 1000.0, 0.0, -14.0, 9000.0)
+    tgt_transform = Affine(
+        14.0, 0.0, 1000.0 + 14.0 * 0.35,
+        0.0, -14.0, 9000.0 - 14.0 * 0.40,
+    )
+    yy, xx = np.mgrid[0:768, 0:768]
+    ref_x, ref_y = ref_transform * (xx + 0.5, yy + 0.5)
+    tgt_x, tgt_y = tgt_transform * (xx + 0.5, yy + 0.5)
+    ref = world_signal(ref_x, ref_y)
+    tgt = world_signal(tgt_x, tgt_y)
+
+    raw = collect_raw_grid_candidate_diagnostics(
+        ref,
+        ref_transform,
+        tgt,
+        tgt_transform,
+        block_size=256,
+    )
+    common_grid = build_reference_common_grid_overlap(
+        ref,
+        ref_transform,
+        tgt,
+        tgt_transform,
+        "EPSG:4326",
+        "EPSG:4326",
+    )
+    common = collect_common_grid_candidate_diagnostics(
+        common_grid["ref_overlap"],
+        common_grid["tgt_on_ref_grid"],
+        common_grid["common_valid"],
+        block_size=256,
+    )
+
+    r0, r1, c0, c1 = raw["overlap_windows"]["ref"]
+    t0, t1, d0, d1 = raw["overlap_windows"]["tgt"]
+    raw_ref = ref[r0:r1, c0:c1]
+    raw_tgt = tgt[t0:t1, d0:d1]
+    raw_valid = np.isfinite(raw_ref) & np.isfinite(raw_tgt)
+    raw_struct_ref = structural_image(raw_ref, raw_valid)
+    raw_struct_tgt = structural_image(raw_tgt, raw_valid)
+    raw_zero_ncc = []
+    for row in raw["candidates"]:
+        br = row["block_row_offset"]
+        bc = row["block_col_offset"]
+        block_valid = raw_valid[br:br + 256, bc:bc + 256]
+        value = masked_ncc(
+            raw_struct_ref[br:br + 256, bc:bc + 256],
+            raw_struct_tgt[br:br + 256, bc:bc + 256],
+            block_valid,
+        )
+        if value is not None:
+            raw_zero_ncc.append(value)
+
+    common_zero_ncc = common["summary"]["zero_shift_ncc"]["median"]
+    raw_median_shift = raw["summary"]["shift_magnitude_pixels"]["median"]
+    common_median_shift = common["summary"]["shift_magnitude_pixels"]["median"]
+
+    assert raw_zero_ncc
+    assert common_zero_ncc > float(np.median(raw_zero_ncc))
+    assert common_median_shift < raw_median_shift
