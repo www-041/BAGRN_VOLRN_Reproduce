@@ -4,11 +4,13 @@ from scipy.ndimage import shift as ndimage_shift
 
 from src.coregistration import collect_block_matches, phase_correlation
 from src.registration_diagnostics import (
+    build_edge_overlay,
     build_reference_common_grid_overlap,
     collect_common_grid_candidate_diagnostics,
     collect_raw_grid_candidate_diagnostics,
     compare_raw_and_common_grid,
     compute_grid_relationship,
+    choose_diagnostic_chip_centers,
     masked_ncc,
     summarize_candidate_rows,
 )
@@ -309,3 +311,41 @@ def test_grid_comparison_hints_when_phase_correlation_stays_weak():
         "phase-correlation remains weak after common-grid reprojection" in hint
         for hint in result["interpretation_hints"]
     )
+
+
+def test_diagnostic_chip_centers_are_deterministic_and_spatially_stratified():
+    common_valid = np.ones((768, 768), dtype=bool)
+
+    centers = choose_diagnostic_chip_centers(
+        common_valid, chip_size=256, max_chips=9)
+
+    assert len(centers) == 9
+    assert centers[:3] == [(192, 192), (192, 384), (192, 576)]
+    assert centers[-1] == (576, 576)
+
+
+def test_edge_overlay_identity_has_matching_red_and_green_channels():
+    yy, xx = np.mgrid[0:128, 0:128]
+    ref = np.sin(xx / 9.0) + np.cos(yy / 13.0)
+    valid = np.ones(ref.shape, dtype=bool)
+
+    overlay = build_edge_overlay(ref, ref, valid)
+    red = overlay[..., 0].astype(int)
+    green = overlay[..., 1].astype(int)
+
+    assert overlay.dtype == np.uint8
+    assert np.mean(np.abs(red - green)) < 2.0
+
+
+def test_edge_overlay_exposes_shifted_vertical_edge():
+    ref = np.zeros((128, 128), dtype=np.float64)
+    ref[:, 64:] = 1.0
+    tgt = np.zeros_like(ref)
+    tgt[:, 67:] = 1.0
+    valid = np.ones(ref.shape, dtype=bool)
+
+    overlay = build_edge_overlay(ref, tgt, valid)
+    red = overlay[..., 0].astype(int)
+    green = overlay[..., 1].astype(int)
+
+    assert np.mean(np.abs(red - green)) > 2.0

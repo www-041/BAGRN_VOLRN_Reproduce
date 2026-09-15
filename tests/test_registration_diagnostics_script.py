@@ -38,6 +38,8 @@ def test_main_writes_diagnostic_json_and_csv_with_monkeypatched_reader(monkeypat
         return real_makedirs(path, exist_ok=exist_ok)
 
     monkeypatch.setattr(diagnostic_script.os, "makedirs", fake_makedirs)
+    monkeypatch.setattr(
+        diagnostic_script, "save_common_grid_chips", lambda *args, **kwargs: 0)
     try:
         result = diagnostic_script.main([
             "--band", "B14",

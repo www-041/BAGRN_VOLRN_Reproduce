@@ -15,11 +15,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.two_image_pipeline import IMG1, IMG2, OUTPUT
 from src.io_utils import read_geotiff
 from src.registration_diagnostics import (
+    build_edge_overlay,
     build_reference_common_grid_overlap,
     collect_common_grid_candidate_diagnostics,
     collect_raw_grid_candidate_diagnostics,
     compare_raw_and_common_grid,
     compute_grid_relationship,
+    choose_diagnostic_chip_centers,
     summarize_candidate_rows,
 )
 
@@ -163,6 +165,64 @@ def _print_stage_summary(name, result, common=False):
         )
 
 
+def _robust_stretch(array, valid):
+    values = np.asarray(array, dtype=np.float64)
+    valid = np.asarray(valid, dtype=bool) & np.isfinite(values)
+    stretched = np.zeros(values.shape, dtype=np.float64)
+    if not np.any(valid):
+        return stretched
+    p2, p98 = np.percentile(values[valid], [2, 98])
+    if p98 <= p2 + 1e-12:
+        p2 = float(np.min(values[valid]))
+        p98 = float(np.max(values[valid]))
+    if p98 <= p2 + 1e-12:
+        stretched[valid] = 0.5
+        return stretched
+    stretched[valid] = np.clip(
+        (values[valid] - p2) / (p98 - p2), 0.0, 1.0)
+    return stretched
+
+
+def save_common_grid_chips(common_grid, output_dir, chip_size=256, max_chips=9):
+    """Save deterministic reference, target, and edge-overlay chip PNGs."""
+    if not common_grid.get('available'):
+        return 0
+    common_valid = common_grid.get('common_valid')
+    ref_overlap = common_grid.get('ref_overlap')
+    tgt_on_ref_grid = common_grid.get('tgt_on_ref_grid')
+    if common_valid is None or ref_overlap is None or tgt_on_ref_grid is None:
+        return 0
+
+    from matplotlib import image as mpimg
+
+    chips_dir = os.path.join(output_dir, 'chips')
+    os.makedirs(chips_dir, exist_ok=True)
+    centers = choose_diagnostic_chip_centers(
+        common_valid, chip_size=chip_size, max_chips=max_chips)
+    height, width = common_valid.shape
+    written = 0
+    for index, (center_row, center_col) in enumerate(centers):
+        row_start = max(0, min(height - chip_size, center_row - chip_size // 2))
+        col_start = max(0, min(width - chip_size, center_col - chip_size // 2))
+        row_end = row_start + chip_size
+        col_end = col_start + chip_size
+        valid_chip = common_valid[row_start:row_end, col_start:col_end]
+        ref_chip = ref_overlap[row_start:row_end, col_start:col_end]
+        tgt_chip = tgt_on_ref_grid[row_start:row_end, col_start:col_end]
+        stem = f'chip_{index:02d}'
+        mpimg.imsave(
+            os.path.join(chips_dir, f'{stem}_ref.png'),
+            _robust_stretch(ref_chip, valid_chip), cmap='gray', vmin=0, vmax=1)
+        mpimg.imsave(
+            os.path.join(chips_dir, f'{stem}_tgt_common.png'),
+            _robust_stretch(tgt_chip, valid_chip), cmap='gray', vmin=0, vmax=1)
+        mpimg.imsave(
+            os.path.join(chips_dir, f'{stem}_edge_overlay.png'),
+            build_edge_overlay(ref_chip, tgt_chip, valid_chip))
+        written += 1
+    return written
+
+
 def run_diagnostic(args):
     ref_path, tgt_path, output_dir = _resolve_paths(args)
     os.makedirs(output_dir, exist_ok=True)
@@ -211,6 +271,7 @@ def run_diagnostic(args):
             common_grid.get('failure_reason', 'common grid unavailable'))
     comparison = compare_raw_and_common_grid(
         raw_result, common_result, grid_relationship)
+    chip_count = save_common_grid_chips(common_grid, output_dir)
 
     grid_metadata = {
         'band': args.band,
@@ -234,6 +295,7 @@ def run_diagnostic(args):
             'tgt_window': common_grid.get('tgt_window'),
             'overlap_transform': common_grid.get('overlap_transform'),
             'reprojected_target': common_grid.get('reprojected_target'),
+            'chip_count': chip_count,
         },
     }
     _write_json(os.path.join(output_dir, 'grid_metadata.json'), grid_metadata)

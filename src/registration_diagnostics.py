@@ -739,3 +739,71 @@ def compare_raw_and_common_grid(raw_result, common_result, grid_relationship):
         },
         'interpretation_hints': hints,
     }
+
+
+def choose_diagnostic_chip_centers(common_valid, chip_size=256, max_chips=9):
+    """Choose deterministic 3x3 overlap centers with enough valid pixels."""
+    common_valid = np.asarray(common_valid, dtype=bool)
+    if common_valid.ndim != 2:
+        return []
+    height, width = common_valid.shape
+    if chip_size <= 0 or chip_size > height or chip_size > width:
+        return []
+
+    centers = []
+    for row_fraction in (0.25, 0.50, 0.75):
+        for col_fraction in (0.25, 0.50, 0.75):
+            center_row = int(round(height * row_fraction))
+            center_col = int(round(width * col_fraction))
+            row_start = max(0, min(height - chip_size, center_row - chip_size // 2))
+            col_start = max(0, min(width - chip_size, center_col - chip_size // 2))
+            row_end = row_start + chip_size
+            col_end = col_start + chip_size
+            valid_ratio = float(np.mean(common_valid[row_start:row_end, col_start:col_end]))
+            actual_center = (
+                row_start + chip_size // 2,
+                col_start + chip_size // 2,
+            )
+            if valid_ratio >= 0.70 and actual_center not in centers:
+                centers.append(actual_center)
+            if len(centers) >= max_chips:
+                return centers
+    return centers
+
+
+def build_edge_overlay(ref_chip, tgt_chip, valid_chip):
+    """Return uint8 RGB with reference edges red and target edges green."""
+    ref_chip = np.asarray(ref_chip, dtype=np.float64)
+    tgt_chip = np.asarray(tgt_chip, dtype=np.float64)
+    valid = (
+        np.asarray(valid_chip, dtype=bool)
+        & np.isfinite(ref_chip)
+        & np.isfinite(tgt_chip)
+    )
+    if not np.any(valid):
+        return np.zeros(ref_chip.shape + (3,), dtype=np.uint8)
+
+    fill_ref = float(np.median(ref_chip[valid]))
+    fill_tgt = float(np.median(tgt_chip[valid]))
+    ref_filled = np.where(valid, ref_chip, fill_ref)
+    tgt_filled = np.where(valid, tgt_chip, fill_tgt)
+    ref_dy, ref_dx = np.gradient(ref_filled)
+    tgt_dy, tgt_dx = np.gradient(tgt_filled)
+    ref_edge = np.hypot(ref_dx, ref_dy)
+    tgt_edge = np.hypot(tgt_dx, tgt_dy)
+    values = np.concatenate([ref_edge[valid], tgt_edge[valid]])
+    p2, p98 = np.percentile(values, [2, 98])
+    if p98 <= p2 + 1e-12:
+        p2 = float(np.min(values))
+        p98 = float(np.max(values))
+    if p98 <= p2 + 1e-12:
+        return np.zeros(ref_chip.shape + (3,), dtype=np.uint8)
+
+    ref_scaled = np.clip((ref_edge - p2) / (p98 - p2), 0.0, 1.0)
+    tgt_scaled = np.clip((tgt_edge - p2) / (p98 - p2), 0.0, 1.0)
+    ref_scaled[~valid] = 0.0
+    tgt_scaled[~valid] = 0.0
+    overlay = np.zeros(ref_chip.shape + (3,), dtype=np.uint8)
+    overlay[..., 0] = np.rint(ref_scaled * 255.0).astype(np.uint8)
+    overlay[..., 1] = np.rint(tgt_scaled * 255.0).astype(np.uint8)
+    return overlay
