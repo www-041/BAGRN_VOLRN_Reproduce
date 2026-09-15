@@ -202,12 +202,46 @@ def build_registration_match_rows(matches, global_dx, global_dy):
     return rows
 
 
+def select_translation_or_rbf(local_cv_summary, min_p95_improvement=0.10):
+    """Select only a model that the two-image baseline can actually apply."""
+    translation_p95 = local_cv_summary.get('translation', {}).get('p95')
+    rbf_p95 = local_cv_summary.get('rbf', {}).get('p95')
+    if translation_p95 is not None and not np.isfinite(translation_p95):
+        translation_p95 = None
+    if rbf_p95 is not None and not np.isfinite(rbf_p95):
+        rbf_p95 = None
+
+    improvement_pixels = None
+    improvement_ratio = None
+    if translation_p95 is not None and rbf_p95 is not None:
+        improvement_pixels = float(translation_p95 - rbf_p95)
+        if translation_p95 > 0:
+            improvement_ratio = float(improvement_pixels / translation_p95)
+
+    if improvement_ratio is not None and improvement_ratio >= min_p95_improvement:
+        selected_model = 'rbf'
+        reason = 'RBF P95 improvement meets the minimum requirement.'
+    else:
+        selected_model = 'translation'
+        reason = 'RBF P95 improvement does not meet the minimum requirement.'
+
+    return {
+        'selected_model': selected_model,
+        'translation_p95': float(translation_p95) if translation_p95 is not None else None,
+        'rbf_p95': float(rbf_p95) if rbf_p95 is not None else None,
+        'p95_improvement_pixels': improvement_pixels,
+        'p95_improvement_ratio': improvement_ratio,
+        'min_required_improvement_ratio': float(min_p95_improvement),
+        'reason': reason,
+    }
+
+
 def build_registration_metrics(
     matches, screening, global_dx, global_dy, phase_confidence,
     reference_shape, reference_transform, block_stats=None,
     local_control_points=0, local_model='translation',
     local_cv_summary=None, rbf_smoothing=None, reference_overlap_window=None,
-    smoothing_candidates=None,
+    smoothing_candidates=None, selection_diagnostics=None,
 ):
     """Build registration diagnostics from the existing block-match results."""
     residual_dx, residual_dy = _residual_arrays(matches, global_dx, global_dy)
@@ -249,6 +283,7 @@ def build_registration_metrics(
         'local': {
             'model_used': str(local_model),
             'control_points': int(local_control_points),
+            'selection': _json_safe(selection_diagnostics or {}),
             'rbf_smoothing': float(rbf_smoothing) if rbf_smoothing is not None else None,
             'cross_validation': _json_safe(local_cv_summary or {}),
             'smoothing_candidates': _json_safe(smoothing_candidates or []),
@@ -303,57 +338,50 @@ def process_band(band):
     local_cv_summary = {}
     smoothing_candidates = [0.001, 0.01, 0.05, 0.1, 0.5, 1.0]
     smoothing_cv = []
+    selection_diagnostics = select_translation_or_rbf({})
 
     if ctrl['n_valid'] >= 30:
         local_cv_summary, _ = spatial_cross_validate(
             ctrl['points_xy'], ctrl['residual_dx'], ctrl['residual_dy'],
             lag_x, lag_y, matches, rbf_smoothing=0.1)
         if local_cv_summary:
-            trans_cv_p95 = local_cv_summary.get('translation', {}).get('p95', float('inf'))
-            best_model = 'translation'
-            best_p95 = trans_cv_p95
-            for m_name in ['affine', 'rbf']:
-                if m_name in local_cv_summary and local_cv_summary[m_name]['p95'] < best_p95:
-                    best_p95 = local_cv_summary[m_name]['p95']
-                    best_model = m_name
-            if best_model == 'rbf':
-                improvement = 1.0 - best_p95 / max(trans_cv_p95, 1e-10)
-                if improvement >= 0.10:
-                    for sm in smoothing_candidates:
-                        try:
-                            summary_sm, _ = spatial_cross_validate(
-                                ctrl['points_xy'], ctrl['residual_dx'], ctrl['residual_dy'],
-                                lag_x, lag_y, matches, rbf_smoothing=sm)
-                            rbf_stats = summary_sm.get('rbf', {})
-                            smoothing_cv.append({
-                                'smoothing': float(sm),
-                                'p95': rbf_stats.get('p95'),
-                                'rmse': rbf_stats.get('rmse'),
-                            })
-                        except Exception:
-                            smoothing_cv.append({
-                                'smoothing': float(sm), 'p95': None, 'rmse': None,
-                            })
+            selection_diagnostics = select_translation_or_rbf(local_cv_summary)
+            if selection_diagnostics['selected_model'] == 'rbf':
+                for sm in smoothing_candidates:
+                    try:
+                        summary_sm, _ = spatial_cross_validate(
+                            ctrl['points_xy'], ctrl['residual_dx'], ctrl['residual_dy'],
+                            lag_x, lag_y, matches, rbf_smoothing=sm)
+                        rbf_stats = summary_sm.get('rbf', {})
+                        smoothing_cv.append({
+                            'smoothing': float(sm),
+                            'p95': rbf_stats.get('p95'),
+                            'rmse': rbf_stats.get('rmse'),
+                        })
+                    except Exception:
+                        smoothing_cv.append({
+                            'smoothing': float(sm), 'p95': None, 'rmse': None,
+                        })
 
-                    valid_smoothing = [
-                        item for item in smoothing_cv
-                        if item['p95'] is not None and np.isfinite(item['p95'])
-                    ]
-                    if valid_smoothing:
-                        best_entry = min(valid_smoothing, key=lambda item: item['p95'])
-                        best_smoothing = best_entry['smoothing']
-                        try:
-                            local_rbf_dx, local_rbf_dy, cmin, cmax = fit_local_rbf(
-                                ctrl['points_xy'], ctrl['residual_dx'], ctrl['residual_dy'],
-                                smoothing=best_smoothing,
-                                neighbors=min(20, ctrl['n_valid']))
-                            local_coord_range = (cmin[0], cmin[1], cmax[0], cmax[1])
-                        except Exception:
-                            best_smoothing = None
+                valid_smoothing = [
+                    item for item in smoothing_cv
+                    if item['p95'] is not None and np.isfinite(item['p95'])
+                ]
+                if valid_smoothing:
+                    best_entry = min(valid_smoothing, key=lambda item: item['p95'])
+                    best_smoothing = best_entry['smoothing']
+                    try:
+                        local_rbf_dx, local_rbf_dy, cmin, cmax = fit_local_rbf(
+                            ctrl['points_xy'], ctrl['residual_dx'], ctrl['residual_dy'],
+                            smoothing=best_smoothing,
+                            neighbors=min(20, ctrl['n_valid']))
+                        local_coord_range = (cmin[0], cmin[1], cmax[0], cmax[1])
+                    except Exception:
+                        best_smoothing = None
 
-                    if local_rbf_dx is not None:
-                        use_local = True
-                        print(f"  => LOCAL RBF (smoothing={best_smoothing})")
+                if local_rbf_dx is not None:
+                    use_local = True
+                    print(f"  => LOCAL RBF (smoothing={best_smoothing})")
 
     local_model = 'rbf' if use_local else 'translation'
     registration_metrics = build_registration_metrics(
@@ -371,6 +399,7 @@ def process_band(band):
         rbf_smoothing=best_smoothing,
         reference_overlap_window=ref_overlap_window,
         smoothing_candidates=smoothing_cv,
+        selection_diagnostics=selection_diagnostics,
     )
     registration_rows = build_registration_match_rows(matches, lag_x, lag_y)
     save_csv(

@@ -43,3 +43,26 @@ def test_spatial_coverage_is_relative_to_overlap_not_full_image():
     assert result["grid_cells_covered"] >= 12
     assert result["grid_coverage_ratio"] >= 0.75
 
+
+def test_affine_diagnostic_does_not_control_applied_model():
+    summary = {
+        "translation": {"p95": 2.0},
+        "affine": {"p95": 0.4},
+        "rbf": {"p95": 1.0},
+    }
+
+    result = tip.select_translation_or_rbf(summary, 0.10)
+
+    assert result["selected_model"] == "rbf"
+
+
+def test_rbf_requires_minimum_p95_improvement():
+    summary = {
+        "translation": {"p95": 1.0},
+        "affine": {"p95": 0.2},
+        "rbf": {"p95": 0.95},
+    }
+
+    result = tip.select_translation_or_rbf(summary, 0.10)
+
+    assert result["selected_model"] == "translation"
