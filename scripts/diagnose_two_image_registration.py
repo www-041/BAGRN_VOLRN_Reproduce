@@ -223,6 +223,66 @@ def save_common_grid_chips(common_grid, output_dir, chip_size=256, max_chips=9):
     return written
 
 
+def build_diagnostic_report(
+    grid_metadata, raw_result, common_result, comparison, generated_files
+):
+    """Build a factual report explaining the raw/common-grid evidence."""
+    raw_screening = raw_result.get('screening', {})
+    common_screening = common_result.get('screening', {})
+    raw_summary = raw_result.get('summary', {})
+    common_summary = common_result.get('summary', {})
+    phase = grid_metadata.get('grid_relationship', {}).get(
+        'fractional_phase_pixels', {})
+    lines = [
+        'Two-image registration evidence diagnostic',
+        '',
+        '1. Input',
+        f"Reference: {grid_metadata.get('reference_path')}",
+        f"Target: {grid_metadata.get('target_path')}",
+        '',
+        '2. GeoTIFF grid relationship',
+        f"Fractional phase (col, row): {phase.get('col')}, {phase.get('row')}",
+        '',
+        '3. Raw-grid matcher',
+        f"Measured rows: {raw_summary.get('measured_rows', 0)}",
+        f"Accepted rows: {raw_screening.get('accepted', 0)}",
+        '',
+        '4. Common-grid matcher',
+        f"Measured rows: {common_summary.get('measured_rows', 0)}",
+        f"Accepted rows: {common_screening.get('accepted', 0)}",
+        '',
+        '5. Zero-shift vs best-shift',
+        f"Median zero-shift NCC: "
+        f"{_summary_value(common_summary, ('zero_shift_ncc', 'median'))}",
+        f"Median NCC gain: "
+        f"{_summary_value(common_summary, ('ncc_gain', 'median'))}",
+        '',
+        '6. Evidence comparison',
+    ]
+    hints = comparison.get('interpretation_hints', [])
+    lines.extend([f"Evidence hint: {hint}" for hint in hints])
+    if not hints:
+        lines.append('No conservative evidence hint was triggered.')
+    lines.extend([
+        '',
+        '7. Why a good-looking mosaic can coexist with accepted=0',
+        'accepted=0 means no block passed the current matcher acceptance rule; '
+        'it does not by itself prove that the georeferenced images are spatially misaligned.',
+        'The mosaic path uses each scene CRS/Affine to reproject data into a '
+        'shared output grid before blending. Therefore a visually well-aligned '
+        'mosaic can coexist with a raw-array block matcher that accepts no blocks, '
+        'especially when source pixel grids have different origins/phases.',
+        '',
+        '8. What this diagnostic does NOT prove',
+        'These are same-data diagnostics, not independent HOLDOUT accuracy.',
+        'They do not establish performance on unseen imagery or select a new matcher.',
+        '',
+        '9. Generated files',
+    ])
+    lines.extend([f'- {item}' for item in generated_files])
+    return '\n'.join(lines) + '\n'
+
+
 def run_diagnostic(args):
     ref_path, tgt_path, output_dir = _resolve_paths(args)
     os.makedirs(output_dir, exist_ok=True)
@@ -318,6 +378,25 @@ def run_diagnostic(args):
         common_result.get('candidates', []),
         COMMON_CSV_FIELDS,
     )
+    generated_files = [
+        'grid_metadata.json',
+        'raw_grid_candidates.csv',
+        'raw_grid_summary.json',
+        'common_grid_candidates.csv',
+        'common_grid_summary.json',
+        'grid_comparison.json',
+        'diagnostic_report.txt',
+        'chips/',
+    ]
+    report = build_diagnostic_report(
+        grid_metadata,
+        raw_result,
+        common_result,
+        comparison,
+        generated_files,
+    )
+    with open(os.path.join(output_dir, 'diagnostic_report.txt'), 'w', encoding='utf-8') as handle:
+        handle.write(report)
 
     print('=== Grid relationship ===')
     print(f'  ref pixel size={grid_relationship["ref_pixel_size"]}')

@@ -17,6 +17,47 @@ def test_default_cli_parameters():
     assert args.max_shift == 40.0
 
 
+def test_diagnostic_report_explains_zero_acceptance_and_mosaic_grid_semantics():
+    raw = {
+        "screening": {"accepted": 0},
+        "summary": {"measured_rows": 4},
+    }
+    common = {
+        "screening": {"accepted": 4},
+        "summary": {
+            "measured_rows": 4,
+            "confidence": {"median": 0.8},
+            "shift_magnitude_pixels": {"median": 0.1},
+            "zero_shift_ncc": {"median": 0.9},
+            "ncc_gain": {"median": 0.02},
+        },
+    }
+    comparison = {
+        "interpretation_hints": [
+            "geotransform-only alignment is already strong",
+        ],
+    }
+
+    report = diagnostic_script.build_diagnostic_report(
+        {
+            "reference_path": "ref.tif",
+            "target_path": "tgt.tif",
+            "grid_relationship": {
+                "fractional_phase_pixels": {"col": 0.35, "row": 0.40},
+            },
+        },
+        raw,
+        common,
+        comparison,
+        ["grid_metadata.json", "raw_grid_candidates.csv"],
+    )
+
+    assert "accepted=0" in report
+    assert "not by itself prove" in report
+    assert "shared output grid" in report
+    assert "not independent HOLDOUT" in report
+
+
 def test_main_writes_diagnostic_json_and_csv_with_monkeypatched_reader(monkeypatch):
     yy, xx = np.mgrid[0:512, 0:512]
     arr = np.sin(xx / 15.0) + np.cos(yy / 19.0)
