@@ -160,6 +160,15 @@ def test_registration_match_rows_include_residual_and_inlier_fields():
     }]
 
 
+def test_radiometric_console_labels_and_metric_columns_are_complete():
+    source = TWO_IMAGE_PIPELINE.read_text(encoding="utf-8")
+
+    assert "Registered / Before normalization" in source
+    assert "BAGRN + VOLRN" in source
+    for label in ("ADM", "ADSD", "CD", "GL", "RDOA", "Ave"):
+        assert f'("{label.lower() if label != "Ave" else "ave"}", "{label}")' in source
+
+
 def test_compute_all_contract_documented():
     """Document the correct compute_all contract."""
     # compute_all(arrays_before, arrays_after, nodata_values, overlaps, bands)

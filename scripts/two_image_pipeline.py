@@ -763,9 +763,16 @@ def process_band(band):
     print(f"\n{'='*70}")
     print(f"  B14 radiometric normalization and mosaic")
     print(f"{'='*70}")
-    print(f"  {'Metric':<12s} {'Original':>12s} {'BAGRN':>12s} {'VOLRN':>12s}")
+    print(f"  {'Metric':<12s} {'Registered / Before normalization':>34s} {'BAGRN':>12s} {'BAGRN + VOLRN':>16s}")
     print(f"  {'-'*48}")
-    for key, label in [('adm', 'ADM'), ('adsd', 'ADSD'), ('rdoa', 'RDOA'), ('ave', 'Ave')]:
+    for key, label in [
+        ("adm", "ADM"),
+        ("adsd", "ADSD"),
+        ("cd", "CD"),
+        ("gl", "GL"),
+        ("rdoa", "RDOA"),
+        ("ave", "Ave"),
+    ]:
         v0 = _v(original_metrics, key)
         v1 = _v(bagrn_metrics, key)
         v2 = _v(volrn_metrics, key)
