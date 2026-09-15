@@ -1,7 +1,9 @@
 import numpy as np
 from rasterio.transform import Affine
 
+from src.coregistration import collect_block_matches
 from src.registration_diagnostics import (
+    collect_raw_grid_candidate_diagnostics,
     compute_grid_relationship,
     masked_ncc,
     summarize_candidate_rows,
@@ -84,3 +86,56 @@ def test_candidate_summary_keeps_reject_counts_and_measured_distributions():
     }
     assert np.isclose(result["confidence"]["median"], 0.6)
     assert np.isclose(result["shift_magnitude_pixels"]["max"], 2.0)
+
+
+def test_raw_grid_candidates_preserve_low_confidence_rows(monkeypatch):
+    yy, xx = np.mgrid[0:1024, 0:1024]
+    arr = np.sin(xx / 15.0) + np.cos(yy / 19.0)
+    tr = Affine(14.0, 0.0, 1000.0, 0.0, -14.0, 5000.0)
+
+    monkeypatch.setattr(
+        "src.registration_diagnostics.phase_correlation",
+        lambda *args, **kwargs: (0.2, -0.1, 0.49),
+    )
+
+    result = collect_raw_grid_candidate_diagnostics(
+        arr, tr, arr, tr, block_size=512, confidence_threshold=0.5)
+
+    assert result["screening"]["accepted"] == 0
+    assert result["screening"]["low_conf"] > 0
+    assert any(
+        row["reject_reason"] == "low_conf"
+        for row in result["candidates"]
+    )
+    assert all(
+        row["confidence"] == 0.49
+        for row in result["candidates"]
+        if row["reject_reason"] == "low_conf"
+    )
+
+
+def test_raw_diagnostic_accepted_rows_match_baseline_matcher(monkeypatch):
+    yy, xx = np.mgrid[0:1024, 0:1024]
+    arr = np.sin(xx / 15.0) + np.cos(yy / 19.0)
+    tr = Affine(14.0, 0.0, 1000.0, 0.0, -14.0, 5000.0)
+
+    def fake_phase(*args, **kwargs):
+        return 0.2, -0.1, 0.8
+
+    monkeypatch.setattr("src.registration_diagnostics.phase_correlation", fake_phase)
+    monkeypatch.setattr("src.coregistration.phase_correlation", fake_phase)
+
+    diagnostic = collect_raw_grid_candidate_diagnostics(
+        arr, tr, arr, tr, block_size=512, confidence_threshold=0.5)
+    matches, _ = collect_block_matches(
+        arr, tr, arr, tr, block_size=512, confidence_threshold=0.5)
+    accepted = [
+        row for row in diagnostic["candidates"]
+        if row["reject_reason"] == "accepted"
+    ]
+
+    assert len(accepted) == len(matches)
+    for row, match in zip(accepted, matches):
+        assert np.isclose(row["shift_dx_pixels"], match["shift_dx"])
+        assert np.isclose(row["shift_dy_pixels"], match["shift_dy"])
+        assert np.isclose(row["confidence"], match["confidence"])
