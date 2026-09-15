@@ -42,3 +42,4 @@ def test_spatial_coverage_is_relative_to_overlap_not_full_image():
     assert result["coverage_domain"] == "overlap"
     assert result["grid_cells_covered"] >= 12
     assert result["grid_coverage_ratio"] >= 0.75
+

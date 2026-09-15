@@ -59,49 +59,17 @@ def phase_correlation(img_ref, img_target, valid_ref=None, valid_tgt=None):
     """
     from skimage.registration import phase_cross_correlation
     from scipy.ndimage import shift as ndimage_shift
-    from rasterio.warp import reproject, Resampling
 
-    # Multi-resolution fix: use common grid instead of naive truncation
-    # Determine common resolution (finer of the two)
-    res_ref = abs(tr_ref.a)
-    res_tgt = abs(tr_tgt.a)
-    common_res = min(res_ref, res_tgt)
-    
-    # Calculate common grid dimensions based on geographic overlap
-    # For simplicity, use the reference image's grid as common grid
-    # and reproject target to match
-    h_ref, w_ref = img_ref.shape
-    ref = img_ref.astype(np.float64)
-    
-    # If target has different resolution, reproject to common grid
-    if abs(res_ref - res_tgt) > 1e-10:
-        # Create target array on common grid
-        tgt = np.full((h_ref, w_ref), np.nan, dtype=np.float64)
-        reproject(
-            source=img_target.astype(np.float64),
-            destination=tgt,
-            src_transform=tr_tgt,
-            src_crs=crs_tgt if 'crs_tgt' in locals() else 'EPSG:4326',
-            dst_transform=tr_ref,
-            dst_crs=crs_ref if 'crs_ref' in locals() else 'EPSG:4326',
-            resampling=Resampling.bilinear,
-        )
-    else:
-        # Same resolution: use original approach
-        h = min(img_ref.shape[0], img_target.shape[0])
-        w = min(img_ref.shape[1], img_target.shape[1])
-        ref = img_ref[:h, :w].astype(np.float64)
-        tgt = img_target[:h, :w].astype(np.float64)
+    h = min(img_ref.shape[0], img_target.shape[0])
+    w = min(img_ref.shape[1], img_target.shape[1])
+    ref = img_ref[:h, :w].astype(np.float64)
+    tgt = img_target[:h, :w].astype(np.float64)
 
     # 构建联合有效掩膜
     if valid_ref is not None and valid_tgt is not None:
-        if ref.shape == valid_ref.shape and tgt.shape == valid_tgt.shape:
-            joint = valid_ref & valid_tgt
-        else:
-            # Different shapes after reprojection: use finite check
-            joint = np.isfinite(ref) & np.isfinite(tgt)
+        joint = valid_ref[:h, :w] & valid_tgt[:h, :w]
     else:
-        joint = np.isfinite(ref) & np.isfinite(tgt)
+        joint = np.isfinite(ref) & np.isfinite(tgt) & (ref != 0) & (tgt != 0)
 
     if joint.sum() < 100:
         return 0.0, 0.0, 0.0
@@ -1358,7 +1326,7 @@ def fit_local_rbf(points_xy, residual_dx, residual_dy, smoothing, neighbors=20):
 
 def spatial_cross_validate(points_xy, residual_dx, residual_dy,
                            global_dx, global_dy, matches,
-                           n_groups_x=4, n_groups_y=4):
+                           n_groups_x=4, n_groups_y=4, rbf_smoothing=0.1):
     """空间分组交叉验证。
 
     将控制点按空间网格分组，使用GroupKFold评估模型。
@@ -1450,7 +1418,8 @@ def spatial_cross_validate(points_xy, residual_dx, residual_dy,
         if len(train_idx) >= 10:
             try:
                 rbf_dx, rbf_dy, cmin, cmax = fit_local_rbf(
-                    train_xy, train_dx, train_dy, smoothing=0.1, neighbors=min(20, len(train_idx)))
+                    train_xy, train_dx, train_dy,
+                    smoothing=rbf_smoothing, neighbors=min(20, len(train_idx)))
                 tx = (test_xy[:, 0] - cmin[0]) / max(cmax[0] - cmin[0], 1e-10)
                 ty = (test_xy[:, 1] - cmin[1]) / max(cmax[1] - cmin[1], 1e-10)
                 test_norm = np.column_stack([tx, ty])

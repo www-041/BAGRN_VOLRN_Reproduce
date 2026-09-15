@@ -207,6 +207,7 @@ def build_registration_metrics(
     reference_shape, reference_transform, block_stats=None,
     local_control_points=0, local_model='translation',
     local_cv_summary=None, rbf_smoothing=None, reference_overlap_window=None,
+    smoothing_candidates=None,
 ):
     """Build registration diagnostics from the existing block-match results."""
     residual_dx, residual_dy = _residual_arrays(matches, global_dx, global_dy)
@@ -250,6 +251,7 @@ def build_registration_metrics(
             'control_points': int(local_control_points),
             'rbf_smoothing': float(rbf_smoothing) if rbf_smoothing is not None else None,
             'cross_validation': _json_safe(local_cv_summary or {}),
+            'smoothing_candidates': _json_safe(smoothing_candidates or []),
         },
         'phase_block_stats': _json_safe(block_stats or {}),
     }
@@ -299,11 +301,13 @@ def process_band(band):
     local_rbf_dx = local_rbf_dy = local_coord_range = None
     best_smoothing = None
     local_cv_summary = {}
+    smoothing_candidates = [0.001, 0.01, 0.05, 0.1, 0.5, 1.0]
+    smoothing_cv = []
 
     if ctrl['n_valid'] >= 30:
         local_cv_summary, _ = spatial_cross_validate(
             ctrl['points_xy'], ctrl['residual_dx'], ctrl['residual_dy'],
-            lag_x, lag_y, matches)
+            lag_x, lag_y, matches, rbf_smoothing=0.1)
         if local_cv_summary:
             trans_cv_p95 = local_cv_summary.get('translation', {}).get('p95', float('inf'))
             best_model = 'translation'
@@ -315,23 +319,38 @@ def process_band(band):
             if best_model == 'rbf':
                 improvement = 1.0 - best_p95 / max(trans_cv_p95, 1e-10)
                 if improvement >= 0.10:
-                    best_rbf_p95 = float('inf')
-                    for sm in [0.001, 0.01, 0.05, 0.1, 0.5, 1.0]:
+                    for sm in smoothing_candidates:
                         try:
-                            rbf_dx, rbf_dy, cmin, cmax = fit_local_rbf(
+                            summary_sm, _ = spatial_cross_validate(
                                 ctrl['points_xy'], ctrl['residual_dx'], ctrl['residual_dy'],
-                                smoothing=sm, neighbors=min(20, ctrl['n_valid']))
-                            cv_p95 = spatial_cross_validate(
-                                ctrl['points_xy'], ctrl['residual_dx'], ctrl['residual_dy'],
-                                lag_x, lag_y, matches)[0].get('rbf', {}).get('p95', float('inf'))
-                            if cv_p95 < best_rbf_p95:
-                                best_rbf_p95 = cv_p95
-                                best_smoothing = sm
-                                local_rbf_dx = rbf_dx
-                                local_rbf_dy = rbf_dy
-                                local_coord_range = (cmin[0], cmin[1], cmax[0], cmax[1])
+                                lag_x, lag_y, matches, rbf_smoothing=sm)
+                            rbf_stats = summary_sm.get('rbf', {})
+                            smoothing_cv.append({
+                                'smoothing': float(sm),
+                                'p95': rbf_stats.get('p95'),
+                                'rmse': rbf_stats.get('rmse'),
+                            })
                         except Exception:
-                            continue
+                            smoothing_cv.append({
+                                'smoothing': float(sm), 'p95': None, 'rmse': None,
+                            })
+
+                    valid_smoothing = [
+                        item for item in smoothing_cv
+                        if item['p95'] is not None and np.isfinite(item['p95'])
+                    ]
+                    if valid_smoothing:
+                        best_entry = min(valid_smoothing, key=lambda item: item['p95'])
+                        best_smoothing = best_entry['smoothing']
+                        try:
+                            local_rbf_dx, local_rbf_dy, cmin, cmax = fit_local_rbf(
+                                ctrl['points_xy'], ctrl['residual_dx'], ctrl['residual_dy'],
+                                smoothing=best_smoothing,
+                                neighbors=min(20, ctrl['n_valid']))
+                            local_coord_range = (cmin[0], cmin[1], cmax[0], cmax[1])
+                        except Exception:
+                            best_smoothing = None
+
                     if local_rbf_dx is not None:
                         use_local = True
                         print(f"  => LOCAL RBF (smoothing={best_smoothing})")
@@ -351,6 +370,7 @@ def process_band(band):
         local_cv_summary=local_cv_summary,
         rbf_smoothing=best_smoothing,
         reference_overlap_window=ref_overlap_window,
+        smoothing_candidates=smoothing_cv,
     )
     registration_rows = build_registration_match_rows(matches, lag_x, lag_y)
     save_csv(

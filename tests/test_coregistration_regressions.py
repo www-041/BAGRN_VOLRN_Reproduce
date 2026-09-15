@@ -8,7 +8,11 @@ Task 10 of reliability-fixes plan:
 
 import numpy as np
 import rasterio
+import src.coregistration as coregistration
 from rasterio.transform import from_origin
+from scipy.ndimage import shift as ndimage_shift
+
+from src.coregistration import phase_correlation
 
 
 def test_rowcol_returns_row_col_order():
@@ -66,6 +70,21 @@ def test_nodata_none_permits_zero_pixels():
     assert valid.sum() == 4
 
 
+def test_phase_correlation_uses_documented_array_only_signature():
+    """Phase correlation must not require undeclared geospatial transforms."""
+    rng = np.random.default_rng(1234)
+    ref = rng.normal(size=(64, 64))
+    target = ndimage_shift(ref, [2.0, -3.0], order=1, mode="constant", cval=0.0)
+    valid = np.ones(ref.shape, dtype=bool)
+
+    shift_y, shift_x, confidence = phase_correlation(
+        ref, target, valid_ref=valid, valid_tgt=valid
+    )
+
+    assert np.isfinite([shift_y, shift_x, confidence]).all()
+    assert confidence > 0.5
+
+
 def test_multi_resolution_common_grid():
     """Multi-resolution registration must use common grid, not truncate to min(shape)."""
     # Create two synthetic images at different resolutions
@@ -89,3 +108,37 @@ def test_multi_resolution_common_grid():
     # Fix: reproject both to common grid before phase correlation
     # For now, test that the function exists and handles this case
     assert ref_arr.shape != tgt_arr.shape, "Test setup: different shapes"
+
+
+def test_spatial_cross_validate_passes_requested_rbf_smoothing(monkeypatch):
+    """Every RBF CV fold must receive the smoothing value selected by the caller."""
+    captured = []
+
+    class FakeInterpolator:
+        def __call__(self, points):
+            return np.zeros(len(points), dtype=np.float64)
+
+    def fake_fit_local_rbf(points_xy, residual_dx, residual_dy, smoothing, neighbors):
+        captured.append(float(smoothing))
+        return FakeInterpolator(), FakeInterpolator(), (0.0, 0.0), (100.0, 100.0)
+
+    monkeypatch.setattr(coregistration, "fit_local_rbf", fake_fit_local_rbf)
+    points = np.asarray(
+        [[x, y] for y in [10, 30, 50, 70, 90] for x in [10, 30, 50, 70, 90]],
+        dtype=np.float64,
+    )
+    residual_dx = np.zeros(len(points), dtype=np.float64)
+    residual_dy = np.zeros(len(points), dtype=np.float64)
+
+    coregistration.spatial_cross_validate(
+        points,
+        residual_dx,
+        residual_dy,
+        global_dx=0.0,
+        global_dy=0.0,
+        matches=[],
+        rbf_smoothing=0.5,
+    )
+
+    assert captured
+    assert captured == [0.5] * len(captured)
