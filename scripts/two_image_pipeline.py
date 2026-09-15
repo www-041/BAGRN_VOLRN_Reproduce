@@ -16,7 +16,7 @@ from src.metrics import compute_all
 OUTPUT = r'D:\科研\地质一号\文献\BAGRN_VOLRN_Reproduce\data\output\two_image_float'
 os.makedirs(OUTPUT, exist_ok=True)
 
-IMG2 = r'data/input/float/DZ01V_L2_E113.3_N36.2_20260810030938_01_T1/DZ01V_L2_E113.3_N36.2_20260810030938_01_T1_{}.TIF'
+IMG2 = r'data/input/float/DZ01V_L2_E113.6_N36.3_20260616031133_01_T1/DZ01V_L2_E113.6_N36.3_20260616031133_01_T1_{}.TIF'
 IMG1 = r'data/input/float/DZ01V_L2_E113.4_N36.6_20260810030932_01_T1/DZ01V_L2_E113.4_N36.6_20260810030932_01_T1_{}.TIF'
 BANDS = ['B14']
 
@@ -254,6 +254,22 @@ def select_translation_or_rbf(local_cv_summary, min_p95_improvement=0.10):
         'min_required_improvement_ratio': float(min_p95_improvement),
         'reason': reason,
     }
+
+
+def format_translation_estimate(lag_y, lag_x, conf, translation_stats):
+    """Format a measured translation or an explicitly unavailable fallback."""
+    available = bool((translation_stats or {}).get('available', True))
+    if not available:
+        reason = (translation_stats or {}).get(
+            'failure_reason', 'translation estimate unavailable')
+        return [
+            'Translation estimate: UNAVAILABLE',
+            f'Applied fallback shift: dy={lag_y:.4f}, dx={lag_x:.4f}',
+            f'Reason: {reason}',
+        ]
+    return [
+        f'Translation: dy={lag_y:.4f}, dx={lag_x:.4f}, confidence={conf:.4f}'
+    ]
 
 
 def apply_registration_warps(
@@ -508,7 +524,9 @@ def process_band(band):
     matches, screening = collect_block_matches(arr1, tr1, arr2_orig, tr2_orig, nd1, nd2)
     lag_y, lag_x, conf, translation_stats = compute_shifts_from_overlap(
         arr1, tr1, arr2_orig, tr2_orig, nd1, nd2)
-    print(f"  Translation: dy={lag_y:.4f}, dx={lag_x:.4f}")
+    for translation_line in format_translation_estimate(
+        lag_y, lag_x, conf, translation_stats):
+        print(f"  {translation_line}")
 
     ctrl = build_local_residual_controls(matches, lag_x, lag_y, confidence_threshold=0.75)
     print(f"  Local control points: {ctrl['n_valid']}")

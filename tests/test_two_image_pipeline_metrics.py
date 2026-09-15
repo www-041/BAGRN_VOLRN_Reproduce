@@ -322,3 +322,20 @@ def test_stage_comparison_does_not_fake_improvement_without_local_model():
     assert result["median_improvement_pixels"] == 0.0
     assert result["rmse_improvement_pixels"] == 0.0
     assert result["p95_improvement_pixels"] == 0.0
+
+
+def test_unavailable_translation_is_not_printed_as_measured_zero():
+    lines = tip.format_translation_estimate(
+        0.0,
+        0.0,
+        0.0,
+        {
+            "available": False,
+            "failure_reason": "insufficient blocks and low confidence",
+        },
+    )
+    text = "\n".join(lines)
+
+    assert "UNAVAILABLE" in text
+    assert "Applied fallback shift" in text
+    assert "Reason:" in text
