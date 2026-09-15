@@ -138,3 +138,29 @@ def test_post_warp_registration_reports_residual_to_zero(monkeypatch):
     assert result["accepted_matches"] == 2
     assert result["residual_to_zero"]["mean_magnitude_pixels"] == 3.0
     assert result["residual_to_zero"]["max_magnitude_pixels"] == 5.0
+
+
+def test_stage_comparison_positive_means_final_is_better():
+    global_post = {
+        "available": True,
+        "residual_to_zero": {
+            "median_magnitude_pixels": 1.0,
+            "rmse_pixels": 2.0,
+            "p95_magnitude_pixels": 3.0,
+        },
+    }
+    final_post = {
+        "available": True,
+        "residual_to_zero": {
+            "median_magnitude_pixels": 0.5,
+            "rmse_pixels": 1.0,
+            "p95_magnitude_pixels": 2.0,
+        },
+    }
+
+    result = tip.compare_post_warp_stages(global_post, final_post)
+
+    assert result["rmse_improvement_pixels"] == 1.0
+    assert result["p95_improvement_pixels"] == 1.0
+    assert result["median_improvement_pixels"] == 0.5
+    assert result["interpretation"] == "positive means final is better"

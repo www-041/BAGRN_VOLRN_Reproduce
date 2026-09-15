@@ -332,6 +332,60 @@ def evaluate_post_warp_registration(
     return result
 
 
+def compare_post_warp_stages(global_post, final_post):
+    """Compare post-warp residual-to-zero diagnostics.
+
+    Improvement is defined as ``global_only - final``.  Missing stage
+    metrics remain unavailable instead of being treated as zero error.
+    """
+    metric_names = {
+        'median': 'median_magnitude_pixels',
+        'rmse': 'rmse_pixels',
+        'p95': 'p95_magnitude_pixels',
+    }
+
+    def metric_value(stage, key):
+        if not stage or not stage.get('available'):
+            return None
+        value = stage.get('residual_to_zero', {}).get(key)
+        if value is None or not np.isfinite(value):
+            return None
+        return float(value)
+
+    global_values = {
+        name: metric_value(global_post, key)
+        for name, key in metric_names.items()
+    }
+    final_values = {
+        name: metric_value(final_post, key)
+        for name, key in metric_names.items()
+    }
+    improvements = {
+        name: (
+            global_values[name] - final_values[name]
+            if global_values[name] is not None and final_values[name] is not None
+            else None
+        )
+        for name in metric_names
+    }
+
+    def ratio(name):
+        improvement = improvements[name]
+        baseline = global_values[name]
+        if improvement is None or baseline in (None, 0.0):
+            return None
+        return float(improvement / baseline)
+
+    return {
+        'median_improvement_pixels': improvements['median'],
+        'rmse_improvement_pixels': improvements['rmse'],
+        'p95_improvement_pixels': improvements['p95'],
+        'rmse_improvement_ratio': ratio('rmse'),
+        'p95_improvement_ratio': ratio('p95'),
+        'interpretation': 'positive means final is better',
+    }
+
+
 def build_registration_metrics(
     matches, screening, global_dx, global_dy, phase_confidence,
     reference_shape, reference_transform, block_stats=None,
@@ -574,6 +628,46 @@ def process_band(band):
     )
 
     tr2_coreg = tr2_orig
+
+    post_warp_kwargs = {
+        'reference_overlap_window': ref_overlap_window,
+        'block_size': 512,
+        'max_residual_shift': 5.0,
+        'confidence_threshold': 0.5,
+    }
+    global_post = evaluate_post_warp_registration(
+        arr1, tr1, arr2_global, tr2_orig, nd1, nd2, **post_warp_kwargs)
+    final_post = evaluate_post_warp_registration(
+        arr1, tr1, arr2_coreg, tr2_coreg, nd1, nd2, **post_warp_kwargs)
+    post_comparison = compare_post_warp_stages(global_post, final_post)
+    registration_metrics['post_warp'] = {
+        'global_only': global_post,
+        'final': final_post,
+        'comparison': post_comparison,
+    }
+    with open(os.path.join(out_dir, f'registration_{band}_metrics.json'), 'w', encoding='utf-8') as f:
+        json.dump(_json_safe(registration_metrics), f, indent=2, ensure_ascii=False)
+
+    def _post_summary(stage):
+        residual_zero = stage['residual_to_zero']
+        return (
+            f"n={stage['accepted_matches']}, "
+            f"conf={stage['mean_confidence']}, "
+            f"median={residual_zero['median_magnitude_pixels']}, "
+            f"RMSE={residual_zero['rmse_pixels']}, "
+            f"P95={residual_zero['p95_magnitude_pixels']}"
+        )
+
+    print("  Post-warp registration (same-data diagnostic, not HOLDOUT)")
+    print(f"    Global-only : {_post_summary(global_post)}")
+    print(f"    Final       : model={local_model}, {_post_summary(final_post)}")
+    print(
+        "    Improvement : "
+        f"median={post_comparison['median_improvement_pixels']}, "
+        f"RMSE={post_comparison['rmse_improvement_pixels']}, "
+        f"P95={post_comparison['p95_improvement_pixels']} "
+        "(positive = better)"
+    )
 
     # ================================================================
     # Step 2: BAGRN + VOLRN + Mosaic
