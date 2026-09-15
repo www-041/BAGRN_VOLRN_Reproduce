@@ -7,6 +7,7 @@ from src.registration_diagnostics import (
     build_reference_common_grid_overlap,
     collect_common_grid_candidate_diagnostics,
     collect_raw_grid_candidate_diagnostics,
+    compare_raw_and_common_grid,
     compute_grid_relationship,
     masked_ncc,
     summarize_candidate_rows,
@@ -255,3 +256,56 @@ def test_common_grid_recovers_known_small_shift_and_improves_ncc():
     ]
     assert accepted
     assert all(row["best_shift_ncc"] > row["zero_shift_ncc"] for row in accepted)
+
+
+def _evidence_result(confidence, magnitude, accepted=3, zero_ncc=None, gain=None):
+    return {
+        "screening": {"accepted": accepted},
+        "summary": {
+            "measured_rows": 4,
+            "confidence": {"median": confidence},
+            "shift_magnitude_pixels": {"median": magnitude},
+            "zero_shift_ncc": {"median": zero_ncc},
+            "ncc_gain": {"median": gain},
+        },
+    }
+
+
+def test_grid_comparison_hints_when_common_confidence_is_substantially_higher():
+    result = compare_raw_and_common_grid(
+        _evidence_result(0.30, 1.0),
+        _evidence_result(0.80, 0.10, zero_ncc=0.65, gain=0.10),
+        {"fractional_phase_pixels": {"col": 0.4, "row": 0.2}},
+    )
+
+    assert any(
+        "common-grid confidence is substantially higher than raw-grid confidence"
+        in hint
+        for hint in result["interpretation_hints"]
+    )
+
+
+def test_grid_comparison_hints_when_geotransform_alignment_is_strong():
+    result = compare_raw_and_common_grid(
+        _evidence_result(0.30, 1.0),
+        _evidence_result(0.80, 0.10, zero_ncc=0.75, gain=0.03),
+        {"fractional_phase_pixels": {"col": 0.1, "row": 0.1}},
+    )
+
+    assert any(
+        "geotransform-only alignment is already strong" in hint
+        for hint in result["interpretation_hints"]
+    )
+
+
+def test_grid_comparison_hints_when_phase_correlation_stays_weak():
+    result = compare_raw_and_common_grid(
+        _evidence_result(0.30, 2.0),
+        _evidence_result(0.40, 2.5, zero_ncc=0.20, gain=0.20),
+        {"fractional_phase_pixels": {"col": 0.1, "row": 0.1}},
+    )
+
+    assert any(
+        "phase-correlation remains weak after common-grid reprojection" in hint
+        for hint in result["interpretation_hints"]
+    )

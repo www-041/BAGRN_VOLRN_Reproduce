@@ -626,3 +626,116 @@ def collect_common_grid_candidate_diagnostics(
         'candidates': candidates,
         'summary': _add_common_grid_summary_metrics(summary, candidates),
     }
+
+
+def _nested_summary_value(result, *path):
+    value = result or {}
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
+
+
+def compare_raw_and_common_grid(raw_result, common_result, grid_relationship):
+    """Return factual raw/common deltas and conservative evidence hints."""
+    raw_confidence = _nested_summary_value(
+        raw_result, 'summary', 'confidence', 'median')
+    raw_magnitude = _nested_summary_value(
+        raw_result, 'summary', 'shift_magnitude_pixels', 'median')
+    common_confidence = _nested_summary_value(
+        common_result, 'summary', 'confidence', 'median')
+    common_magnitude = _nested_summary_value(
+        common_result, 'summary', 'shift_magnitude_pixels', 'median')
+    common_zero_ncc = _nested_summary_value(
+        common_result, 'summary', 'zero_shift_ncc', 'median')
+    common_ncc_gain = _nested_summary_value(
+        common_result, 'summary', 'ncc_gain', 'median')
+
+    raw_accepted = (raw_result or {}).get('screening', {}).get('accepted', 0)
+    common_accepted = (common_result or {}).get('screening', {}).get('accepted', 0)
+    raw_measured = (raw_result or {}).get('summary', {}).get('measured_rows', 0)
+    common_measured = (common_result or {}).get('summary', {}).get('measured_rows', 0)
+    try:
+        raw_accepted = int(raw_accepted)
+    except (TypeError, ValueError):
+        raw_accepted = 0
+    try:
+        common_accepted = int(common_accepted)
+    except (TypeError, ValueError):
+        common_accepted = 0
+    try:
+        raw_measured = int(raw_measured)
+    except (TypeError, ValueError):
+        raw_measured = 0
+    try:
+        common_measured = int(common_measured)
+    except (TypeError, ValueError):
+        common_measured = 0
+
+    delta_confidence = (
+        common_confidence - raw_confidence
+        if common_confidence is not None and raw_confidence is not None
+        else None
+    )
+    phase = (grid_relationship or {}).get('fractional_phase_pixels', {})
+    phase_col = _nested_summary_value(
+        {'value': phase.get('col')}, 'value')
+    phase_row = _nested_summary_value(
+        {'value': phase.get('row')}, 'value')
+    hints = []
+    if delta_confidence is not None and delta_confidence >= 0.15:
+        hints.append(
+            'common-grid confidence is substantially higher than raw-grid '
+            'confidence; grid handling may be a major factor'
+        )
+    if (
+        common_zero_ncc is not None
+        and common_magnitude is not None
+        and common_ncc_gain is not None
+        and common_zero_ncc >= 0.70
+        and common_magnitude <= 0.50
+        and common_ncc_gain <= 0.05
+    ):
+        hints.append(
+            'geotransform-only alignment is already strong'
+        )
+    if (
+        raw_confidence is not None
+        and common_confidence is not None
+        and raw_confidence < 0.50
+        and common_confidence < 0.50
+    ):
+        hints.append(
+            'phase-correlation remains weak after common-grid reprojection'
+        )
+
+    return {
+        'raw': {
+            'measured': raw_measured,
+            'accepted': raw_accepted,
+            'median_confidence': raw_confidence,
+            'median_shift_magnitude': raw_magnitude,
+        },
+        'common_grid': {
+            'measured': common_measured,
+            'accepted': common_accepted,
+            'median_confidence': common_confidence,
+            'median_shift_magnitude': common_magnitude,
+            'median_zero_shift_ncc': common_zero_ncc,
+            'median_ncc_gain': common_ncc_gain,
+        },
+        'delta': {
+            'accepted_count': common_accepted - raw_accepted,
+            'median_confidence': delta_confidence,
+        },
+        'grid_fractional_phase_pixels': {
+            'col': phase_col if phase_col is not None else 0.0,
+            'row': phase_row if phase_row is not None else 0.0,
+        },
+        'interpretation_hints': hints,
+    }
