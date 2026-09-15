@@ -117,11 +117,25 @@ def _summarize_residuals(residual_dx, residual_dy):
     }
 
 
-def _spatial_coverage(matches, reference_shape, grid_rows=4, grid_cols=4):
+def _spatial_coverage(
+    matches, reference_shape, overlap_window=None, grid_rows=4, grid_cols=4
+):
     """Describe match-point spread in the reference image coordinate system."""
     height, width = reference_shape
+    if overlap_window is None:
+        r0, r1, c0, c1 = 0, height, 0, width
+        coverage_domain = 'full_reference'
+        domain_window = None
+    else:
+        r0, r1, c0, c1 = [int(value) for value in overlap_window]
+        coverage_domain = 'overlap'
+        domain_window = [r0, r1, c0, c1]
+    domain_height = max(r1 - r0, 1)
+    domain_width = max(c1 - c0, 1)
     empty = {
         'reference_shape': [int(height), int(width)],
+        'coverage_domain': coverage_domain,
+        'domain_window': domain_window,
         'bbox_pixels': None,
         'row_span_pixels': 0.0,
         'col_span_pixels': 0.0,
@@ -138,12 +152,16 @@ def _spatial_coverage(matches, reference_shape, grid_rows=4, grid_cols=4):
     points = np.asarray([[m['ref_x'], m['ref_y']] for m in matches], dtype=np.float64)
     min_x, min_y = points.min(axis=0)
     max_x, max_y = points.max(axis=0)
-    x_bins = np.clip((points[:, 0] / max(width, 1) * grid_cols).astype(int), 0, grid_cols - 1)
-    y_bins = np.clip((points[:, 1] / max(height, 1) * grid_rows).astype(int), 0, grid_rows - 1)
+    x_rel = (points[:, 0] - c0) / domain_width
+    y_rel = (points[:, 1] - r0) / domain_height
+    x_bins = np.clip((x_rel * grid_cols).astype(int), 0, grid_cols - 1)
+    y_bins = np.clip((y_rel * grid_rows).astype(int), 0, grid_rows - 1)
     cells = {(int(row), int(col)) for row, col in zip(y_bins, x_bins)}
 
     return {
         'reference_shape': [int(height), int(width)],
+        'coverage_domain': coverage_domain,
+        'domain_window': domain_window,
         'bbox_pixels': {
             'min_x': float(min_x), 'min_y': float(min_y),
             'max_x': float(max_x), 'max_y': float(max_y),
@@ -188,7 +206,7 @@ def build_registration_metrics(
     matches, screening, global_dx, global_dy, phase_confidence,
     reference_shape, reference_transform, block_stats=None,
     local_control_points=0, local_model='translation',
-    local_cv_summary=None, rbf_smoothing=None,
+    local_cv_summary=None, rbf_smoothing=None, reference_overlap_window=None,
 ):
     """Build registration diagnostics from the existing block-match results."""
     residual_dx, residual_dy = _residual_arrays(matches, global_dx, global_dy)
@@ -223,8 +241,10 @@ def build_registration_metrics(
         },
         'residual': _summarize_residuals(residual_dx, residual_dy),
         'inlier_residual': _summarize_residuals(residual_dx[inliers], residual_dy[inliers]),
-        'spatial_coverage': _spatial_coverage(matches, reference_shape),
-        'inlier_spatial_coverage': _spatial_coverage(inlier_matches, reference_shape),
+        'spatial_coverage': _spatial_coverage(
+            matches, reference_shape, overlap_window=reference_overlap_window),
+        'inlier_spatial_coverage': _spatial_coverage(
+            inlier_matches, reference_shape, overlap_window=reference_overlap_window),
         'local': {
             'model_used': str(local_model),
             'control_points': int(local_control_points),
@@ -246,6 +266,8 @@ def process_band(band):
     while arr1.ndim > 2: arr1 = arr1[0]
     while arr2_orig.ndim > 2: arr2_orig = arr2_orig[0]
     out_dir = get_band_output_dir(band)
+    initial_overlap = compute_overlap(arr1, tr1, arr2_orig, tr2_orig)
+    ref_overlap_window = initial_overlap[0] if initial_overlap is not None else None
 
     print(f"  Image 1 (ref): {arr1.shape}, nodata={nd1}")
     print(f"  Image 2 (tgt): {arr2_orig.shape}, nodata={nd2}")
@@ -328,6 +350,7 @@ def process_band(band):
         local_model=local_model,
         local_cv_summary=local_cv_summary,
         rbf_smoothing=best_smoothing,
+        reference_overlap_window=ref_overlap_window,
     )
     registration_rows = build_registration_match_rows(matches, lag_x, lag_y)
     save_csv(

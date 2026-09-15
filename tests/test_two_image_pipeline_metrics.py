@@ -23,3 +23,22 @@ def test_summarize_residuals_empty_returns_none_metrics():
     assert result["count"] == 0
     assert result["rmse_pixels"] is None
     assert result["p95_magnitude_pixels"] is None
+
+
+def test_spatial_coverage_is_relative_to_overlap_not_full_image():
+    matches = []
+    for y in [125, 375, 625, 875]:
+        for x in [562, 687, 812, 937]:
+            matches.append({"ref_x": x, "ref_y": y})
+
+    result = tip._spatial_coverage(
+        matches,
+        reference_shape=(1000, 1000),
+        overlap_window=(0, 1000, 500, 1000),
+        grid_rows=4,
+        grid_cols=4,
+    )
+
+    assert result["coverage_domain"] == "overlap"
+    assert result["grid_cells_covered"] >= 12
+    assert result["grid_coverage_ratio"] >= 0.75
