@@ -101,3 +101,40 @@ def test_global_only_and_final_warps_use_the_same_original_based_path():
     assert np.array_equal(calls[0]["local_dx"], np.zeros_like(original))
     assert np.array_equal(calls[0]["local_dy"], np.zeros_like(original))
     assert final_warp is global_warp
+
+
+def test_post_warp_registration_reports_residual_to_zero(monkeypatch):
+    matches = [
+        {
+            "shift_dx": 1.0, "shift_dy": 0.0, "confidence": 0.8,
+            "ref_x": 100, "ref_y": 100, "tgt_x": 100, "tgt_y": 100,
+        },
+        {
+            "shift_dx": 3.0, "shift_dy": 4.0, "confidence": 0.9,
+            "ref_x": 200, "ref_y": 200, "tgt_x": 200, "tgt_y": 200,
+        },
+    ]
+
+    def fake_collect(*args, **kwargs):
+        return matches, {"total": 4, "accepted": len(matches)}
+
+    monkeypatch.setattr(
+        "src.coregistration.collect_block_matches", fake_collect)
+    result = tip.evaluate_post_warp_registration(
+        np.ones((512, 512)),
+        None,
+        np.ones((512, 512)),
+        None,
+        0.0,
+        0.0,
+        reference_overlap_window=(0, 512, 0, 512),
+    )
+
+    assert result["available"] is True
+    assert result["metric_scope"] == (
+        "same-data post-warp diagnostic; not independent holdout"
+    )
+    assert result["candidate_blocks"] == 4
+    assert result["accepted_matches"] == 2
+    assert result["residual_to_zero"]["mean_magnitude_pixels"] == 3.0
+    assert result["residual_to_zero"]["max_magnitude_pixels"] == 5.0

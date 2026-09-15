@@ -263,6 +263,75 @@ def apply_registration_warps(
     return global_warp, final_warp
 
 
+def evaluate_post_warp_registration(
+    arr_ref,
+    tr_ref,
+    arr_tgt_warped,
+    tr_tgt,
+    nodata_ref,
+    nodata_tgt,
+    reference_overlap_window=None,
+    block_size=512,
+    max_residual_shift=5.0,
+    confidence_threshold=0.5,
+):
+    """Measure remaining displacement after a warp by rematching blocks.
+
+    The rematched shifts are residual-to-zero measurements.  They are not
+    refit against a second global model and are explicitly same-data
+    diagnostics rather than independent holdout validation.
+    """
+    from src.coregistration import collect_block_matches
+
+    matches, screening = collect_block_matches(
+        arr_ref,
+        tr_ref,
+        arr_tgt_warped,
+        tr_tgt,
+        nodata_ref,
+        nodata_tgt,
+        block_size=block_size,
+        max_global_shift=max_residual_shift,
+        confidence_threshold=confidence_threshold,
+    )
+    matches = list(matches or [])
+    screening = dict(screening or {})
+    candidate_blocks = int(screening.get('total', len(matches)))
+    accepted_matches = len(matches)
+    confidence_values = np.asarray(
+        [m['confidence'] for m in matches], dtype=np.float64)
+    finite_confidence = confidence_values[np.isfinite(confidence_values)]
+    mean_confidence = (
+        float(np.mean(finite_confidence))
+        if finite_confidence.size else None
+    )
+
+    if matches:
+        residual_dx = np.asarray(
+            [m['shift_dx'] for m in matches], dtype=np.float64)
+        residual_dy = np.asarray(
+            [m['shift_dy'] for m in matches], dtype=np.float64)
+    else:
+        residual_dx = np.empty(0, dtype=np.float64)
+        residual_dy = np.empty(0, dtype=np.float64)
+
+    result = {
+        'available': bool(matches),
+        'metric_scope': 'same-data post-warp diagnostic; not independent holdout',
+        'candidate_blocks': candidate_blocks,
+        'accepted_matches': int(accepted_matches),
+        'mean_confidence': mean_confidence,
+        'residual_to_zero': _summarize_residuals(residual_dx, residual_dy),
+        'spatial_coverage': _spatial_coverage(
+            matches, arr_ref.shape, overlap_window=reference_overlap_window),
+        'screening': _json_safe(screening),
+        'matches': _json_safe(matches),
+    }
+    if not matches:
+        result['failure_reason'] = 'no accepted post-warp block matches'
+    return result
+
+
 def build_registration_metrics(
     matches, screening, global_dx, global_dy, phase_confidence,
     reference_shape, reference_transform, block_stats=None,
