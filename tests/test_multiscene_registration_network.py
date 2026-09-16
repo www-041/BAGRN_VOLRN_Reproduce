@@ -1,4 +1,5 @@
 import numpy as np
+import rasterio
 
 
 def make_pair(i, j, dx, dy, confidence=0.9, n_blocks=20, rmse=0.2):
@@ -51,3 +52,47 @@ def test_network_adjustment_supports_nonzero_reference_index():
         atol=1e-8,
     )
     np.testing.assert_allclose(result["global_shifts"][1], [0.0, 0.0])
+
+
+def test_all_geometric_overlap_edges_are_matched_not_only_reference_edges(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=np.full((12, 12), index + 1, dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=None,
+        )
+        for index in range(4)
+    ]
+    overlaps = [
+        {"idx_i": 0, "idx_j": 1},
+        {"idx_i": 1, "idx_j": 2},
+        {"idx_i": 2, "idx_j": 3},
+    ]
+    calls = []
+
+    def fake_collect(arr_i, tr_i, arr_j, tr_j, nd_i, nd_j, **kwargs):
+        calls.append((int(arr_i[0, 0]), int(arr_j[0, 0])))
+        return [
+            {
+                "ref_x": 2.0,
+                "ref_y": 2.0,
+                "shift_dx": 1.0,
+                "shift_dy": 0.0,
+                "confidence": 0.9,
+            }
+        ], {"total": 1}
+
+    monkeypatch.setattr(pipeline, "collect_block_matches", fake_collect)
+
+    measurements, rejected = pipeline.match_all_overlap_edges(scenes, overlaps)
+
+    assert calls == [(1, 2), (2, 3), (3, 4)]
+    assert [(item["idx_i"], item["idx_j"]) for item in measurements] == [
+        (0, 1), (1, 2), (2, 3)
+    ]
+    assert rejected == []

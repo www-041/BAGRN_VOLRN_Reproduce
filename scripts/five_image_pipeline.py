@@ -25,6 +25,7 @@ from src.coregistration import (
     collect_block_matches,
     compute_shifts_from_overlap,
     fit_local_rbf,
+    phase_correlation,
     spatial_cross_validate,
     warp_with_displacement_field,
 )
@@ -214,6 +215,118 @@ def _select_translation_or_rbf(summary: Dict[str, Any]) -> str:
         if (translation - rbf) / translation >= 0.10:
             return "rbf"
     return "translation"
+
+
+def _scene_valid_mask(scene: SceneData) -> np.ndarray:
+    """Build the validity mask used by the existing phase fallback."""
+    valid = np.isfinite(scene.array)
+    if scene.nodata is not None:
+        valid &= scene.array != scene.nodata
+    return valid
+
+
+def _measure_registration_edge(
+    scene_i: SceneData,
+    scene_j: SceneData,
+    overlap: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Measure one geometric overlap edge, or return an explicit rejection."""
+    i = int(overlap["idx_i"])
+    j = int(overlap["idx_j"])
+    matches, screening = collect_block_matches(
+        scene_i.array, scene_i.transform,
+        scene_j.array, scene_j.transform,
+        scene_i.nodata, scene_j.nodata,
+        block_size=512,
+        max_global_shift=40,
+        confidence_threshold=0.5,
+    )
+    screening = dict(screening or {})
+    if matches:
+        confidences = np.asarray(
+            [float(match.get("confidence", 0.0)) for match in matches],
+            dtype=float,
+        )
+        dx_values = np.asarray([float(match["shift_dx"]) for match in matches])
+        dy_values = np.asarray([float(match["shift_dy"]) for match in matches])
+        weights = np.maximum(confidences, 1e-12)
+        shift_dx = float(np.average(dx_values, weights=weights))
+        shift_dy = float(np.average(dy_values, weights=weights))
+        residuals = np.hypot(dx_values - shift_dx, dy_values - shift_dy)
+        return {
+            "idx_i": i,
+            "idx_j": j,
+            "shift_dx": shift_dx,
+            "shift_dy": shift_dy,
+            "confidence": float(np.mean(confidences)),
+            "n_blocks": len(matches),
+            "rmse": float(np.sqrt(np.mean(residuals ** 2))),
+            "p95": float(np.percentile(residuals, 95)),
+            "matches": _json_safe(matches),
+            "screening": _json_safe(screening),
+            "method": "block_match",
+        }, None
+
+    try:
+        shift_y, shift_x, phase_confidence = phase_correlation(
+            scene_i.array,
+            scene_j.array,
+            valid_ref=_scene_valid_mask(scene_i),
+            valid_tgt=_scene_valid_mask(scene_j),
+        )
+    except Exception as exc:
+        shift_y, shift_x, phase_confidence = 0.0, 0.0, 0.0
+        phase_error = str(exc)
+    else:
+        phase_error = None
+
+    if phase_confidence > 0.3 and abs(shift_y) < 40 and abs(shift_x) < 40:
+        return {
+            "idx_i": i,
+            "idx_j": j,
+            "shift_dx": float(shift_x),
+            "shift_dy": float(shift_y),
+            "confidence": float(phase_confidence),
+            "n_blocks": 1,
+            "rmse": 0.0,
+            "p95": 0.0,
+            "matches": [],
+            "screening": _json_safe(screening),
+            "method": "phase_correlation",
+        }, None
+
+    reasons = ["block_match无匹配且phase_correlation失败"]
+    if phase_error:
+        reasons.append(f"phase_error={phase_error}")
+    for key in ("low_valid", "low_texture", "low_conf", "large_shift"):
+        if screening.get(key, 0):
+            reasons.append(f"{key}={screening[key]}")
+    return None, {
+        "idx_i": i,
+        "idx_j": j,
+        "reason": "; ".join(reasons),
+        "screening": _json_safe(screening),
+    }
+
+
+def match_all_overlap_edges(
+    scenes: Sequence[SceneData],
+    overlaps: Sequence[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Match every geometric overlap and keep rejected edges out of the graph."""
+    pair_measurements: List[Dict[str, Any]] = []
+    rejected_edges: List[Dict[str, Any]] = []
+    for overlap in overlaps:
+        i = int(overlap["idx_i"])
+        j = int(overlap["idx_j"])
+        measurement, rejection = _measure_registration_edge(
+            scenes[i], scenes[j], overlap
+        )
+        if measurement is not None:
+            pair_measurements.append(measurement)
+        elif rejection is not None:
+            rejected_edges.append(rejection)
+    return pair_measurements, rejected_edges
 
 
 def _build_local_fields(
