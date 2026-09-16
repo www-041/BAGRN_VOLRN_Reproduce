@@ -175,6 +175,13 @@ def test_reference_paths_report_indirect_registration_route():
     }
 
 
+def test_reference_paths_reject_parent_cycle():
+    from scripts.five_image_pipeline import build_reference_paths
+
+    with pytest.raises(RuntimeError, match="cycle"):
+        build_reference_paths({0: None, 1: 2, 2: 1}, 0, 3)
+
+
 def test_final_warps_are_applied_once_from_original_scene_arrays(monkeypatch):
     from scripts import five_image_pipeline as pipeline
 

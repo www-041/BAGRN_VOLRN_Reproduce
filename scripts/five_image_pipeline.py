@@ -332,7 +332,9 @@ def build_reference_paths(
         seen = set()
         while current is not None:
             if current in seen:
-                raise ValueError(f"registration graph parent cycle at scene {current}")
+                raise RuntimeError(
+                    f"registration graph parent cycle at scene {current}"
+                )
             seen.add(current)
             path.append(current)
             if current == reference_idx:
