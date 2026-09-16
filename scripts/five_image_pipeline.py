@@ -64,6 +64,8 @@ def _json_safe(value: Any) -> Any:
         return [_json_safe(item) for item in value]
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
     if isinstance(value, (np.integer, int)):
         return int(value)
     if isinstance(value, (np.floating, float)):

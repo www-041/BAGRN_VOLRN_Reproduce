@@ -120,11 +120,11 @@ def test_run_pipeline_uses_reference_plus_four_registered_scenes(tmp_path, monke
 
     def fake_bagrn(arrays, nodatas, overlaps, control_idx):
         calls["bagrn"] = (len(arrays), control_idx, len(overlaps))
-        return list(arrays), {"coefficients": "synthetic"}, {"iterations": 1}
+        return list(arrays), {"coefficients": np.array([1.0, 2.0])}, {"iterations": 1}
 
     def fake_volrn(arrays, transforms, bounds, nodatas, **kwargs):
         calls["volrn"] = (len(arrays), len(transforms), len(bounds), len(nodatas))
-        return list(arrays), {"coefficients": "synthetic"}
+        return list(arrays), {"coefficients": np.array([3.0, 4.0])}
 
     def fake_mosaic(arrays, transforms, crs, nodatas, path):
         calls["mosaics"].append((len(arrays), Path(path).name))
