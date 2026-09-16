@@ -1,3 +1,6 @@
+import csv
+import json
+
 import numpy as np
 import rasterio
 
@@ -239,3 +242,87 @@ def test_network_diagnostics_separate_geometric_reliable_rejected_and_radiometri
         "rejected_registration_edges": 2,
         "radiometric_overlap_pairs": 4,
     }
+
+
+def test_registration_network_artifacts_preserve_indirect_paths_and_edge_rows(tmp_path):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=np.zeros((2, 2), dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=None,
+        )
+        for index in range(4)
+    ]
+    overlaps = [
+        {"idx_i": 0, "idx_j": 1, "pixel_count": 10},
+        {"idx_i": 1, "idx_j": 2, "pixel_count": 10},
+        {"idx_i": 2, "idx_j": 3, "pixel_count": 10},
+        {"idx_i": 0, "idx_j": 3, "pixel_count": 10},
+    ]
+    pairs = [
+        make_pair(0, 1, 1.0, 0.0),
+        make_pair(1, 2, 2.0, 0.0),
+        make_pair(2, 3, 3.0, 0.0),
+    ]
+    rejected = [{"idx_i": 0, "idx_j": 3, "reason": "test rejection"}]
+    graph = pipeline.build_registration_graph(pairs, 4, reference_idx=0)
+    network = pipeline.solve_registration_network(pairs, 4, reference_idx=0)
+    paths = pipeline.build_reference_paths(graph["parent"], 0, 4)
+    statuses = {
+        0: "reference_anchor",
+        1: "network_adjusted",
+        2: "network_adjusted",
+        3: "network_adjusted",
+    }
+
+    artifacts = pipeline.write_registration_network_artifacts(
+        tmp_path,
+        scenes,
+        reference_idx=0,
+        overlaps=overlaps,
+        pair_measurements=pairs,
+        rejected_edges=rejected,
+        graph=graph,
+        network_result=network,
+        reference_paths=paths,
+        registration_statuses=statuses,
+    )
+
+    data = json.loads(artifacts["json"].read_text(encoding="utf-8"))
+    assert data["reference_scene_index"] == 0
+    assert data["reference_scene_id"] == "scene_0"
+    assert data["reference_role"] == "anchor_only"
+    assert data["geometric_edges"] == [[0, 1], [1, 2], [2, 3], [0, 3]]
+    assert data["reliable_edges"] == 3
+    assert data["rejected_edges"] == 1
+    assert data["connected"] is True
+    assert data["reference_paths"]["3"] == [0, 1, 2, 3]
+    assert data["reference_paths"]["3"] != [0, 3]
+
+    with artifacts["pairs_csv"].open(newline="", encoding="utf-8") as handle:
+        pair_rows = list(csv.DictReader(handle))
+    assert len(pair_rows) == 4
+    assert set(pair_rows[0]) == {
+        "idx_i", "scene_i", "idx_j", "scene_j", "geometric_overlap",
+        "registration_available", "method", "shift_dx", "shift_dy",
+        "confidence", "n_blocks", "rmse", "p95", "reject_reason",
+    }
+    rejected_row = next(row for row in pair_rows if row["idx_i"] == "0" and row["idx_j"] == "3")
+    assert rejected_row["registration_available"] == "False"
+    assert rejected_row["reject_reason"] == "test rejection"
+
+    with artifacts["scenes_csv"].open(newline="", encoding="utf-8") as handle:
+        scene_rows = list(csv.DictReader(handle))
+    assert len(scene_rows) == 4
+    assert set(scene_rows[0]) == {
+        "scene_index", "scene_id", "is_reference", "reference_path",
+        "global_dx_pixels", "global_dy_pixels", "global_magnitude_pixels",
+        "registration_status",
+    }
+    scene_three = next(row for row in scene_rows if row["scene_index"] == "3")
+    assert scene_three["reference_path"] == "0 -> 1 -> 2 -> 3"

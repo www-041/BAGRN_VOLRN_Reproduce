@@ -68,6 +68,8 @@ def _json_safe(value: Any) -> Any:
         return str(value)
     if isinstance(value, np.ndarray):
         return _json_safe(value.tolist())
+    if isinstance(value, bool):
+        return value
     if isinstance(value, (np.integer, int)):
         return int(value)
     if isinstance(value, (np.floating, float)):
@@ -483,6 +485,134 @@ def summarize_registration_edges(
             else int(radiometric_overlap_count)
         ),
     }
+
+
+def write_registration_network_artifacts(
+    output_dir: Path,
+    scenes: Sequence[SceneData],
+    reference_idx: int,
+    overlaps: Sequence[Dict[str, Any]],
+    pair_measurements: Sequence[Dict[str, Any]],
+    rejected_edges: Sequence[Dict[str, Any]],
+    graph: Dict[str, Any],
+    network_result: Dict[str, Any],
+    reference_paths: Dict[int, Optional[List[int]]],
+    registration_statuses: Dict[int, str],
+) -> Dict[str, Path]:
+    """Write the auditable registration-network JSON and CSV artifacts."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    geometric_edges = [
+        (int(overlap["idx_i"]), int(overlap["idx_j"])) for overlap in overlaps
+    ]
+    pair_by_edge = {
+        (int(pair["idx_i"]), int(pair["idx_j"])): pair
+        for pair in pair_measurements
+    }
+    rejected_by_edge = {
+        (int(item["idx_i"]), int(item["idx_j"])): item
+        for item in rejected_edges
+    }
+    counts = summarize_registration_edges(
+        geometric_edges,
+        pair_measurements,
+        rejected_edges,
+        radiometric_overlap_count=len(overlaps),
+    )
+    shifts = np.asarray(network_result["global_shifts"], dtype=float)
+
+    global_shift_records = []
+    for index, scene in enumerate(scenes):
+        path = reference_paths.get(index)
+        global_dx = float(shifts[index, 0])
+        global_dy = float(shifts[index, 1])
+        global_shift_records.append({
+            "scene_index": index,
+            "scene_id": scene.name,
+            "is_reference": index == reference_idx,
+            "reference_path": path,
+            "global_dx_pixels": global_dx,
+            "global_dy_pixels": global_dy,
+            "global_magnitude_pixels": float(np.hypot(global_dx, global_dy)),
+            "registration_status": registration_statuses.get(index, "unknown"),
+        })
+
+    network_payload = {
+        "reference_scene_index": int(reference_idx),
+        "reference_scene_id": scenes[reference_idx].name,
+        "reference_role": "anchor_only",
+        "geometric_edges": [list(edge) for edge in geometric_edges],
+        "geometric_overlap_count": counts["geometric_overlap_pairs"],
+        "reliable_edges": counts["reliable_registration_edges"],
+        "rejected_edges": counts["rejected_registration_edges"],
+        "radiometric_overlap_pairs": counts["radiometric_overlap_pairs"],
+        "connected": not bool(graph["unreachable"]),
+        "unreachable": list(graph["unreachable"]),
+        "spanning_tree_edges": [list(edge) for edge in graph["spanning_tree_edges"]],
+        "reference_paths": {
+            str(index): path for index, path in reference_paths.items()
+        },
+        "global_shifts": global_shift_records,
+        "network_adjustment": {
+            "n_edges": int(network_result.get("n_edges", len(pair_measurements))),
+            "is_tree": bool(network_result.get("is_tree", False)),
+            "loop_errors": _json_safe(network_result.get("loop_errors", [])),
+            "pair_results": _json_safe(network_result.get("pair_results", [])),
+        },
+        "rejected_edge_records": _json_safe(list(rejected_edges)),
+    }
+    json_path = output_dir / "registration_network.json"
+    json_path.write_text(
+        json.dumps(_json_safe(network_payload), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    pair_fields = [
+        "idx_i", "scene_i", "idx_j", "scene_j", "geometric_overlap",
+        "registration_available", "method", "shift_dx", "shift_dy",
+        "confidence", "n_blocks", "rmse", "p95", "reject_reason",
+    ]
+    pairs_csv = output_dir / "registration_pair_edges.csv"
+    with pairs_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=pair_fields)
+        writer.writeheader()
+        for i, j in geometric_edges:
+            pair = pair_by_edge.get((i, j))
+            rejection = rejected_by_edge.get((i, j))
+            writer.writerow({
+                "idx_i": i,
+                "scene_i": scenes[i].name,
+                "idx_j": j,
+                "scene_j": scenes[j].name,
+                "geometric_overlap": True,
+                "registration_available": pair is not None,
+                "method": pair.get("method") if pair else "rejected",
+                "shift_dx": pair.get("shift_dx") if pair else None,
+                "shift_dy": pair.get("shift_dy") if pair else None,
+                "confidence": pair.get("confidence") if pair else None,
+                "n_blocks": pair.get("n_blocks") if pair else None,
+                "rmse": pair.get("rmse") if pair else None,
+                "p95": pair.get("p95") if pair else None,
+                "reject_reason": rejection.get("reason") if rejection else None,
+            })
+
+    scene_fields = [
+        "scene_index", "scene_id", "is_reference", "reference_path",
+        "global_dx_pixels", "global_dy_pixels", "global_magnitude_pixels",
+        "registration_status",
+    ]
+    scenes_csv = output_dir / "registration_scene_shifts.csv"
+    with scenes_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=scene_fields)
+        writer.writeheader()
+        for record in global_shift_records:
+            path = record["reference_path"]
+            writer.writerow({
+                **record,
+                "reference_path": " -> ".join(map(str, path)) if path else "",
+            })
+
+    return {"json": json_path, "pairs_csv": pairs_csv, "scenes_csv": scenes_csv}
 
 
 def _build_local_fields(
