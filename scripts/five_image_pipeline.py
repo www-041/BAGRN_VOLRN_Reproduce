@@ -45,6 +45,11 @@ DEFAULT_REFERENCE_SCENE = (
     "DZ01V_L2_E113.4_N36.6_20260810030932_01_T1"
 )
 EXPECTED_SCENE_COUNT = 5
+STRICT_BLOCK_CONFIDENCE_THRESHOLD = 0.50
+STRICT_FALLBACK_CONFIDENCE_THRESHOLD = 0.30
+PREVIEW_BLOCK_CONFIDENCE_THRESHOLD = 0.30
+PREVIEW_FALLBACK_CONFIDENCE_THRESHOLD = 0.20
+LOCAL_RBF_CONTROL_CONFIDENCE_THRESHOLD = 0.75
 MAX_GLOBAL_SHIFT = 40
 
 
@@ -58,6 +63,48 @@ class SceneData:
     transform: Any
     crs: str
     nodata: Optional[float]
+
+
+def _registration_thresholds(registration_mode: str) -> Dict[str, Any]:
+    """Return the explicit confidence contract for strict or preview mode."""
+    if registration_mode == "strict":
+        return {
+            "block_confidence": STRICT_BLOCK_CONFIDENCE_THRESHOLD,
+            "fallback_confidence": STRICT_FALLBACK_CONFIDENCE_THRESHOLD,
+            "local_rbf_control_confidence": LOCAL_RBF_CONTROL_CONFIDENCE_THRESHOLD,
+            "max_global_shift": MAX_GLOBAL_SHIFT,
+        }
+    if registration_mode == "preview":
+        return {
+            "block_confidence": PREVIEW_BLOCK_CONFIDENCE_THRESHOLD,
+            "fallback_confidence": PREVIEW_FALLBACK_CONFIDENCE_THRESHOLD,
+            "local_rbf_control_confidence": LOCAL_RBF_CONTROL_CONFIDENCE_THRESHOLD,
+            "max_global_shift": MAX_GLOBAL_SHIFT,
+        }
+    raise ValueError(
+        f"registration_mode must be 'strict' or 'preview', got {registration_mode!r}"
+    )
+
+
+def _edge_confidence_fields(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Read confidence evidence from accepted or rejected edge records."""
+    confidence = record.get("confidence", record.get("fallback_confidence"))
+    threshold = record.get(
+        "confidence_threshold",
+        record.get("fallback_confidence_threshold"),
+    )
+    margin = record.get("confidence_margin")
+    if margin is None and confidence is not None and threshold is not None:
+        margin = float(confidence) - float(threshold)
+    source = record.get("confidence_source")
+    if source is None and record.get("fallback_confidence") is not None:
+        source = "whole_overlap"
+    return {
+        "confidence": confidence,
+        "confidence_threshold": threshold,
+        "confidence_margin": margin,
+        "confidence_source": source,
+    }
 
 
 def _json_safe(value: Any) -> Any:
@@ -266,8 +313,16 @@ def _measure_registration_edge(
     scene_i: SceneData,
     scene_j: SceneData,
     overlap: Dict[str, Any],
+    block_confidence_threshold: Optional[float] = None,
+    fallback_confidence_threshold: Optional[float] = None,
+    registration_mode: str = "strict",
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """Measure one geometric overlap edge, or return an explicit rejection."""
+    mode_thresholds = _registration_thresholds(registration_mode)
+    if block_confidence_threshold is None:
+        block_confidence_threshold = mode_thresholds["block_confidence"]
+    if fallback_confidence_threshold is None:
+        fallback_confidence_threshold = mode_thresholds["fallback_confidence"]
     i = int(overlap["idx_i"])
     j = int(overlap["idx_j"])
     matches, screening = collect_block_matches(
@@ -276,7 +331,7 @@ def _measure_registration_edge(
         scene_i.nodata, scene_j.nodata,
         block_size=512,
         max_global_shift=MAX_GLOBAL_SHIFT,
-        confidence_threshold=0.5,
+        confidence_threshold=block_confidence_threshold,
     )
     screening = dict(screening or {})
     if len(matches) >= 3:
@@ -287,7 +342,14 @@ def _measure_registration_edge(
             "shift_dx": estimate["shift_dx"],
             "shift_dy": estimate["shift_dy"],
             "confidence": estimate["confidence"],
+            "confidence_threshold": float(block_confidence_threshold),
+            "confidence_margin": float(
+                estimate["confidence"] - block_confidence_threshold
+            ),
+            "confidence_source": "block_match",
+            "registration_mode": registration_mode,
             "n_blocks": len(matches),
+            "supporting_block_count": len(matches),
             "inlier_count": estimate["inlier_count"],
             "rmse": estimate["rmse"],
             "p95": estimate["p95"],
@@ -296,6 +358,7 @@ def _measure_registration_edge(
             "method": "block_match",
         }, None
 
+    fallback_computed = False
     try:
         shift_y, shift_x, overlap_confidence, translation_stats = compute_shifts_from_overlap(
             scene_i.array,
@@ -305,7 +368,9 @@ def _measure_registration_edge(
             scene_i.nodata,
             scene_j.nodata,
             max_global_shift=MAX_GLOBAL_SHIFT,
+            fallback_confidence_threshold=fallback_confidence_threshold,
         )
+        fallback_computed = True
     except Exception as exc:
         shift_y, shift_x, overlap_confidence = 0.0, 0.0, 0.0
         translation_stats = {
@@ -314,6 +379,13 @@ def _measure_registration_edge(
         }
 
     translation_stats = dict(translation_stats or {})
+    if fallback_computed and "available" in translation_stats:
+        translation_stats.setdefault("fallback_confidence", float(overlap_confidence))
+        translation_stats.setdefault("fallback_confidence_threshold", float(
+            fallback_confidence_threshold
+        ))
+        translation_stats.setdefault("fallback_shift_dx", float(shift_x))
+        translation_stats.setdefault("fallback_shift_dy", float(shift_y))
     fallback_available = bool(translation_stats.get("available", False))
     fallback_within_limit = (
         abs(float(shift_x)) < MAX_GLOBAL_SHIFT
@@ -326,6 +398,12 @@ def _measure_registration_edge(
             "shift_dx": float(shift_x),
             "shift_dy": float(shift_y),
             "confidence": float(overlap_confidence),
+            "confidence_threshold": float(fallback_confidence_threshold),
+            "confidence_margin": float(
+                overlap_confidence - fallback_confidence_threshold
+            ),
+            "confidence_source": "whole_overlap",
+            "registration_mode": registration_mode,
             "n_blocks": 1,
             "supporting_block_count": len(matches),
             "inlier_count": 0,
@@ -348,9 +426,17 @@ def _measure_registration_edge(
             ),
             "screening": _json_safe(screening),
             "translation_stats": _json_safe(translation_stats),
+            "method": "overlap_translation_fallback",
             "fallback_shift_dx": float(shift_x),
             "fallback_shift_dy": float(shift_y),
             "fallback_confidence": float(overlap_confidence),
+            "confidence": float(overlap_confidence),
+            "confidence_threshold": float(fallback_confidence_threshold),
+            "confidence_margin": float(
+                overlap_confidence - fallback_confidence_threshold
+            ),
+            "confidence_source": "whole_overlap",
+            "registration_mode": registration_mode,
         }
 
     failure_reason = translation_stats.get("failure_reason", "unavailable")
@@ -361,27 +447,57 @@ def _measure_registration_edge(
     for key in ("low_valid", "low_texture", "low_conf", "large_shift"):
         if screening.get(key, 0):
             reasons.append(f"{key}={screening[key]}")
-    return None, {
+    rejection = {
         "idx_i": i,
         "idx_j": j,
         "reason": "; ".join(reasons),
+        "registration_mode": registration_mode,
         "screening": _json_safe(screening),
         "translation_stats": _json_safe(translation_stats),
     }
+    if "fallback_confidence" in translation_stats:
+        rejection.update({
+            "method": "overlap_translation_fallback",
+            "fallback_shift_dx": translation_stats.get("fallback_shift_dx"),
+            "fallback_shift_dy": translation_stats.get("fallback_shift_dy"),
+            "fallback_confidence": translation_stats.get("fallback_confidence"),
+            "confidence": translation_stats.get("fallback_confidence"),
+            "confidence_threshold": float(fallback_confidence_threshold),
+            "confidence_margin": float(
+                translation_stats["fallback_confidence"]
+                - fallback_confidence_threshold
+            ),
+            "confidence_source": "whole_overlap",
+            "registration_mode": registration_mode,
+        })
+    return None, rejection
 
 
 def match_all_overlap_edges(
     scenes: Sequence[SceneData],
     overlaps: Sequence[Dict[str, Any]],
+    block_confidence_threshold: Optional[float] = None,
+    fallback_confidence_threshold: Optional[float] = None,
+    registration_mode: str = "strict",
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Match every geometric overlap and keep rejected edges out of the graph."""
+    mode_thresholds = _registration_thresholds(registration_mode)
+    if block_confidence_threshold is None:
+        block_confidence_threshold = mode_thresholds["block_confidence"]
+    if fallback_confidence_threshold is None:
+        fallback_confidence_threshold = mode_thresholds["fallback_confidence"]
     pair_measurements: List[Dict[str, Any]] = []
     rejected_edges: List[Dict[str, Any]] = []
     for overlap in overlaps:
         i = int(overlap["idx_i"])
         j = int(overlap["idx_j"])
         measurement, rejection = _measure_registration_edge(
-            scenes[i], scenes[j], overlap
+            scenes[i],
+            scenes[j],
+            overlap,
+            block_confidence_threshold=block_confidence_threshold,
+            fallback_confidence_threshold=fallback_confidence_threshold,
+            registration_mode=registration_mode,
         )
         if measurement is not None:
             pair_measurements.append(measurement)
@@ -438,6 +554,21 @@ def build_registration_graph(
     }
 
 
+def _format_edge_confidence(record: Dict[str, Any]) -> str:
+    """Format confidence evidence without inventing unavailable values."""
+    fields = _edge_confidence_fields(record)
+    if fields["confidence"] is None:
+        return "confidence=unavailable"
+    text = f"confidence={float(fields['confidence']):.3f}"
+    if fields["confidence_threshold"] is not None:
+        text += f" threshold={float(fields['confidence_threshold']):.3f}"
+    if fields["confidence_margin"] is not None:
+        text += f" margin={float(fields['confidence_margin']):+.3f}"
+    if fields["confidence_source"] is not None:
+        text += f" source={fields['confidence_source']}"
+    return text
+
+
 def print_registration_graph_diagnostics(
     scenes: Sequence[SceneData],
     overlaps: Sequence[Dict[str, Any]],
@@ -473,16 +604,18 @@ def print_registration_graph_diagnostics(
                 )
             else:
                 count_text = f"blocks={pair.get('n_blocks', 0)}"
+            confidence_text = _format_edge_confidence(pair)
             print(
                 f"[{i}]-[{j}] ACCEPTED method={pair.get('method', 'unknown')} "
                 f"dx={float(pair.get('shift_dx', 0.0)):.4f} "
                 f"dy={float(pair.get('shift_dy', 0.0)):.4f} "
-                f"confidence={float(pair.get('confidence', 0.0)):.3f} "
+                f"{confidence_text} "
                 f"{count_text}"
             )
         else:
             reason = rejection.get("reason", "unavailable") if rejection else "unavailable"
-            print(f"[{i}]-[{j}] REJECTED reason={reason}")
+            confidence_text = _format_edge_confidence(rejection or {})
+            print(f"[{i}]-[{j}] REJECTED {confidence_text} reason={reason}")
             if rejection is not None:
                 for key in (
                     "fallback_shift_dx",
@@ -512,6 +645,7 @@ def write_disconnected_registration_diagnostics(
     rejected_edges: Sequence[Dict[str, Any]],
     graph: Dict[str, Any],
     reference_idx: int,
+    registration_mode: str = "strict",
 ) -> Path:
     """Write the exact edge records that caused a disconnected graph."""
     output_dir = Path(output_dir)
@@ -521,6 +655,8 @@ def write_disconnected_registration_diagnostics(
     payload = {
         "reference_scene_index": int(reference_idx),
         "reference_scene_id": scenes[reference_idx].name,
+        "registration_mode": registration_mode,
+        "thresholds": _registration_thresholds(registration_mode),
         "connected": not unreachable,
         "geometric_edges": [
             [int(overlap["idx_i"]), int(overlap["idx_j"])]
@@ -563,6 +699,62 @@ def solve_registration_network(
     return result
 
 
+def solve_reference_component_network(
+    pair_measurements: Sequence[Dict[str, Any]],
+    n_images: int,
+    reference_idx: int,
+    reachable_indices: Sequence[int],
+) -> Dict[str, Any]:
+    """Solve only the reference-connected component and map shifts to all scenes."""
+    reachable = sorted({int(index) for index in reachable_indices})
+    if reference_idx not in reachable:
+        raise ValueError("reference_idx must be included in reachable_indices")
+    compact_index = {original: compact for compact, original in enumerate(reachable)}
+    compact_pairs = []
+    for pair in pair_measurements:
+        i = int(pair["idx_i"])
+        j = int(pair["idx_j"])
+        if i not in compact_index or j not in compact_index:
+            continue
+        compact_pair = dict(pair)
+        compact_pair["idx_i"] = compact_index[i]
+        compact_pair["idx_j"] = compact_index[j]
+        compact_pairs.append(compact_pair)
+
+    compact_result = multi_image_network_adjustment(
+        compact_pairs,
+        len(reachable),
+        reference_idx=compact_index[reference_idx],
+    )
+    global_shifts = np.zeros((n_images, 2), dtype=float)
+    compact_shifts = np.asarray(compact_result["global_shifts"], dtype=float)
+    for original, compact in compact_index.items():
+        global_shifts[original] = compact_shifts[compact]
+
+    pair_results = []
+    for row in compact_result.get("pair_results", []):
+        mapped = dict(row)
+        mapped["idx_i"] = reachable[int(row["idx_i"])]
+        mapped["idx_j"] = reachable[int(row["idx_j"])]
+        pair_results.append(mapped)
+    loop_errors = []
+    for loop in compact_result.get("loop_errors", []):
+        mapped = dict(loop)
+        if "nodes" in loop:
+            mapped["nodes"] = [reachable[int(node)] for node in loop["nodes"]]
+        loop_errors.append(mapped)
+
+    return {
+        **compact_result,
+        "global_shifts": global_shifts,
+        "pair_results": pair_results,
+        "loop_errors": loop_errors,
+        "component_indices": reachable,
+        "n_edges": len(compact_pairs),
+        "is_tree": len(compact_pairs) == len(reachable) - 1,
+    }
+
+
 def build_reference_paths(
     parent: Dict[int, Optional[int]],
     reference_idx: int,
@@ -599,6 +791,7 @@ def apply_network_shifts_from_original(
     global_shifts: np.ndarray,
     reference_idx: int,
     local_fields: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None,
+    georef_only_indices: Optional[Iterable[int]] = None,
 ) -> Tuple[List[SceneData], Dict[int, str]]:
     """Warp each original scene once using global and optional local displacement."""
     shifts = np.asarray(global_shifts, dtype=float)
@@ -609,6 +802,7 @@ def apply_network_shifts_from_original(
 
     registered: List[SceneData] = []
     statuses: Dict[int, str] = {}
+    georef_only = {int(index) for index in (georef_only_indices or [])}
     for index, scene in enumerate(scenes):
         global_dx = float(shifts[index, 0])
         global_dy = float(shifts[index, 1])
@@ -626,7 +820,10 @@ def apply_network_shifts_from_original(
             np.any(np.abs(local_dx) > 1e-12)
             or np.any(np.abs(local_dy) > 1e-12)
         )
-        if index == reference_idx:
+        if index in georef_only:
+            array = scene.array.astype(np.float64, copy=True)
+            statuses[index] = "georef_only_unverified"
+        elif index == reference_idx:
             array = scene.array.astype(np.float64, copy=True)
             statuses[index] = "reference_anchor"
         elif (
@@ -705,6 +902,12 @@ def build_network_local_corrections(
         }
         local_details[index] = detail
 
+        if index not in graph.get("reachable", parent_map):
+            detail["model_used"] = "georef_only"
+            detail["local_model"] = "georef_only"
+            detail["reason"] = "not connected to reference registration network"
+            continue
+
         if index == reference_idx or parent is None:
             continue
 
@@ -721,7 +924,7 @@ def build_network_local_corrections(
             parent,
             pair_measurements,
             shifts,
-            confidence_threshold=0.75,
+            confidence_threshold=LOCAL_RBF_CONTROL_CONFIDENCE_THRESHOLD,
         )
         n_controls = int(controls.get("n_valid", 0))
         detail["control_points"] = n_controls
@@ -822,12 +1025,23 @@ def run_registration_stage(
     overlaps: Sequence[Dict[str, Any]],
     reference_idx: int,
     diagnostic_output_dir: Optional[Path] = None,
+    registration_mode: str = "strict",
 ) -> Dict[str, Any]:
     """Run formal content registration before normalization or mosaicking."""
+    thresholds = _registration_thresholds(registration_mode)
     if not overlaps and len(scenes) > 1:
         raise RuntimeError("No geometric overlap pairs were found for registration")
 
-    pair_measurements, rejected_edges = match_all_overlap_edges(scenes, overlaps)
+    if registration_mode == "strict":
+        pair_measurements, rejected_edges = match_all_overlap_edges(scenes, overlaps)
+    else:
+        pair_measurements, rejected_edges = match_all_overlap_edges(
+            scenes,
+            overlaps,
+            block_confidence_threshold=thresholds["block_confidence"],
+            fallback_confidence_threshold=thresholds["fallback_confidence"],
+            registration_mode=registration_mode,
+        )
     graph = build_registration_graph(pair_measurements, len(scenes), reference_idx)
     print_registration_graph_diagnostics(
         scenes,
@@ -847,16 +1061,34 @@ def run_registration_stage(
                 rejected_edges,
                 graph,
                 reference_idx,
+                registration_mode,
             )
         unreachable_names = [scenes[index].name for index in graph["unreachable"]]
-        raise RuntimeError(
-            "Reliable registration graph is disconnected from reference: "
-            + ", ".join(unreachable_names)
+        if registration_mode == "strict":
+            raise RuntimeError(
+                "Reliable registration graph is disconnected from reference: "
+                + ", ".join(unreachable_names)
+            )
+        print("PREVIEW WARNING:")
+        print(
+            f"{len(graph['unreachable'])} scene(s) are not connected by reliable "
+            "content-registration edges."
         )
+        print("They will use GeoTIFF placement only.")
+        for index in graph["unreachable"]:
+            print(f"[{index}] {scenes[index].name} GEOREF_ONLY_UNVERIFIED")
 
-    network_result = solve_registration_network(
-        pair_measurements, len(scenes), reference_idx
-    )
+    if registration_mode == "strict":
+        network_result = solve_registration_network(
+            pair_measurements, len(scenes), reference_idx
+        )
+    else:
+        network_result = solve_reference_component_network(
+            pair_measurements,
+            len(scenes),
+            reference_idx,
+            graph["reachable"],
+        )
     global_shifts = network_result["global_shifts"]
     if not np.allclose(global_shifts[reference_idx], [0.0, 0.0], atol=1e-8):
         raise RuntimeError("Network adjustment violated reference anchor")
@@ -871,7 +1103,11 @@ def run_registration_stage(
         reference_idx,
     )
     registered, registration_statuses = apply_network_shifts_from_original(
-        scenes, global_shifts, reference_idx, local_fields=local_fields
+        scenes,
+        global_shifts,
+        reference_idx,
+        local_fields=local_fields,
+        georef_only_indices=graph["unreachable"] if registration_mode == "preview" else None,
     )
 
     geometric_edges = [
@@ -906,6 +1142,8 @@ def run_registration_stage(
         "local_fields": local_fields,
         "local_details": local_details,
         "geometric_edges": geometric_edges,
+        "registration_mode": registration_mode,
+        "thresholds": thresholds,
     }
 
 
@@ -921,10 +1159,12 @@ def write_registration_network_artifacts(
     reference_paths: Dict[int, Optional[List[int]]],
     registration_statuses: Dict[int, str],
     local_corrections: Optional[Dict[int, Dict[str, Any]]] = None,
+    registration_mode: str = "strict",
 ) -> Dict[str, Path]:
     """Write the auditable registration-network JSON and CSV artifacts."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    thresholds = _registration_thresholds(registration_mode)
     geometric_edges = [
         (int(overlap["idx_i"]), int(overlap["idx_j"])) for overlap in overlaps
     ]
@@ -974,6 +1214,8 @@ def write_registration_network_artifacts(
         "reference_scene_index": int(reference_idx),
         "reference_scene_id": scenes[reference_idx].name,
         "reference_role": "anchor_only",
+        "registration_mode": registration_mode,
+        "thresholds": thresholds,
         "geometric_edges": [list(edge) for edge in geometric_edges],
         "geometric_overlap_count": counts["geometric_overlap_pairs"],
         "reliable_edges": [
@@ -1013,8 +1255,10 @@ def write_registration_network_artifacts(
 
     pair_fields = [
         "idx_i", "scene_i", "idx_j", "scene_j", "geometric_overlap",
-        "registration_available", "method", "shift_dx", "shift_dy",
-        "confidence", "n_blocks", "rmse", "p95", "reject_reason",
+        "registration_available", "method", "registration_mode", "shift_dx",
+        "shift_dy", "confidence", "confidence_threshold", "confidence_margin",
+        "confidence_source", "supporting_block_count", "n_blocks", "rmse",
+        "p95", "reject_reason",
     ]
     pairs_csv = output_dir / "registration_pair_edges.csv"
     with pairs_csv.open("w", newline="", encoding="utf-8") as handle:
@@ -1023,6 +1267,7 @@ def write_registration_network_artifacts(
         for i, j in geometric_edges:
             pair = pair_by_edge.get((i, j))
             rejection = rejected_by_edge.get((i, j))
+            confidence_fields = _edge_confidence_fields(pair or rejection or {})
             writer.writerow({
                 "idx_i": i,
                 "scene_i": scenes[i].name,
@@ -1030,13 +1275,54 @@ def write_registration_network_artifacts(
                 "scene_j": scenes[j].name,
                 "geometric_overlap": True,
                 "registration_available": pair is not None,
-                "method": pair.get("method") if pair else "rejected",
-                "shift_dx": pair.get("shift_dx") if pair else None,
-                "shift_dy": pair.get("shift_dy") if pair else None,
-                "confidence": pair.get("confidence") if pair else None,
-                "n_blocks": pair.get("n_blocks") if pair else None,
-                "rmse": pair.get("rmse") if pair else None,
-                "p95": pair.get("p95") if pair else None,
+                "method": (
+                    pair.get("method")
+                    if pair
+                    else rejection.get("method", "rejected") if rejection else "rejected"
+                ),
+                "registration_mode": (
+                    pair.get("registration_mode", registration_mode)
+                    if pair
+                    else rejection.get("registration_mode", registration_mode)
+                    if rejection
+                    else registration_mode
+                ),
+                "shift_dx": (
+                    pair.get("shift_dx")
+                    if pair
+                    else rejection.get("fallback_shift_dx") if rejection else None
+                ),
+                "shift_dy": (
+                    pair.get("shift_dy")
+                    if pair
+                    else rejection.get("fallback_shift_dy") if rejection else None
+                ),
+                "confidence": (
+                    confidence_fields["confidence"]
+                ),
+                "confidence_threshold": (
+                    confidence_fields["confidence_threshold"]
+                ),
+                "confidence_margin": (
+                    confidence_fields["confidence_margin"]
+                ),
+                "confidence_source": (
+                    confidence_fields["confidence_source"]
+                ),
+                "supporting_block_count": (
+                    pair.get("supporting_block_count")
+                    if pair
+                    else rejection.get("supporting_block_count") if rejection else None
+                ),
+                "n_blocks": pair.get("n_blocks") if pair else (
+                    rejection.get("n_blocks") if rejection else None
+                ),
+                "rmse": pair.get("rmse") if pair else (
+                    rejection.get("rmse") if rejection else None
+                ),
+                "p95": pair.get("p95") if pair else (
+                    rejection.get("p95") if rejection else None
+                ),
                 "reject_reason": rejection.get("reason") if rejection else None,
             })
 
@@ -1156,8 +1442,10 @@ def run_pipeline(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     band: str = DEFAULT_BAND,
     reference_scene: Optional[str] = None,
+    registration_mode: str = "strict",
 ) -> Dict[str, Any]:
     """Run the reference-anchored network registration and mosaic workflow."""
+    thresholds = _registration_thresholds(registration_mode)
     if len(scene_paths) != EXPECTED_SCENE_COUNT:
         raise ValueError(f"expected {EXPECTED_SCENE_COUNT} scene paths, got {len(scene_paths)}")
 
@@ -1189,6 +1477,24 @@ def run_pipeline(
 
     print(f"Reference scene: {reference.name}")
     print(f"Scenes: {len(loaded)}")
+    print(f"Registration mode: {registration_mode.upper()}")
+    print(
+        f"Block confidence threshold: {thresholds['block_confidence']:.2f}"
+    )
+    print(
+        f"Fallback confidence threshold: {thresholds['fallback_confidence']:.2f}"
+    )
+    print(
+        "Local RBF control threshold: "
+        f"{thresholds['local_rbf_control_confidence']:.2f}"
+    )
+    print(f"Max global shift: {thresholds['max_global_shift']}")
+    if registration_mode == "preview":
+        print("PREVIEW BASELINE MODE:")
+        print("lower registration confidence thresholds are enabled.")
+        print(
+            "Results must not be reported as strict registration accuracy."
+        )
     original_bounds = [
         _compute_bounds(scene.transform, scene.array.shape) for scene in loaded
     ]
@@ -1201,6 +1507,7 @@ def run_pipeline(
         overlaps,
         reference_idx,
         diagnostic_output_dir=output_band_dir,
+        registration_mode=registration_mode,
     )
     registered = registration["registered"]
     pair_measurements = registration["pair_measurements"]
@@ -1222,6 +1529,7 @@ def run_pipeline(
         reference_paths,
         registration_statuses,
         local_details,
+        registration_mode,
     )
 
     pair_by_edge = {
@@ -1307,6 +1615,7 @@ def run_pipeline(
 
     result = {
         "band": band,
+        "registration_mode": registration_mode,
         "scene_count": len(registered),
         "reference_scene": reference.name,
         "reference_scene_index": reference_idx,
@@ -1316,6 +1625,8 @@ def run_pipeline(
         "registration": _json_safe(pair_measurements),
         "registration_rejected": _json_safe(rejected_edges),
         "registration_network": _json_safe({
+            "registration_mode": registration_mode,
+            "thresholds": thresholds,
             "geometric_edges": registration["geometric_edges"],
             "reliable_edges": [
                 [int(pair["idx_i"]), int(pair["idx_j"])]
@@ -1353,6 +1664,16 @@ def run_pipeline(
             "volrn_mosaic": str(mosaic_paths["volrn"]),
         },
     }
+    if registration_mode == "preview":
+        result["preview_warning"] = (
+            "Some registration thresholds were relaxed and/or some scenes may use "
+            "GeoTIFF-only placement. Do not interpret this run as strict "
+            "content-registration accuracy."
+        )
+    result["scene_registration_status"] = {
+        scene.name: registration_statuses.get(index, "unknown")
+        for index, scene in enumerate(registered)
+    }
     summary_path = output_band_dir / "five_image_summary.json"
     summary_path.write_text(
         json.dumps(_json_safe(result), indent=2, ensure_ascii=False),
@@ -1371,9 +1692,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--band", default=DEFAULT_BAND)
     parser.add_argument("--reference-scene", default=DEFAULT_REFERENCE_SCENE)
+    parser.add_argument(
+        "--registration-mode",
+        choices=["strict", "preview"],
+        default="strict",
+    )
     args = parser.parse_args(argv)
     paths = discover_scene_paths(args.input_dir, args.band, args.reference_scene)
-    run_pipeline(paths, args.output_dir, args.band, args.reference_scene)
+    run_pipeline(
+        paths,
+        args.output_dir,
+        args.band,
+        args.reference_scene,
+        registration_mode=args.registration_mode,
+    )
     return 0
 
 

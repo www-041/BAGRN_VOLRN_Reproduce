@@ -160,3 +160,24 @@ def test_run_pipeline_uses_reference_plus_four_registered_scenes(tmp_path, monke
     registration_dir = tmp_path / "output" / "B14" / "registration"
     assert len(list(registration_dir.glob("*_matches.csv"))) == 4
     assert len(list(registration_dir.glob("*_metrics.json"))) == 4
+
+
+def test_main_passes_explicit_preview_registration_mode(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    paths = [Path(f"scene_{index}.TIF") for index in range(5)]
+    received = {}
+    monkeypatch.setattr(
+        pipeline,
+        "discover_scene_paths",
+        lambda *args, **kwargs: paths,
+    )
+
+    def fake_run_pipeline(*args, **kwargs):
+        received["registration_mode"] = kwargs["registration_mode"]
+        return {}
+
+    monkeypatch.setattr(pipeline, "run_pipeline", fake_run_pipeline)
+
+    assert pipeline.main(["--registration-mode", "preview"]) == 0
+    assert received["registration_mode"] == "preview"

@@ -7,6 +7,7 @@ Task 10 of reliability-fixes plan:
 """
 
 import numpy as np
+import pytest
 import rasterio
 import src.coregistration as coregistration
 from rasterio.transform import from_origin
@@ -108,6 +109,52 @@ def test_multi_resolution_common_grid():
     # Fix: reproject both to common grid before phase correlation
     # For now, test that the function exists and handles this case
     assert ref_arr.shape != tgt_arr.shape, "Test setup: different shapes"
+
+
+def test_overlap_fallback_uses_configured_threshold_and_preserves_raw_confidence(
+    monkeypatch,
+):
+    rng = np.random.default_rng(20260916)
+    ref = rng.normal(size=(20, 20)).astype(np.float64)
+    tgt = ref.copy()
+    transform = from_origin(0, 20, 1.0, 1.0)
+
+    monkeypatch.setattr(
+        coregistration,
+        "phase_correlation",
+        lambda *args, **kwargs: (-1.5, 2.0, 0.247),
+    )
+
+    _, _, confidence, accepted_stats = coregistration.compute_shifts_from_overlap(
+        ref,
+        transform,
+        tgt,
+        transform,
+        nodata_ref=None,
+        nodata_tgt=None,
+        fallback_confidence_threshold=0.20,
+    )
+    assert confidence == pytest.approx(0.247)
+    assert accepted_stats["available"] is True
+    assert accepted_stats["fallback_confidence"] == pytest.approx(0.247)
+    assert accepted_stats["fallback_confidence_threshold"] == pytest.approx(0.20)
+    assert accepted_stats["fallback_shift_dx"] == pytest.approx(2.0)
+    assert accepted_stats["fallback_shift_dy"] == pytest.approx(-1.5)
+
+    _, _, _, rejected_stats = coregistration.compute_shifts_from_overlap(
+        ref,
+        transform,
+        tgt,
+        transform,
+        nodata_ref=None,
+        nodata_tgt=None,
+        fallback_confidence_threshold=0.30,
+    )
+    assert rejected_stats["available"] is False
+    assert rejected_stats["fallback_confidence"] == pytest.approx(0.247)
+    assert rejected_stats["fallback_confidence_threshold"] == pytest.approx(0.30)
+    assert rejected_stats["fallback_shift_dx"] == pytest.approx(2.0)
+    assert rejected_stats["fallback_shift_dy"] == pytest.approx(-1.5)
 
 
 def test_spatial_cross_validate_passes_requested_rbf_smoothing(monkeypatch):

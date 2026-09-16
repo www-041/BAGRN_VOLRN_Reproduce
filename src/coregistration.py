@@ -116,7 +116,8 @@ def phase_correlation(img_ref, img_target, valid_ref=None, valid_tgt=None):
 
 def compute_shifts_from_overlap(arr_ref, tr_ref, arr_tgt, tr_tgt,
                                  nodata_ref=0, nodata_tgt=0,
-                                 max_global_shift=40):
+                                 max_global_shift=40,
+                                 fallback_confidence_threshold=0.30):
     """Compute subpixel shift from overlap area between two images.
 
     Uses block-based phase correlation on structural (gradient) images.
@@ -126,6 +127,9 @@ def compute_shifts_from_overlap(arr_ref, tr_ref, arr_tgt, tr_tgt,
     arr_ref, arr_tgt : 2D ndarray
     tr_ref, tr_tgt : Affine transform
     nodata_ref, nodata_tgt : float, separate NoData for each image
+    fallback_confidence_threshold : float
+        Minimum confidence for the whole-overlap fallback. The default keeps
+        the historical strict behavior.
 
     Returns
     -------
@@ -255,14 +259,21 @@ def compute_shifts_from_overlap(arr_ref, tr_ref, arr_tgt, tr_tgt,
         scr = {'total': n_total, 'low_valid': n_low_valid,
                'low_texture': n_low_texture, 'low_conf': n_low_conf,
                'large_shift': n_large_shift, 'accepted': n_accepted}
-        if conf < 0.3:
+        fallback_stats = {
+            'fallback_confidence': float(conf),
+            'fallback_confidence_threshold': float(fallback_confidence_threshold),
+            'fallback_shift_dx': float(sx),
+            'fallback_shift_dy': float(sy),
+        }
+        if conf < fallback_confidence_threshold:
             return 0.0, 0.0, 0.0, {
                 'n_blocks_total': 0, 'n_blocks_inlier': 0,
                 'available': False, 'failure_reason': f'insufficient blocks and low conf={conf:.3f}',
-                'screening': scr}
+                'screening': scr, **fallback_stats}
         return sy, sx, conf, {
             'n_blocks_total': len(shifts_y), 'n_blocks_inlier': len(shifts_y),
-            'available': True, 'fallback': 'whole_overlap', 'screening': scr}
+            'available': True, 'fallback': 'whole_overlap', 'screening': scr,
+            **fallback_stats}
 
     shifts_y = np.array(shifts_y)
     shifts_x = np.array(shifts_x)

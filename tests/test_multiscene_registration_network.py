@@ -94,6 +94,191 @@ def test_sparse_edges_use_geospatial_overlap_fallback_for_zero_one_or_two_matche
     assert fallback_calls[0][4]["max_global_shift"] == 40
 
 
+def test_registration_modes_define_only_the_requested_confidence_thresholds():
+    from scripts import five_image_pipeline as pipeline
+
+    assert pipeline._registration_thresholds("strict") == {
+        "block_confidence": 0.50,
+        "fallback_confidence": 0.30,
+        "local_rbf_control_confidence": 0.75,
+        "max_global_shift": 40,
+    }
+    assert pipeline._registration_thresholds("preview") == {
+        "block_confidence": 0.30,
+        "fallback_confidence": 0.20,
+        "local_rbf_control_confidence": 0.75,
+        "max_global_shift": 40,
+    }
+    with pytest.raises(ValueError, match="registration_mode"):
+        pipeline._registration_thresholds("unknown")
+
+
+def test_edge_matching_uses_mode_thresholds_and_records_confidence_metadata(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = make_edge_scenes()
+    collect_kwargs = []
+    fallback_kwargs = []
+
+    def fake_collect(*args, **kwargs):
+        collect_kwargs.append(kwargs)
+        return [
+            {"shift_dx": 1.0, "shift_dy": 2.0, "confidence": 0.35},
+            {"shift_dx": 1.1, "shift_dy": 2.1, "confidence": 0.36},
+            {"shift_dx": 0.9, "shift_dy": 1.9, "confidence": 0.37},
+        ], {"total": 3, "accepted": 3}
+
+    def fake_fallback(*args, **kwargs):
+        fallback_kwargs.append(kwargs)
+        return -1.5, 2.0, 0.247, {
+            "available": True,
+            "screening": {"total": 12},
+            "fallback_confidence": 0.247,
+            "fallback_confidence_threshold": kwargs["fallback_confidence_threshold"],
+            "fallback_shift_dx": 2.0,
+            "fallback_shift_dy": -1.5,
+        }
+
+    monkeypatch.setattr(pipeline, "collect_block_matches", fake_collect)
+    monkeypatch.setattr(pipeline, "compute_shifts_from_overlap", fake_fallback)
+
+    block, block_rejection = pipeline._measure_registration_edge(
+        scenes[0],
+        scenes[1],
+        {"idx_i": 0, "idx_j": 1},
+        block_confidence_threshold=0.30,
+        fallback_confidence_threshold=0.20,
+        registration_mode="preview",
+    )
+    assert block_rejection is None
+    assert collect_kwargs[-1]["confidence_threshold"] == pytest.approx(0.30)
+    assert block["confidence_threshold"] == pytest.approx(0.30)
+    assert block["confidence_source"] == "block_match"
+    assert block["registration_mode"] == "preview"
+    assert block["confidence_margin"] == pytest.approx(0.06)
+    assert block["supporting_block_count"] == 3
+
+    monkeypatch.setattr(
+        pipeline,
+        "collect_block_matches",
+        lambda *args, **kwargs: ([], {"total": 12}),
+    )
+    fallback, fallback_rejection = pipeline._measure_registration_edge(
+        scenes[0],
+        scenes[1],
+        {"idx_i": 0, "idx_j": 1},
+        block_confidence_threshold=0.30,
+        fallback_confidence_threshold=0.20,
+        registration_mode="preview",
+    )
+    assert fallback_rejection is None
+    assert fallback_kwargs[-1]["fallback_confidence_threshold"] == pytest.approx(0.20)
+    assert fallback["confidence"] == pytest.approx(0.247)
+    assert fallback["confidence_threshold"] == pytest.approx(0.20)
+    assert fallback["confidence_source"] == "whole_overlap"
+    assert fallback["confidence_margin"] == pytest.approx(0.047)
+    assert fallback["registration_mode"] == "preview"
+    assert fallback["supporting_block_count"] == 0
+    assert fallback["n_blocks"] == 1
+
+
+def test_preview_fallback_rejection_records_raw_confidence_and_preserves_shift_limit(
+    monkeypatch,
+):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = make_edge_scenes()
+    monkeypatch.setattr(
+        pipeline,
+        "collect_block_matches",
+        lambda *args, **kwargs: ([], {"total": 12}),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "compute_shifts_from_overlap",
+        lambda *args, **kwargs: (
+            -50.0,
+            22.0,
+            0.9,
+            {
+                "available": True,
+                "fallback_confidence": 0.9,
+                "fallback_confidence_threshold": 0.20,
+                "fallback_shift_dx": 22.0,
+                "fallback_shift_dy": -50.0,
+            },
+        ),
+    )
+
+    measurement, rejection = pipeline._measure_registration_edge(
+        scenes[0],
+        scenes[1],
+        {"idx_i": 0, "idx_j": 1},
+        block_confidence_threshold=0.30,
+        fallback_confidence_threshold=0.20,
+        registration_mode="preview",
+    )
+
+    assert measurement is None
+    assert rejection["confidence"] == pytest.approx(0.9)
+    assert rejection["confidence_threshold"] == pytest.approx(0.20)
+    assert rejection["confidence_source"] == "whole_overlap"
+    assert rejection["confidence_margin"] == pytest.approx(0.7)
+    assert rejection["fallback_shift_dx"] == pytest.approx(22.0)
+    assert rejection["fallback_shift_dy"] == pytest.approx(-50.0)
+
+
+def test_strict_and_preview_modes_apply_block_and_fallback_acceptance_contracts(
+    monkeypatch,
+):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = make_edge_scenes()
+    block_matches = [
+        {"shift_dx": 1.0, "shift_dy": 2.0, "confidence": 0.35},
+        {"shift_dx": 1.0, "shift_dy": 2.0, "confidence": 0.35},
+        {"shift_dx": 1.0, "shift_dy": 2.0, "confidence": 0.35},
+    ]
+
+    def fake_collect(*args, confidence_threshold, **kwargs):
+        return (
+            block_matches if confidence_threshold <= 0.30 else [],
+            {"total": 3, "accepted": len(block_matches) if confidence_threshold <= 0.30 else 0},
+        )
+
+    monkeypatch.setattr(pipeline, "collect_block_matches", fake_collect)
+    monkeypatch.setattr(
+        pipeline,
+        "compute_shifts_from_overlap",
+        lambda *args, **kwargs: (
+            0.0,
+            0.0,
+            0.19,
+            {
+                "available": False,
+                "fallback_confidence": 0.19,
+                "fallback_confidence_threshold": kwargs["fallback_confidence_threshold"],
+                "fallback_shift_dx": 0.0,
+                "fallback_shift_dy": 0.0,
+            },
+        ),
+    )
+
+    strict_measurement, strict_rejection = pipeline._measure_registration_edge(
+        scenes[0], scenes[1], {"idx_i": 0, "idx_j": 1}, registration_mode="strict"
+    )
+    preview_measurement, preview_rejection = pipeline._measure_registration_edge(
+        scenes[0], scenes[1], {"idx_i": 0, "idx_j": 1}, registration_mode="preview"
+    )
+
+    assert strict_measurement is None
+    assert strict_rejection["confidence"] == pytest.approx(0.19)
+    assert strict_rejection["confidence_threshold"] == pytest.approx(0.30)
+    assert preview_rejection is None
+    assert preview_measurement["confidence"] == pytest.approx(0.35)
+    assert preview_measurement["confidence_threshold"] == pytest.approx(0.30)
+
+
 def test_sparse_overlap_fallback_rejects_unavailable_translation_with_reason(monkeypatch):
     from scripts import five_image_pipeline as pipeline
 
@@ -901,8 +1086,10 @@ def test_registration_network_artifacts_preserve_indirect_paths_and_edge_rows(tm
     assert len(pair_rows) == 4
     assert set(pair_rows[0]) == {
         "idx_i", "scene_i", "idx_j", "scene_j", "geometric_overlap",
-        "registration_available", "method", "shift_dx", "shift_dy",
-        "confidence", "n_blocks", "rmse", "p95", "reject_reason",
+        "registration_available", "method", "registration_mode", "shift_dx",
+        "shift_dy", "confidence", "confidence_threshold", "confidence_margin",
+        "confidence_source", "supporting_block_count", "n_blocks", "rmse",
+        "p95", "reject_reason",
     }
     rejected_row = next(row for row in pair_rows if row["idx_i"] == "0" and row["idx_j"] == "3")
     assert rejected_row["registration_available"] == "False"
@@ -918,6 +1105,291 @@ def test_registration_network_artifacts_preserve_indirect_paths_and_edge_rows(tm
     }
     scene_three = next(row for row in scene_rows if row["scene_index"] == "3")
     assert scene_three["reference_path"] == "0 -> 1 -> 2 -> 3"
+
+
+def test_reference_component_solver_excludes_disconnected_component_edges():
+    from scripts import five_image_pipeline as pipeline
+
+    pairs = [
+        make_pair(0, 3, 3.0, 4.0),
+        make_pair(2, 3, 1.0, 1.0),
+        make_pair(3, 4, 2.0, -1.0),
+        make_pair(1, 4, 100.0, 100.0),
+    ]
+
+    result = pipeline.solve_reference_component_network(
+        pairs,
+        n_images=5,
+        reference_idx=0,
+        reachable_indices=[0, 2, 3, 4],
+    )
+
+    np.testing.assert_allclose(
+        result["global_shifts"],
+        np.array([[0.0, 0.0], [0.0, 0.0], [2.0, 3.0], [3.0, 4.0], [5.0, 3.0]]),
+        atol=1e-8,
+    )
+    assert result["n_edges"] == 3
+    assert all(
+        row["idx_i"] != 1 and row["idx_j"] != 1
+        for row in result["pair_results"]
+    )
+
+
+def test_preview_disconnected_component_is_georef_only_and_not_warped(
+    monkeypatch, capsys
+):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=np.full((4, 4), index + 1, dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+        for index in range(5)
+    ]
+    overlaps = [
+        {"idx_i": 0, "idx_j": 3},
+        {"idx_i": 2, "idx_j": 3},
+        {"idx_i": 3, "idx_j": 4},
+        {"idx_i": 1, "idx_j": 4},
+    ]
+    pairs = [
+        make_pair(0, 3, 3.0, 4.0),
+        make_pair(2, 3, 1.0, 1.0),
+        make_pair(3, 4, 2.0, -1.0),
+    ]
+    rejected = [{"idx_i": 1, "idx_j": 4, "reason": "synthetic rejection"}]
+    monkeypatch.setattr(
+        pipeline,
+        "match_all_overlap_edges",
+        lambda *args, **kwargs: (pairs, rejected),
+    )
+    warp_calls = []
+
+    def fake_warp(array, dx, dy, local_dx, local_dy, nodata):
+        warp_calls.append(array)
+        return array.astype(np.float64) + 10.0
+
+    monkeypatch.setattr(pipeline, "warp_with_displacement_field", fake_warp)
+
+    result = pipeline.run_registration_stage(
+        scenes,
+        overlaps,
+        reference_idx=0,
+        registration_mode="preview",
+    )
+
+    assert result["registration_mode"] == "preview"
+    assert result["graph"]["reachable"] == [0, 2, 3, 4]
+    assert result["graph"]["unreachable"] == [1]
+    assert result["registration_statuses"] == {
+        0: "reference_anchor",
+        1: "georef_only_unverified",
+        2: "network_adjusted",
+        3: "network_adjusted",
+        4: "network_adjusted",
+    }
+    np.testing.assert_allclose(result["network_result"]["global_shifts"][1], [0.0, 0.0])
+    np.testing.assert_array_equal(result["registered"][1].array, scenes[1].array)
+    assert all(call is not scenes[1].array for call in warp_calls)
+    assert len(warp_calls) == 3
+    assert result["local_details"][1]["model_used"] == "georef_only"
+    assert result["local_details"][1]["control_points"] == 0
+    assert result["local_details"][1]["reason"] == (
+        "not connected to reference registration network"
+    )
+    output = capsys.readouterr().out
+    assert "PREVIEW WARNING:" in output
+    assert "GeoTIFF placement only" in output
+    assert "GEOREF_ONLY_UNVERIFIED" in output
+
+    with pytest.raises(RuntimeError, match="disconnected"):
+        pipeline.run_registration_stage(
+            scenes,
+            overlaps,
+            reference_idx=0,
+            registration_mode="strict",
+        )
+
+
+def test_preview_pipeline_continues_normalization_and_mosaic_with_georef_only_scene(
+    tmp_path, monkeypatch
+):
+    from scripts import five_image_pipeline as pipeline
+
+    scene_names = ["reference", "scene_1", "scene_2", "scene_3", "scene_4"]
+    paths = [tmp_path / f"{name}_B14.TIF" for name in scene_names]
+    for path in paths:
+        path.touch()
+
+    def fake_load_scene(path, band):
+        index = scene_names.index(Path(path).stem.removesuffix("_B14"))
+        return pipeline.SceneData(
+            name=scene_names[index],
+            path=str(path),
+            array=np.full((8, 8), index + 1, dtype=np.float32),
+            transform=rasterio.Affine(1, 0, index * 4, 0, -1, 8),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+
+    overlaps = [
+        {"idx_i": 0, "idx_j": 3, "pixel_count": 64},
+        {"idx_i": 2, "idx_j": 3, "pixel_count": 64},
+        {"idx_i": 3, "idx_j": 4, "pixel_count": 64},
+        {"idx_i": 1, "idx_j": 4, "pixel_count": 64},
+    ]
+    pairs = [
+        make_pair(0, 3, 3.0, 4.0),
+        make_pair(2, 3, 1.0, 1.0),
+        make_pair(3, 4, 2.0, -1.0),
+    ]
+    rejected = [{"idx_i": 1, "idx_j": 4, "reason": "synthetic rejection"}]
+    calls = {"bagrn": 0, "volrn": 0, "mosaic": 0}
+
+    monkeypatch.setattr(pipeline, "load_scene", fake_load_scene)
+    monkeypatch.setattr(pipeline, "detect_multi_overlap", lambda *args, **kwargs: overlaps)
+    monkeypatch.setattr(
+        pipeline,
+        "match_all_overlap_edges",
+        lambda *args, **kwargs: (pairs, rejected),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "write_geotiff",
+        lambda *args, **kwargs: None,
+    )
+
+    def fake_compute_all(*args, **kwargs):
+        return {"ave": 0.0}
+
+    def fake_bagrn(arrays, nodatas, overlap_rows, control_idx):
+        calls["bagrn"] += 1
+        return list(arrays), {}, {}
+
+    def fake_volrn(arrays, transforms, bounds, nodatas, **kwargs):
+        calls["volrn"] += 1
+        return list(arrays), {}
+
+    def fake_mosaic(*args, **kwargs):
+        calls["mosaic"] += 1
+
+    monkeypatch.setattr(pipeline, "compute_all", fake_compute_all)
+    monkeypatch.setattr(pipeline, "bagrn_normalize", fake_bagrn)
+    monkeypatch.setattr(pipeline, "volrn_normalize", fake_volrn)
+    monkeypatch.setattr(pipeline, "create_mosaic", fake_mosaic)
+
+    result = pipeline.run_pipeline(
+        paths,
+        tmp_path / "output",
+        band="B14",
+        registration_mode="preview",
+    )
+
+    assert calls == {"bagrn": 1, "volrn": 1, "mosaic": 2}
+    assert result["registration_mode"] == "preview"
+    assert result["scene_registration_status"]["scene_1"] == "georef_only_unverified"
+    summary = json.loads(
+        (tmp_path / "output" / "B14" / "five_image_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["registration_mode"] == "preview"
+    assert summary["preview_warning"]
+    assert summary["scene_registration_status"]["scene_1"] == "georef_only_unverified"
+
+
+def test_registration_artifacts_write_accepted_and_rejected_confidence_details(tmp_path):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=np.zeros((2, 2), dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=None,
+        )
+        for index in range(3)
+    ]
+    accepted = make_pair(0, 1, 2.0, -1.5, n_blocks=1)
+    accepted.update({
+        "method": "overlap_translation_fallback",
+        "supporting_block_count": 0,
+        "confidence": 0.247,
+        "confidence_threshold": 0.20,
+        "confidence_margin": 0.047,
+        "confidence_source": "whole_overlap",
+        "registration_mode": "preview",
+    })
+    rejected = {
+        "idx_i": 1,
+        "idx_j": 2,
+        "reason": "low fallback confidence",
+        "method": "overlap_translation_fallback",
+        "fallback_shift_dx": 2.0,
+        "fallback_shift_dy": -1.5,
+        "confidence": 0.19,
+        "confidence_threshold": 0.20,
+        "confidence_margin": -0.01,
+        "confidence_source": "whole_overlap",
+        "registration_mode": "preview",
+    }
+    graph = pipeline.build_registration_graph([accepted], 3, reference_idx=0)
+    network = pipeline.solve_registration_network([accepted], 3, reference_idx=0)
+    artifacts = pipeline.write_registration_network_artifacts(
+        tmp_path,
+        scenes,
+        reference_idx=0,
+        overlaps=[{"idx_i": 0, "idx_j": 1}, {"idx_i": 1, "idx_j": 2}],
+        pair_measurements=[accepted],
+        rejected_edges=[rejected],
+        graph=graph,
+        network_result=network,
+        reference_paths={0: [0], 1: [0, 1], 2: None},
+        registration_statuses={
+            0: "reference_anchor",
+            1: "network_adjusted",
+            2: "georef_only_unverified",
+        },
+        registration_mode="preview",
+    )
+
+    data = json.loads(artifacts["json"].read_text(encoding="utf-8"))
+    assert data["registration_mode"] == "preview"
+    assert data["thresholds"] == {
+        "block_confidence": 0.30,
+        "fallback_confidence": 0.20,
+        "local_rbf_control_confidence": 0.75,
+        "max_global_shift": 40,
+    }
+    assert data["reliable_edge_records"][0]["confidence"] == pytest.approx(0.247)
+    assert data["reliable_edge_records"][0]["confidence_threshold"] == pytest.approx(0.20)
+    assert data["rejected_edge_records"][0]["confidence"] == pytest.approx(0.19)
+
+    with artifacts["pairs_csv"].open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    accepted_row = rows[0]
+    rejected_row = rows[1]
+    assert accepted_row["registration_mode"] == "preview"
+    assert float(accepted_row["confidence"]) == pytest.approx(0.247)
+    assert float(accepted_row["confidence_threshold"]) == pytest.approx(0.20)
+    assert float(accepted_row["confidence_margin"]) == pytest.approx(0.047)
+    assert accepted_row["confidence_source"] == "whole_overlap"
+    assert accepted_row["supporting_block_count"] == "0"
+    assert rejected_row["registration_available"] == "False"
+    assert float(rejected_row["confidence"]) == pytest.approx(0.19)
+    assert float(rejected_row["confidence_threshold"]) == pytest.approx(0.20)
+    assert float(rejected_row["confidence_margin"]) == pytest.approx(-0.01)
+    assert rejected_row["confidence_source"] == "whole_overlap"
+    assert float(rejected_row["shift_dx"]) == pytest.approx(2.0)
+    assert float(rejected_row["shift_dy"]) == pytest.approx(-1.5)
 
 
 def test_formal_pipeline_stops_before_normalization_when_graph_is_disconnected(
