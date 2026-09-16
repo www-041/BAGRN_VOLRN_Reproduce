@@ -438,6 +438,117 @@ def build_registration_graph(
     }
 
 
+def print_registration_graph_diagnostics(
+    scenes: Sequence[SceneData],
+    overlaps: Sequence[Dict[str, Any]],
+    pair_measurements: Sequence[Dict[str, Any]],
+    rejected_edges: Sequence[Dict[str, Any]],
+    graph: Dict[str, Any],
+    reference_idx: int,
+) -> None:
+    """Print geometry, edge outcomes, and reference reachability diagnostics."""
+    geometric_edges = [
+        (int(overlap["idx_i"]), int(overlap["idx_j"]))
+        for overlap in overlaps
+    ]
+    pair_by_edge = {
+        (int(pair["idx_i"]), int(pair["idx_j"])): pair
+        for pair in pair_measurements
+    }
+    rejected_by_edge = {
+        (int(item["idx_i"]), int(item["idx_j"])): item
+        for item in rejected_edges
+    }
+
+    print(f"Reference anchor: [{reference_idx}] {scenes[reference_idx].name}")
+    print(f"Geometric overlap pairs: {len(geometric_edges)}")
+    print("--- Pairwise registration edges ---")
+    for i, j in geometric_edges:
+        pair = pair_by_edge.get((i, j))
+        rejection = rejected_by_edge.get((i, j))
+        if pair is not None:
+            if pair.get("method") == "overlap_translation_fallback":
+                count_text = (
+                    f"supporting_blocks={pair.get('supporting_block_count', 0)}"
+                )
+            else:
+                count_text = f"blocks={pair.get('n_blocks', 0)}"
+            print(
+                f"[{i}]-[{j}] ACCEPTED method={pair.get('method', 'unknown')} "
+                f"dx={float(pair.get('shift_dx', 0.0)):.4f} "
+                f"dy={float(pair.get('shift_dy', 0.0)):.4f} "
+                f"confidence={float(pair.get('confidence', 0.0)):.3f} "
+                f"{count_text}"
+            )
+        else:
+            reason = rejection.get("reason", "unavailable") if rejection else "unavailable"
+            print(f"[{i}]-[{j}] REJECTED reason={reason}")
+            if rejection is not None:
+                for key in (
+                    "fallback_shift_dx",
+                    "fallback_shift_dy",
+                    "fallback_confidence",
+                ):
+                    if key in rejection:
+                        print(f"    {key}={rejection[key]}")
+
+    reachable = [int(index) for index in graph.get("reachable", [])]
+    unreachable = [int(index) for index in graph.get("unreachable", [])]
+    print(f"Reliable registration edges: {len(pair_measurements)}")
+    print(f"Rejected registration edges: {len(rejected_edges)}")
+    print(f"Reference-connected scenes: {len(reachable)}/{len(scenes)}")
+    print(f"Reachable scene indices: {reachable}")
+    print(f"Unreachable scene indices: {unreachable}")
+    for index, scene in enumerate(scenes):
+        status = "REACHABLE" if index in reachable else "UNREACHABLE"
+        print(f"[{index}] {scene.name} {status}")
+
+
+def write_disconnected_registration_diagnostics(
+    output_dir: Path,
+    scenes: Sequence[SceneData],
+    overlaps: Sequence[Dict[str, Any]],
+    pair_measurements: Sequence[Dict[str, Any]],
+    rejected_edges: Sequence[Dict[str, Any]],
+    graph: Dict[str, Any],
+    reference_idx: int,
+) -> Path:
+    """Write the exact edge records that caused a disconnected graph."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    reachable = [int(index) for index in graph.get("reachable", [])]
+    unreachable = [int(index) for index in graph.get("unreachable", [])]
+    payload = {
+        "reference_scene_index": int(reference_idx),
+        "reference_scene_id": scenes[reference_idx].name,
+        "connected": not unreachable,
+        "geometric_edges": [
+            [int(overlap["idx_i"]), int(overlap["idx_j"])]
+            for overlap in overlaps
+        ],
+        "reliable_edges": [
+            [int(pair["idx_i"]), int(pair["idx_j"])]
+            for pair in pair_measurements
+        ],
+        "reliable_edge_records": _json_safe(list(pair_measurements)),
+        "rejected_edges": [
+            [int(item["idx_i"]), int(item["idx_j"])]
+            for item in rejected_edges
+        ],
+        "rejected_edge_records": _json_safe(list(rejected_edges)),
+        "reachable_scene_indices": reachable,
+        "reachable_scene_ids": [scenes[index].name for index in reachable],
+        "unreachable_scene_indices": unreachable,
+        "unreachable_scene_ids": [scenes[index].name for index in unreachable],
+    }
+    path = output_dir / "registration_disconnected_diagnostic.json"
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
 def solve_registration_network(
     pair_measurements: Sequence[Dict[str, Any]],
     n_images: int,
@@ -710,6 +821,7 @@ def run_registration_stage(
     scenes: Sequence[SceneData],
     overlaps: Sequence[Dict[str, Any]],
     reference_idx: int,
+    diagnostic_output_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Run formal content registration before normalization or mosaicking."""
     if not overlaps and len(scenes) > 1:
@@ -717,7 +829,25 @@ def run_registration_stage(
 
     pair_measurements, rejected_edges = match_all_overlap_edges(scenes, overlaps)
     graph = build_registration_graph(pair_measurements, len(scenes), reference_idx)
+    print_registration_graph_diagnostics(
+        scenes,
+        overlaps,
+        pair_measurements,
+        rejected_edges,
+        graph,
+        reference_idx,
+    )
     if graph["unreachable"]:
+        if diagnostic_output_dir is not None:
+            write_disconnected_registration_diagnostics(
+                diagnostic_output_dir,
+                scenes,
+                overlaps,
+                pair_measurements,
+                rejected_edges,
+                graph,
+                reference_idx,
+            )
         unreachable_names = [scenes[index].name for index in graph["unreachable"]]
         raise RuntimeError(
             "Reliable registration graph is disconnected from reference: "
@@ -747,40 +877,6 @@ def run_registration_stage(
     geometric_edges = [
         (int(overlap["idx_i"]), int(overlap["idx_j"])) for overlap in overlaps
     ]
-    pair_by_edge = {
-        (int(pair["idx_i"]), int(pair["idx_j"])): pair
-        for pair in pair_measurements
-    }
-    rejected_by_edge = {
-        (int(item["idx_i"]), int(item["idx_j"])): item
-        for item in rejected_edges
-    }
-    print(
-        f"Reference anchor: [{reference_idx}] {scenes[reference_idx].name}"
-    )
-    print(f"Geometric overlap pairs: {len(geometric_edges)}")
-    print("--- Pairwise registration edges ---")
-    for i, j in geometric_edges:
-        pair = pair_by_edge.get((i, j))
-        rejection = rejected_by_edge.get((i, j))
-        if pair is not None:
-            if pair.get("method") == "overlap_translation_fallback":
-                support_text = (
-                    f"supporting_blocks={pair.get('supporting_block_count', 0)}"
-                )
-            else:
-                support_text = f"blocks={pair['n_blocks']}"
-            print(
-                f"[{i}]-[{j}] ACCEPTED method={pair.get('method', 'unknown')} "
-                f"dx={pair['shift_dx']:.4f} dy={pair['shift_dy']:.4f} "
-                f"confidence={pair['confidence']:.3f} {support_text}"
-            )
-        else:
-            reason = rejection.get("reason", "unavailable") if rejection else "unavailable"
-            print(f"[{i}]-[{j}] REJECTED {reason}")
-    print(f"Reliable registration edges: {len(pair_measurements)}")
-    print(f"Rejected registration edges: {len(rejected_edges)}")
-    print(f"Reference-connected scenes: {len(graph['reachable'])}/{len(scenes)}")
     print("Registration paths:")
     for index in range(len(scenes)):
         path = reference_paths[index]
@@ -1100,7 +1196,12 @@ def run_pipeline(
     if not overlaps:
         raise RuntimeError("No valid overlap pairs were found for the five scenes")
 
-    registration = run_registration_stage(loaded, overlaps, reference_idx)
+    registration = run_registration_stage(
+        loaded,
+        overlaps,
+        reference_idx,
+        diagnostic_output_dir=output_band_dir,
+    )
     registered = registration["registered"]
     pair_measurements = registration["pair_measurements"]
     rejected_edges = registration["rejected_edges"]

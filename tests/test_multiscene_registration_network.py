@@ -980,6 +980,104 @@ def test_formal_pipeline_stops_before_normalization_when_graph_is_disconnected(
         pipeline.run_pipeline(paths, tmp_path / "output", band="B14")
 
     assert normalization_calls == []
+    diagnostic_path = (
+        tmp_path / "output" / "B14" / "registration_disconnected_diagnostic.json"
+    )
+    assert diagnostic_path.exists()
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert diagnostic["connected"] is False
+    assert diagnostic["unreachable_scene_indices"] == [3, 4]
+
+
+def test_disconnected_registration_prints_and_persists_edge_diagnostics(
+    tmp_path, monkeypatch, capsys
+):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=np.ones((8, 8), dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+        for index in range(5)
+    ]
+    overlaps = [
+        {"idx_i": 0, "idx_j": 1},
+        {"idx_i": 1, "idx_j": 2},
+        {"idx_i": 3, "idx_j": 4},
+    ]
+    block_pair = make_pair(0, 1, 1.0, 2.0, n_blocks=7)
+    block_pair["method"] = "block_match"
+    fallback_pair = make_pair(1, 2, 3.0, 4.0, n_blocks=1)
+    fallback_pair["method"] = "overlap_translation_fallback"
+    fallback_pair["supporting_block_count"] = 2
+    rejected = {
+        "idx_i": 3,
+        "idx_j": 4,
+        "scene_i": "scene_3",
+        "scene_j": "scene_4",
+        "reason": "whole-overlap fallback exceeded max_global_shift=40",
+        "screening": {"total": 5, "low_conf": 5},
+        "translation_stats": {"available": True},
+        "fallback_shift_dx": 22.0,
+        "fallback_shift_dy": -50.0,
+        "fallback_confidence": 0.8,
+    }
+    monkeypatch.setattr(
+        pipeline,
+        "match_all_overlap_edges",
+        lambda *args, **kwargs: ([block_pair, fallback_pair], [rejected]),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "solve_registration_network",
+        lambda *args, **kwargs: pytest.fail(
+            "disconnected registration must fail before network solving"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="disconnected"):
+        pipeline.run_registration_stage(
+            scenes,
+            overlaps,
+            reference_idx=0,
+            diagnostic_output_dir=tmp_path,
+        )
+
+    output = capsys.readouterr().out
+    assert "Reference anchor: [0] scene_0" in output
+    assert "Geometric overlap pairs: 3" in output
+    assert "[0]-[1] ACCEPTED" in output
+    assert "blocks=7" in output
+    assert "supporting_blocks=2" in output
+    assert "[3]-[4] REJECTED" in output
+    assert "whole-overlap fallback exceeded max_global_shift=40" in output
+    assert "Reference-connected scenes: 3/5" in output
+    assert "Reachable scene indices: [0, 1, 2]" in output
+    assert "Unreachable scene indices: [3, 4]" in output
+    assert "[3] scene_3 UNREACHABLE" in output
+    assert "[4] scene_4 UNREACHABLE" in output
+
+    diagnostic_path = tmp_path / "registration_disconnected_diagnostic.json"
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    assert diagnostic["reference_scene_index"] == 0
+    assert diagnostic["reference_scene_id"] == "scene_0"
+    assert diagnostic["connected"] is False
+    assert diagnostic["geometric_edges"] == [[0, 1], [1, 2], [3, 4]]
+    assert diagnostic["reliable_edges"] == [[0, 1], [1, 2]]
+    assert diagnostic["reachable_scene_indices"] == [0, 1, 2]
+    assert diagnostic["unreachable_scene_indices"] == [3, 4]
+    rejected_record = diagnostic["rejected_edge_records"][0]
+    assert rejected_record["reason"] == rejected["reason"]
+    assert rejected_record["screening"] == rejected["screening"]
+    assert rejected_record["translation_stats"] == rejected["translation_stats"]
+    assert rejected_record["fallback_shift_dx"] == 22.0
+    assert rejected_record["fallback_shift_dy"] == -50.0
+    assert rejected_record["fallback_confidence"] == 0.8
 
 
 def test_synthetic_acceptance_covers_all_planned_registration_network_topologies(
