@@ -20,6 +20,148 @@ def make_pair(i, j, dx, dy, confidence=0.9, n_blocks=20, rmse=0.2):
     }
 
 
+def make_edge_scenes():
+    """Create unequal-shaped scenes whose geospatial grids partially overlap."""
+    return [
+        __import__("scripts.five_image_pipeline", fromlist=["SceneData"]).SceneData(
+            name="scene_0",
+            path="scene_0.tif",
+            array=np.arange(60, dtype=np.float32).reshape(10, 6),
+            transform=rasterio.Affine(1, 0, 100, 0, -1, 110),
+            crs="EPSG:4326",
+            nodata=None,
+        ),
+        __import__("scripts.five_image_pipeline", fromlist=["SceneData"]).SceneData(
+            name="scene_1",
+            path="scene_1.tif",
+            array=np.arange(55, dtype=np.float32).reshape(11, 5),
+            transform=rasterio.Affine(1, 0, 102, 0, -1, 110),
+            crs="EPSG:4326",
+            nodata=None,
+        ),
+    ]
+
+
+def test_sparse_edges_use_geospatial_overlap_fallback_for_zero_one_or_two_matches(
+    monkeypatch,
+):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = make_edge_scenes()
+    fallback_calls = []
+
+    def fake_overlap_shift(arr_ref, tr_ref, arr_tgt, tr_tgt, nd_ref, nd_tgt, **kwargs):
+        fallback_calls.append((arr_ref, tr_ref, arr_tgt, tr_tgt, kwargs))
+        return -2.0, 3.0, 0.8, {
+            "available": True,
+            "failure_reason": None,
+            "screening": {"total": 12},
+        }
+
+    monkeypatch.setattr(pipeline, "compute_shifts_from_overlap", fake_overlap_shift)
+    monkeypatch.setattr(
+        pipeline,
+        "phase_correlation",
+        lambda *args, **kwargs: pytest.fail("full-scene phase fallback must not run"),
+    )
+
+    for sparse_matches in ([], [{"shift_dx": 1.0, "shift_dy": 2.0, "confidence": 0.8}], [
+        {"shift_dx": 1.0, "shift_dy": 2.0, "confidence": 0.8},
+        {"shift_dx": 1.1, "shift_dy": 1.9, "confidence": 0.9},
+    ]):
+        monkeypatch.setattr(
+            pipeline,
+            "collect_block_matches",
+            lambda *args, matches=sparse_matches, **kwargs: (matches, {"total": 12}),
+        )
+        measurement, rejection = pipeline._measure_registration_edge(
+            scenes[0], scenes[1], {"idx_i": 0, "idx_j": 1}
+        )
+
+        assert rejection is None
+        assert measurement["method"] == "overlap_translation_fallback"
+        assert measurement["shift_dx"] == 3.0
+        assert measurement["shift_dy"] == -2.0
+        assert measurement["n_blocks"] == len(sparse_matches)
+        assert measurement["translation_stats"]["available"] is True
+
+    assert len(fallback_calls) == 3
+    assert fallback_calls[0][0] is scenes[0].array
+    assert fallback_calls[0][1] == scenes[0].transform
+    assert fallback_calls[0][2] is scenes[1].array
+    assert fallback_calls[0][3] == scenes[1].transform
+    assert fallback_calls[0][4]["max_global_shift"] == 40
+
+
+def test_sparse_overlap_fallback_rejects_unavailable_translation_with_reason(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = make_edge_scenes()
+    monkeypatch.setattr(
+        pipeline,
+        "collect_block_matches",
+        lambda *args, **kwargs: ([], {"total": 12, "low_valid": 12}),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "compute_shifts_from_overlap",
+        lambda *args, **kwargs: (
+            0.0,
+            0.0,
+            0.0,
+            {"available": False, "failure_reason": "no common valid pixels"},
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "phase_correlation",
+        lambda *args, **kwargs: pytest.fail("full-scene phase fallback must not run"),
+    )
+
+    measurement, rejection = pipeline._measure_registration_edge(
+        scenes[0], scenes[1], {"idx_i": 0, "idx_j": 1}
+    )
+
+    assert measurement is None
+    assert "no common valid pixels" in rejection["reason"]
+    assert rejection["translation_stats"]["available"] is False
+
+
+def test_three_or_more_blocks_use_joint_mad_inliers_for_edge_estimate(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = make_edge_scenes()
+    matches = [
+        {"shift_dx": 1.0, "shift_dy": 2.0, "confidence": 0.9},
+        {"shift_dx": 1.1, "shift_dy": 2.1, "confidence": 0.8},
+        {"shift_dx": 0.9, "shift_dy": 1.9, "confidence": 1.0},
+        {"shift_dx": 8.0, "shift_dy": 8.0, "confidence": 1.0},
+    ]
+    monkeypatch.setattr(
+        pipeline,
+        "collect_block_matches",
+        lambda *args, **kwargs: (matches, {"total": 20, "accepted": 4}),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "compute_shifts_from_overlap",
+        lambda *args, **kwargs: pytest.fail("fallback is only for fewer than three blocks"),
+    )
+
+    measurement, rejection = pipeline._measure_registration_edge(
+        scenes[0], scenes[1], {"idx_i": 0, "idx_j": 1}
+    )
+
+    assert rejection is None
+    assert measurement["method"] == "block_match"
+    assert measurement["n_blocks"] == 4
+    assert measurement["inlier_count"] == 3
+    assert measurement["shift_dx"] == pytest.approx(1.0, abs=0.05)
+    assert measurement["shift_dy"] == pytest.approx(2.0, abs=0.05)
+    assert measurement["rmse"] < 0.2
+    assert measurement["p95"] < 0.2
+
+
 def test_network_adjustment_anchors_reference_and_solves_chain():
     from src.coregistration import multi_image_network_adjustment
 
@@ -90,7 +232,7 @@ def test_all_geometric_overlap_edges_are_matched_not_only_reference_edges(monkey
                 "shift_dy": 0.0,
                 "confidence": 0.9,
             }
-        ], {"total": 1}
+        ] * 3, {"total": 3}
 
     monkeypatch.setattr(pipeline, "collect_block_matches", fake_collect)
 

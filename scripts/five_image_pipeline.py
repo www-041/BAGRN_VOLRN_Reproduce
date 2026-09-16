@@ -220,12 +220,44 @@ def _select_translation_or_rbf(summary: Dict[str, Any]) -> str:
     return "translation"
 
 
-def _scene_valid_mask(scene: SceneData) -> np.ndarray:
-    """Build the validity mask used by the existing phase fallback."""
-    valid = np.isfinite(scene.array)
-    if scene.nodata is not None:
-        valid &= scene.array != scene.nodata
-    return valid
+def _estimate_robust_block_translation(
+    matches: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Estimate an edge shift from joint dx/dy MAD inliers."""
+    dx_values = np.asarray([float(match["shift_dx"]) for match in matches])
+    dy_values = np.asarray([float(match["shift_dy"]) for match in matches])
+    confidences = np.asarray(
+        [float(match.get("confidence", 0.0)) for match in matches],
+        dtype=float,
+    )
+
+    med_dx = float(np.median(dx_values))
+    med_dy = float(np.median(dy_values))
+    mad_dx = float(np.median(np.abs(dx_values - med_dx)))
+    mad_dy = float(np.median(np.abs(dy_values - med_dy)))
+    inlier_mask = (
+        (np.abs(dx_values - med_dx) < max(3 * mad_dx, 0.3))
+        & (np.abs(dy_values - med_dy) < max(3 * mad_dy, 0.3))
+    )
+    if not np.any(inlier_mask):
+        nearest = np.argmin(np.hypot(dx_values - med_dx, dy_values - med_dy))
+        inlier_mask[nearest] = True
+
+    weights = np.maximum(confidences[inlier_mask], 1e-12)
+    shift_dx = float(np.average(dx_values[inlier_mask], weights=weights))
+    shift_dy = float(np.average(dy_values[inlier_mask], weights=weights))
+    residuals = np.hypot(
+        dx_values[inlier_mask] - shift_dx,
+        dy_values[inlier_mask] - shift_dy,
+    )
+    return {
+        "shift_dx": shift_dx,
+        "shift_dy": shift_dy,
+        "confidence": float(np.mean(confidences[inlier_mask])),
+        "inlier_count": int(inlier_mask.sum()),
+        "rmse": float(np.sqrt(np.mean(residuals ** 2))),
+        "p95": float(np.percentile(residuals, 95)),
+    }
 
 
 def _measure_registration_edge(
@@ -245,62 +277,63 @@ def _measure_registration_edge(
         confidence_threshold=0.5,
     )
     screening = dict(screening or {})
-    if matches:
-        confidences = np.asarray(
-            [float(match.get("confidence", 0.0)) for match in matches],
-            dtype=float,
-        )
-        dx_values = np.asarray([float(match["shift_dx"]) for match in matches])
-        dy_values = np.asarray([float(match["shift_dy"]) for match in matches])
-        weights = np.maximum(confidences, 1e-12)
-        shift_dx = float(np.average(dx_values, weights=weights))
-        shift_dy = float(np.average(dy_values, weights=weights))
-        residuals = np.hypot(dx_values - shift_dx, dy_values - shift_dy)
+    if len(matches) >= 3:
+        estimate = _estimate_robust_block_translation(matches)
         return {
             "idx_i": i,
             "idx_j": j,
-            "shift_dx": shift_dx,
-            "shift_dy": shift_dy,
-            "confidence": float(np.mean(confidences)),
+            "shift_dx": estimate["shift_dx"],
+            "shift_dy": estimate["shift_dy"],
+            "confidence": estimate["confidence"],
             "n_blocks": len(matches),
-            "rmse": float(np.sqrt(np.mean(residuals ** 2))),
-            "p95": float(np.percentile(residuals, 95)),
+            "inlier_count": estimate["inlier_count"],
+            "rmse": estimate["rmse"],
+            "p95": estimate["p95"],
             "matches": _json_safe(matches),
             "screening": _json_safe(screening),
             "method": "block_match",
         }, None
 
     try:
-        shift_y, shift_x, phase_confidence = phase_correlation(
+        shift_y, shift_x, overlap_confidence, translation_stats = compute_shifts_from_overlap(
             scene_i.array,
+            scene_i.transform,
             scene_j.array,
-            valid_ref=_scene_valid_mask(scene_i),
-            valid_tgt=_scene_valid_mask(scene_j),
+            scene_j.transform,
+            scene_i.nodata,
+            scene_j.nodata,
+            max_global_shift=40,
         )
     except Exception as exc:
-        shift_y, shift_x, phase_confidence = 0.0, 0.0, 0.0
-        phase_error = str(exc)
-    else:
-        phase_error = None
+        shift_y, shift_x, overlap_confidence = 0.0, 0.0, 0.0
+        translation_stats = {
+            "available": False,
+            "failure_reason": str(exc),
+        }
 
-    if phase_confidence > 0.3 and abs(shift_y) < 40 and abs(shift_x) < 40:
+    translation_stats = dict(translation_stats or {})
+    if translation_stats.get("available", False):
         return {
             "idx_i": i,
             "idx_j": j,
             "shift_dx": float(shift_x),
             "shift_dy": float(shift_y),
-            "confidence": float(phase_confidence),
-            "n_blocks": 1,
-            "rmse": 0.0,
-            "p95": 0.0,
-            "matches": [],
+            "confidence": float(overlap_confidence),
+            "n_blocks": len(matches),
+            "inlier_count": 0,
+            "rmse": None,
+            "p95": None,
+            "matches": _json_safe(matches),
             "screening": _json_safe(screening),
-            "method": "phase_correlation",
+            "translation_stats": _json_safe(translation_stats),
+            "method": "overlap_translation_fallback",
         }, None
 
-    reasons = ["block_match无匹配且phase_correlation失败"]
-    if phase_error:
-        reasons.append(f"phase_error={phase_error}")
+    failure_reason = translation_stats.get("failure_reason", "unavailable")
+    reasons = [
+        "block_match不足3个且overlap_translation_fallback不可用",
+        f"translation_stats.failure_reason={failure_reason}",
+    ]
     for key in ("low_valid", "low_texture", "low_conf", "large_shift"):
         if screening.get(key, 0):
             reasons.append(f"{key}={screening[key]}")
@@ -309,6 +342,7 @@ def _measure_registration_edge(
         "idx_j": j,
         "reason": "; ".join(reasons),
         "screening": _json_safe(screening),
+        "translation_stats": _json_safe(translation_stats),
     }
 
 
