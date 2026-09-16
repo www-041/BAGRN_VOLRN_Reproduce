@@ -82,7 +82,8 @@ def test_sparse_edges_use_geospatial_overlap_fallback_for_zero_one_or_two_matche
         assert measurement["method"] == "overlap_translation_fallback"
         assert measurement["shift_dx"] == 3.0
         assert measurement["shift_dy"] == -2.0
-        assert measurement["n_blocks"] == len(sparse_matches)
+        assert measurement["n_blocks"] == 1
+        assert measurement["supporting_block_count"] == len(sparse_matches)
         assert measurement["translation_stats"]["available"] is True
 
     assert len(fallback_calls) == 3
@@ -125,6 +126,176 @@ def test_sparse_overlap_fallback_rejects_unavailable_translation_with_reason(mon
     assert measurement is None
     assert "no common valid pixels" in rejection["reason"]
     assert rejection["translation_stats"]["available"] is False
+
+
+def test_overlap_fallback_uses_solver_safe_weight_metadata(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = make_edge_scenes()
+    fallback_stats = {"available": True, "screening": {"total": 12}}
+    monkeypatch.setattr(
+        pipeline,
+        "compute_shifts_from_overlap",
+        lambda *args, **kwargs: ( -1.0, 2.0, 0.8, fallback_stats),
+    )
+
+    for sparse_matches in ([], [
+        {"shift_dx": 1.0, "shift_dy": 2.0, "confidence": 0.8},
+        {"shift_dx": 1.1, "shift_dy": 1.9, "confidence": 0.9},
+    ]):
+        monkeypatch.setattr(
+            pipeline,
+            "collect_block_matches",
+            lambda *args, matches=sparse_matches, **kwargs: (matches, {"total": 12}),
+        )
+        measurement, rejection = pipeline._measure_registration_edge(
+            scenes[0], scenes[1], {"idx_i": 0, "idx_j": 1}
+        )
+
+        assert rejection is None
+        assert measurement["method"] == "overlap_translation_fallback"
+        assert measurement["n_blocks"] == 1
+        assert measurement["supporting_block_count"] == len(sparse_matches)
+        assert measurement["rmse"] == 1.0
+        assert measurement["p95"] is None
+        assert measurement["weight_semantics"] == "whole_overlap_conservative"
+
+
+def test_overlap_fallback_metadata_constrains_network_solver(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+    from src.coregistration import multi_image_network_adjustment
+
+    scenes = make_edge_scenes()
+    monkeypatch.setattr(
+        pipeline,
+        "collect_block_matches",
+        lambda *args, **kwargs: ([], {"total": 12}),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "compute_shifts_from_overlap",
+        lambda *args, **kwargs: (
+            -1.0,
+            2.0,
+            0.8,
+            {"available": True, "screening": {"total": 12}},
+        ),
+    )
+
+    measurement, rejection = pipeline._measure_registration_edge(
+        scenes[0], scenes[1], {"idx_i": 0, "idx_j": 1}
+    )
+    assert rejection is None
+
+    result = multi_image_network_adjustment(
+        [measurement], n_images=2, reference_idx=0
+    )
+
+    np.testing.assert_allclose(result["global_shifts"], [[0.0, 0.0], [2.0, -1.0]])
+    assert result["pair_results"][0]["n_blocks"] == 1
+
+
+def test_overlap_fallback_rejects_shift_beyond_max_global_shift(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = make_edge_scenes()
+    monkeypatch.setattr(
+        pipeline,
+        "collect_block_matches",
+        lambda *args, **kwargs: ([], {"total": 12}),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "compute_shifts_from_overlap",
+        lambda *args, **kwargs: (
+            -50.0,
+            22.0,
+            0.8,
+            {"available": True, "screening": {"total": 12}},
+        ),
+    )
+
+    measurement, rejection = pipeline._measure_registration_edge(
+        scenes[0], scenes[1], {"idx_i": 0, "idx_j": 1}
+    )
+
+    assert measurement is None
+    assert rejection is not None
+    assert "max_global_shift=40" in rejection["reason"]
+    assert rejection["fallback_shift_dx"] == 22.0
+    assert rejection["fallback_shift_dy"] == -50.0
+    assert rejection["fallback_confidence"] == 0.8
+    graph = pipeline.build_registration_graph([], n_images=2, reference_idx=0)
+    assert graph["unreachable"] == [1]
+
+
+@pytest.mark.parametrize("shift, accepted", [(39.9, True), (40.0, False)])
+def test_overlap_fallback_respects_strict_shift_limit(monkeypatch, shift, accepted):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = make_edge_scenes()
+    monkeypatch.setattr(
+        pipeline,
+        "collect_block_matches",
+        lambda *args, **kwargs: ([], {"total": 12}),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "compute_shifts_from_overlap",
+        lambda *args, **kwargs: (
+            0.0,
+            shift,
+            0.8,
+            {"available": True, "screening": {"total": 12}},
+        ),
+    )
+
+    measurement, rejection = pipeline._measure_registration_edge(
+        scenes[0], scenes[1], {"idx_i": 0, "idx_j": 1}
+    )
+
+    assert (measurement is not None) is accepted
+    if not accepted:
+        assert "max_global_shift=40" in rejection["reason"]
+
+
+def test_network_local_controls_pass_explicit_confidence_threshold(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=np.ones((4, 4), dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+        for index in range(2)
+    ]
+    received = []
+
+    def spy_controls(
+        image_idx, parent_idx, pair_measurements, shifts, confidence_threshold
+    ):
+        received.append(confidence_threshold)
+        return {
+            "points_xy": np.empty((0, 2)),
+            "residual_dx": np.array([]),
+            "residual_dy": np.array([]),
+            "n_valid": 0,
+        }
+
+    monkeypatch.setattr(pipeline, "build_parent_based_local_controls", spy_controls)
+    pipeline.build_network_local_corrections(
+        scenes,
+        [{"idx_i": 0, "idx_j": 1, "matches": []}],
+        np.zeros((2, 2), dtype=float),
+        {"parent_map": {0: None, 1: 0}},
+        reference_idx=0,
+    )
+
+    assert received == [0.75]
 
 
 def test_three_or_more_blocks_use_joint_mad_inliers_for_edge_estimate(monkeypatch):

@@ -45,6 +45,7 @@ DEFAULT_REFERENCE_SCENE = (
     "DZ01V_L2_E113.4_N36.6_20260810030932_01_T1"
 )
 EXPECTED_SCENE_COUNT = 5
+MAX_GLOBAL_SHIFT = 40
 
 
 @dataclass
@@ -274,7 +275,7 @@ def _measure_registration_edge(
         scene_j.array, scene_j.transform,
         scene_i.nodata, scene_j.nodata,
         block_size=512,
-        max_global_shift=40,
+        max_global_shift=MAX_GLOBAL_SHIFT,
         confidence_threshold=0.5,
     )
     screening = dict(screening or {})
@@ -303,7 +304,7 @@ def _measure_registration_edge(
             scene_j.transform,
             scene_i.nodata,
             scene_j.nodata,
-            max_global_shift=40,
+            max_global_shift=MAX_GLOBAL_SHIFT,
         )
     except Exception as exc:
         shift_y, shift_x, overlap_confidence = 0.0, 0.0, 0.0
@@ -313,22 +314,44 @@ def _measure_registration_edge(
         }
 
     translation_stats = dict(translation_stats or {})
-    if translation_stats.get("available", False):
+    fallback_available = bool(translation_stats.get("available", False))
+    fallback_within_limit = (
+        abs(float(shift_x)) < MAX_GLOBAL_SHIFT
+        and abs(float(shift_y)) < MAX_GLOBAL_SHIFT
+    )
+    if fallback_available and fallback_within_limit:
         return {
             "idx_i": i,
             "idx_j": j,
             "shift_dx": float(shift_x),
             "shift_dy": float(shift_y),
             "confidence": float(overlap_confidence),
-            "n_blocks": len(matches),
+            "n_blocks": 1,
+            "supporting_block_count": len(matches),
             "inlier_count": 0,
-            "rmse": None,
+            "rmse": 1.0,
             "p95": None,
             "matches": _json_safe(matches),
             "screening": _json_safe(screening),
             "translation_stats": _json_safe(translation_stats),
+            "weight_semantics": "whole_overlap_conservative",
             "method": "overlap_translation_fallback",
         }, None
+
+    if fallback_available and not fallback_within_limit:
+        return None, {
+            "idx_i": i,
+            "idx_j": j,
+            "reason": (
+                "whole-overlap fallback exceeded "
+                f"max_global_shift={MAX_GLOBAL_SHIFT}"
+            ),
+            "screening": _json_safe(screening),
+            "translation_stats": _json_safe(translation_stats),
+            "fallback_shift_dx": float(shift_x),
+            "fallback_shift_dy": float(shift_y),
+            "fallback_confidence": float(overlap_confidence),
+        }
 
     failure_reason = translation_stats.get("failure_reason", "unavailable")
     reasons = [
@@ -583,7 +606,11 @@ def build_network_local_corrections(
         pair = _find_registration_pair(pair_measurements, parent, index)
         matches = pair.get("matches", []) if pair is not None else []
         controls = build_parent_based_local_controls(
-            index, parent, pair_measurements, shifts
+            index,
+            parent,
+            pair_measurements,
+            shifts,
+            confidence_threshold=0.75,
         )
         n_controls = int(controls.get("n_valid", 0))
         detail["control_points"] = n_controls
@@ -737,10 +764,16 @@ def run_registration_stage(
         pair = pair_by_edge.get((i, j))
         rejection = rejected_by_edge.get((i, j))
         if pair is not None:
+            if pair.get("method") == "overlap_translation_fallback":
+                support_text = (
+                    f"supporting_blocks={pair.get('supporting_block_count', 0)}"
+                )
+            else:
+                support_text = f"blocks={pair['n_blocks']}"
             print(
                 f"[{i}]-[{j}] ACCEPTED method={pair.get('method', 'unknown')} "
                 f"dx={pair['shift_dx']:.4f} dy={pair['shift_dy']:.4f} "
-                f"confidence={pair['confidence']:.3f} blocks={pair['n_blocks']}"
+                f"confidence={pair['confidence']:.3f} {support_text}"
             )
         else:
             reason = rejection.get("reason", "unavailable") if rejection else "unavailable"
@@ -866,6 +899,7 @@ def write_registration_network_artifacts(
             str(index): path for index, path in reference_paths.items()
         },
         "global_shifts": global_shift_payload,
+        "reliable_edge_records": _json_safe(list(pair_measurements)),
         "local_corrections": _json_safe(local_corrections or {}),
         "network_adjustment": {
             "n_edges": int(network_result.get("n_edges", len(pair_measurements))),
