@@ -370,6 +370,270 @@ def test_final_warps_are_applied_once_from_original_scene_arrays(monkeypatch):
     assert registered[0].array.dtype == np.float64
 
 
+def test_parent_edge_local_controls_use_network_relative_shift():
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=np.ones((20, 20), dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+        for index in range(5)
+    ]
+    matches = [
+        {
+            "ref_x": 2.0,
+            "ref_y": 2.0,
+            "tgt_x": float(2 + index % 6),
+            "tgt_y": float(2 + index // 6),
+            "shift_dx": 8.5,
+            "shift_dy": 4.25,
+            "confidence": 0.9,
+        }
+        for index in range(24)
+    ]
+    pairs = [{
+        "idx_i": 3,
+        "idx_j": 4,
+        "shift_dx": 8.5,
+        "shift_dy": 4.25,
+        "confidence": 0.9,
+        "n_blocks": len(matches),
+        "rmse": 0.1,
+        "matches": matches,
+    }]
+    graph = {"parent_map": {0: None, 1: 0, 2: 1, 3: 2, 4: 3}}
+    global_shifts = np.array([
+        [0.0, 0.0], [1.0, 0.0], [3.0, 0.0], [5.0, 1.0], [13.0, 5.0]
+    ])
+
+    fields, details = pipeline.build_network_local_corrections(
+        scenes, pairs, global_shifts, graph, reference_idx=0
+    )
+
+    assert details[4]["parent_edge"] == [3, 4]
+    assert details[4]["parent_relative_shift"] == {"dx": 8.0, "dy": 4.0}
+    assert details[4]["control_points"] == 24
+    np.testing.assert_array_equal(fields[4][0], np.zeros((20, 20)))
+
+
+def test_indirect_scene_can_use_parent_edge_rbf(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=np.ones((8, 9), dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+        for index in range(5)
+    ]
+    graph = {"parent_map": {0: None, 1: 0, 2: 1, 3: 2, 4: 3}}
+    global_shifts = np.zeros((5, 2), dtype=float)
+    valid_controls = {
+        "points_xy": np.column_stack([
+            np.arange(30, dtype=float) % 6,
+            np.arange(30, dtype=float) // 6,
+        ]),
+        "residual_dx": np.full(30, 0.5),
+        "residual_dy": np.full(30, -0.25),
+        "n_valid": 30,
+    }
+    pairs = [{
+        "idx_i": 3,
+        "idx_j": 4,
+        "shift_dx": 0.0,
+        "shift_dy": 0.0,
+        "confidence": 0.9,
+        "n_blocks": 30,
+        "rmse": 0.1,
+        "matches": [],
+    }]
+    requested_edges = []
+
+    def fake_controls(image_idx, parent_idx, pair_measurements, shifts):
+        requested_edges.append((image_idx, parent_idx))
+        return valid_controls if image_idx == 4 and parent_idx == 3 else {
+            "points_xy": np.empty((0, 2)),
+            "residual_dx": np.array([]),
+            "residual_dy": np.array([]),
+            "n_valid": 0,
+        }
+
+    monkeypatch.setattr(pipeline, "build_parent_based_local_controls", fake_controls)
+    monkeypatch.setattr(
+        pipeline,
+        "spatial_cross_validate",
+        lambda *args, **kwargs: (
+            {"translation": {"p95": 1.0}, "rbf": {"p95": 0.5}},
+            np.zeros(30, dtype=int),
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "fit_local_rbf",
+        lambda *args, **kwargs: (
+            lambda points: np.ones(len(points)) * 0.25,
+            lambda points: np.ones(len(points)) * -0.1,
+            (0.0, 0.0),
+            (5.0, 4.0),
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_build_local_fields",
+        lambda shape, controls, rbf_dx, rbf_dy, coord_range: (
+            np.full(shape, 0.25), np.full(shape, -0.1)
+        ),
+    )
+
+    fields, details = pipeline.build_network_local_corrections(
+        scenes, pairs, global_shifts, graph, reference_idx=0
+    )
+
+    assert (4, 3) in requested_edges
+    assert details[4]["parent_edge"] == [3, 4]
+    assert details[4]["model_used"] == "rbf"
+    np.testing.assert_array_equal(fields[4][0], np.full((8, 9), 0.25))
+    np.testing.assert_array_equal(fields[4][1], np.full((8, 9), -0.1))
+
+
+def test_rbf_unavailable_keeps_global_only_warp_field():
+    from scripts import five_image_pipeline as pipeline
+
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=np.ones((4, 4), dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+        for index in range(2)
+    ]
+    fields, details = pipeline.build_network_local_corrections(
+        scenes,
+        [{"idx_i": 0, "idx_j": 1, "matches": []}],
+        np.array([[0.0, 0.0], [2.0, 1.0]]),
+        {"parent_map": {0: None, 1: 0}},
+        reference_idx=0,
+    )
+
+    assert details[1]["model_used"] == "translation"
+    assert details[1]["control_points"] == 0
+    assert not np.any(fields[1][0])
+    assert not np.any(fields[1][1])
+
+
+def test_final_global_plus_rbf_warp_uses_original_array_once(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    original_arrays = [
+        np.arange(16, dtype=np.float32).reshape(4, 4),
+        np.arange(16, dtype=np.float32).reshape(4, 4) + 100,
+    ]
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=array,
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+        for index, array in enumerate(original_arrays)
+    ]
+    local_dx = np.full((4, 4), 0.25)
+    local_dy = np.full((4, 4), -0.5)
+    calls = []
+
+    def fake_warp(array, dx, dy, passed_dx, passed_dy, nodata):
+        calls.append((array, dx, dy, passed_dx, passed_dy))
+        return array.astype(np.float64) + 1.0
+
+    monkeypatch.setattr(pipeline, "warp_with_displacement_field", fake_warp)
+    registered, statuses = pipeline.apply_network_shifts_from_original(
+        scenes,
+        np.array([[9.0, 8.0], [2.0, -1.0]]),
+        reference_idx=0,
+        local_fields={1: (local_dx, local_dy)},
+    )
+
+    assert statuses[0] == "reference_anchor"
+    assert len(calls) == 1
+    assert calls[0][0] is original_arrays[1]
+    assert calls[0][1:3] == (2.0, -1.0)
+    assert calls[0][3] is local_dx
+    assert calls[0][4] is local_dy
+    np.testing.assert_array_equal(registered[0].array, original_arrays[0])
+
+
+def test_pipeline_rejects_mixed_crs_before_overlap_detection(tmp_path, monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    paths = [tmp_path / f"scene_{index}_B14.TIF" for index in range(5)]
+
+    def fake_load_scene(path, band):
+        index = int(Path(path).stem.split("_")[1])
+        return pipeline.SceneData(
+            name=f"scene_{index}",
+            path=str(path),
+            array=np.ones((4, 4), dtype=np.float32),
+            transform=rasterio.Affine(1, 0, index * 4, 0, -1, 4),
+            crs="EPSG:4326" if index == 0 else "EPSG:3857",
+            nodata=0.0,
+        )
+
+    monkeypatch.setattr(pipeline, "load_scene", fake_load_scene)
+    monkeypatch.setattr(
+        pipeline,
+        "detect_multi_overlap",
+        lambda *args, **kwargs: pytest.fail("overlap detection must not run"),
+    )
+
+    with pytest.raises(ValueError, match="CRS mismatch"):
+        pipeline.run_pipeline(paths, tmp_path / "output", band="B14")
+
+
+def test_pipeline_rejects_mixed_pixel_resolution_before_overlap_detection(
+    tmp_path, monkeypatch
+):
+    from scripts import five_image_pipeline as pipeline
+
+    paths = [tmp_path / f"scene_{index}_B14.TIF" for index in range(5)]
+
+    def fake_load_scene(path, band):
+        index = int(Path(path).stem.split("_")[1])
+        resolution = 1.0 if index == 0 else 2.0
+        return pipeline.SceneData(
+            name=f"scene_{index}",
+            path=str(path),
+            array=np.ones((4, 4), dtype=np.float32),
+            transform=rasterio.Affine(resolution, 0, 0, 0, -resolution, 4),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+
+    monkeypatch.setattr(pipeline, "load_scene", fake_load_scene)
+    monkeypatch.setattr(
+        pipeline,
+        "detect_multi_overlap",
+        lambda *args, **kwargs: pytest.fail("overlap detection must not run"),
+    )
+
+    with pytest.raises(ValueError, match="pixel resolution mismatch"):
+        pipeline.run_pipeline(paths, tmp_path / "output", band="B14")
+
+
+
 def test_network_diagnostics_separate_geometric_reliable_rejected_and_radiometric_edges():
     from scripts.five_image_pipeline import summarize_registration_edges
 

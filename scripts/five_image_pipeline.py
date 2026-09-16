@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.bagrn import bagrn_normalize
 from src.coregistration import (
+    build_parent_based_local_controls,
     build_local_residual_controls,
     collect_block_matches,
     compute_shifts_from_overlap,
@@ -463,8 +464,9 @@ def apply_network_shifts_from_original(
     scenes: Sequence[SceneData],
     global_shifts: np.ndarray,
     reference_idx: int,
+    local_fields: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None,
 ) -> Tuple[List[SceneData], Dict[int, str]]:
-    """Warp each original scene once using its network-adjusted displacement."""
+    """Warp each original scene once using global and optional local displacement."""
     shifts = np.asarray(global_shifts, dtype=float)
     if shifts.shape != (len(scenes), 2):
         raise ValueError(
@@ -476,15 +478,31 @@ def apply_network_shifts_from_original(
     for index, scene in enumerate(scenes):
         global_dx = float(shifts[index, 0])
         global_dy = float(shifts[index, 1])
+        local_dx = np.zeros_like(scene.array, dtype=np.float64)
+        local_dy = np.zeros_like(scene.array, dtype=np.float64)
+        if local_fields is not None and index in local_fields:
+            candidate_dx, candidate_dy = local_fields[index]
+            local_dx = np.asarray(candidate_dx, dtype=np.float64)
+            local_dy = np.asarray(candidate_dy, dtype=np.float64)
+            if local_dx.shape != scene.array.shape or local_dy.shape != scene.array.shape:
+                raise ValueError(
+                    f"local displacement for scene {index} must match {scene.array.shape}"
+                )
+        has_local = bool(
+            np.any(np.abs(local_dx) > 1e-12)
+            or np.any(np.abs(local_dy) > 1e-12)
+        )
         if index == reference_idx:
             array = scene.array.astype(np.float64, copy=True)
             statuses[index] = "reference_anchor"
-        elif abs(global_dx) < 1e-6 and abs(global_dy) < 1e-6:
+        elif (
+            abs(global_dx) < 1e-6
+            and abs(global_dy) < 1e-6
+            and not has_local
+        ):
             array = scene.array.astype(np.float64, copy=True)
             statuses[index] = "network_solution_zero"
         else:
-            local_dx = np.zeros_like(scene.array, dtype=np.float64)
-            local_dy = np.zeros_like(scene.array, dtype=np.float64)
             array = warp_with_displacement_field(
                 scene.array,
                 global_dx,
@@ -505,6 +523,141 @@ def apply_network_shifts_from_original(
             )
         )
     return registered, statuses
+
+
+def _find_registration_pair(
+    pair_measurements: Sequence[Dict[str, Any]],
+    parent_idx: int,
+    child_idx: int,
+) -> Optional[Dict[str, Any]]:
+    """Return the measured parent-child edge in either stored orientation."""
+    for pair in pair_measurements:
+        if {
+            int(pair["idx_i"]), int(pair["idx_j"])
+        } == {parent_idx, child_idx}:
+            return pair
+    return None
+
+
+def build_network_local_corrections(
+    scenes: Sequence[SceneData],
+    pair_measurements: Sequence[Dict[str, Any]],
+    global_shifts: np.ndarray,
+    graph: Dict[str, Any],
+    reference_idx: int,
+) -> Tuple[Dict[int, Tuple[np.ndarray, np.ndarray]], Dict[int, Dict[str, Any]]]:
+    """Build optional Local RBF fields from each scene's BFS parent edge."""
+    shifts = np.asarray(global_shifts, dtype=float)
+    parent_map = graph["parent_map"]
+    local_fields: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+    local_details: Dict[int, Dict[str, Any]] = {}
+    smoothing_candidates = [0.001, 0.01, 0.05, 0.1, 0.5, 1.0]
+
+    for index, scene in enumerate(scenes):
+        zero_dx = np.zeros_like(scene.array, dtype=np.float64)
+        zero_dy = np.zeros_like(scene.array, dtype=np.float64)
+        local_fields[index] = (zero_dx, zero_dy)
+        parent = parent_map.get(index)
+        detail: Dict[str, Any] = {
+            "parent_index": parent,
+            "parent_edge": [int(parent), index] if parent is not None else None,
+            "parent_relative_shift": None,
+            "model_used": "translation",
+            "local_model": "translation",
+            "control_points": 0,
+            "cross_validation": {},
+            "smoothing_candidates": [],
+            "rbf_smoothing": None,
+        }
+        local_details[index] = detail
+
+        if index == reference_idx or parent is None:
+            continue
+
+        parent_rel_dx = float(shifts[index, 0] - shifts[parent, 0])
+        parent_rel_dy = float(shifts[index, 1] - shifts[parent, 1])
+        detail["parent_relative_shift"] = {
+            "dx": parent_rel_dx,
+            "dy": parent_rel_dy,
+        }
+        pair = _find_registration_pair(pair_measurements, parent, index)
+        matches = pair.get("matches", []) if pair is not None else []
+        controls = build_parent_based_local_controls(
+            index, parent, pair_measurements, shifts
+        )
+        n_controls = int(controls.get("n_valid", 0))
+        detail["control_points"] = n_controls
+        if n_controls < 30:
+            continue
+
+        cv_summary, _ = spatial_cross_validate(
+            controls["points_xy"],
+            controls["residual_dx"],
+            controls["residual_dy"],
+            parent_rel_dx,
+            parent_rel_dy,
+            matches,
+            rbf_smoothing=0.1,
+        )
+        detail["cross_validation"] = _json_safe(cv_summary or {})
+        if _select_translation_or_rbf(cv_summary or {}) != "rbf":
+            continue
+
+        smoothing_rows = []
+        for smoothing in smoothing_candidates:
+            try:
+                summary_s, _ = spatial_cross_validate(
+                    controls["points_xy"],
+                    controls["residual_dx"],
+                    controls["residual_dy"],
+                    parent_rel_dx,
+                    parent_rel_dy,
+                    matches,
+                    rbf_smoothing=smoothing,
+                )
+                rbf_stats = summary_s.get("rbf", {})
+                smoothing_rows.append({
+                    "smoothing": float(smoothing),
+                    "p95": rbf_stats.get("p95"),
+                    "rmse": rbf_stats.get("rmse"),
+                })
+            except Exception as exc:
+                smoothing_rows.append({
+                    "smoothing": float(smoothing),
+                    "p95": None,
+                    "rmse": None,
+                    "error": str(exc),
+                })
+        detail["smoothing_candidates"] = _json_safe(smoothing_rows)
+        valid_rows = [
+            row for row in smoothing_rows
+            if row["p95"] is not None and np.isfinite(row["p95"])
+        ]
+        if not valid_rows:
+            continue
+
+        best_smoothing = min(valid_rows, key=lambda row: row["p95"])["smoothing"]
+        try:
+            rbf_dx, rbf_dy, cmin, cmax = fit_local_rbf(
+                controls["points_xy"],
+                controls["residual_dx"],
+                controls["residual_dy"],
+                smoothing=best_smoothing,
+                neighbors=min(20, n_controls),
+            )
+            coord_range = (cmin[0], cmin[1], cmax[0], cmax[1])
+            local_fields[index] = _build_local_fields(
+                scene.array.shape, controls, rbf_dx, rbf_dy, coord_range
+            )
+        except Exception as exc:
+            detail["fit_error"] = str(exc)
+            continue
+
+        detail["model_used"] = "rbf"
+        detail["local_model"] = "rbf"
+        detail["rbf_smoothing"] = float(best_smoothing)
+
+    return local_fields, local_details
 
 
 def summarize_registration_edges(
@@ -553,8 +706,15 @@ def run_registration_stage(
     reference_paths = build_reference_paths(
         graph["parent_map"], reference_idx, len(scenes)
     )
+    local_fields, local_details = build_network_local_corrections(
+        scenes,
+        pair_measurements,
+        global_shifts,
+        graph,
+        reference_idx,
+    )
     registered, registration_statuses = apply_network_shifts_from_original(
-        scenes, global_shifts, reference_idx
+        scenes, global_shifts, reference_idx, local_fields=local_fields
     )
 
     geometric_edges = [
@@ -600,6 +760,11 @@ def run_registration_stage(
             f"  [{index}] dx={dx:.4f} dy={dy:.4f} "
             f"{registration_statuses[index]}"
         )
+        detail = local_details[index]
+        print(
+            f"      local parent_edge={detail['parent_edge']} "
+            f"controls={detail['control_points']} model={detail['model_used']}"
+        )
 
     return {
         "registered": registered,
@@ -609,6 +774,8 @@ def run_registration_stage(
         "network_result": network_result,
         "reference_paths": reference_paths,
         "registration_statuses": registration_statuses,
+        "local_fields": local_fields,
+        "local_details": local_details,
         "geometric_edges": geometric_edges,
     }
 
@@ -624,6 +791,7 @@ def write_registration_network_artifacts(
     network_result: Dict[str, Any],
     reference_paths: Dict[int, Optional[List[int]]],
     registration_statuses: Dict[int, str],
+    local_corrections: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Dict[str, Path]:
     """Write the auditable registration-network JSON and CSV artifacts."""
     output_dir = Path(output_dir)
@@ -698,6 +866,7 @@ def write_registration_network_artifacts(
             str(index): path for index, path in reference_paths.items()
         },
         "global_shifts": global_shift_payload,
+        "local_corrections": _json_safe(local_corrections or {}),
         "network_adjustment": {
             "n_edges": int(network_result.get("n_edges", len(pair_measurements))),
             "is_tree": bool(network_result.get("is_tree", False)),
@@ -825,6 +994,33 @@ def _compute_bounds(transform: Any, shape: Tuple[int, int]) -> Tuple[float, floa
     )
 
 
+def validate_scene_grid(
+    scenes: Sequence[SceneData],
+    reference_idx: int = 0,
+) -> None:
+    """Reject mixed CRS or pixel resolutions before geometric overlap detection."""
+    reference = scenes[reference_idx]
+    reference_x_resolution = float(np.hypot(reference.transform.a, reference.transform.b))
+    reference_y_resolution = float(np.hypot(reference.transform.d, reference.transform.e))
+    for index, scene in enumerate(scenes):
+        if scene.crs != reference.crs:
+            raise ValueError(
+                f"CRS mismatch between scene {reference_idx} ({reference.crs}) "
+                f"and scene {index} ({scene.crs})"
+            )
+        x_resolution = float(np.hypot(scene.transform.a, scene.transform.b))
+        y_resolution = float(np.hypot(scene.transform.d, scene.transform.e))
+        if not (
+            np.isclose(x_resolution, reference_x_resolution, rtol=0.0, atol=1e-9)
+            and np.isclose(y_resolution, reference_y_resolution, rtol=0.0, atol=1e-9)
+        ):
+            raise ValueError(
+                f"pixel resolution mismatch between scene {reference_idx} "
+                f"({reference_x_resolution}, {reference_y_resolution}) and "
+                f"scene {index} ({x_resolution}, {y_resolution})"
+            )
+
+
 def run_pipeline(
     scene_paths: Sequence[Path],
     output_dir: Path = DEFAULT_OUTPUT_DIR,
@@ -850,6 +1046,7 @@ def run_pipeline(
                 f"reference scene {reference_scene!r} was not found in loaded scenes"
             )
         reference_idx = matching_indices[0]
+    validate_scene_grid(loaded, reference_idx)
     reference = loaded[reference_idx]
     registration_dir = output_band_dir / "registration"
     registered_dir = output_band_dir / "registered"
@@ -877,6 +1074,7 @@ def run_pipeline(
     graph = registration["graph"]
     reference_paths = registration["reference_paths"]
     registration_statuses = registration["registration_statuses"]
+    local_details = registration["local_details"]
     artifact_paths = write_registration_network_artifacts(
         output_band_dir,
         loaded,
@@ -888,6 +1086,7 @@ def run_pipeline(
         network_result,
         reference_paths,
         registration_statuses,
+        local_details,
     )
 
     pair_by_edge = {
@@ -997,6 +1196,7 @@ def run_pipeline(
             "reference_paths": reference_paths,
             "global_shifts": network_result["global_shifts"],
             "registration_statuses": registration_statuses,
+            "local_corrections": local_details,
         }),
         "registration_artifacts": {
             key: str(path) for key, path in artifact_paths.items()
