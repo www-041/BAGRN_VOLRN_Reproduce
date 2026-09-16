@@ -152,3 +152,19 @@ def test_network_solver_uses_all_reliable_edges_and_keeps_reference_anchor():
         np.array([[0.0, 0.0], [1.0, 0.0], [3.0, 0.0], [6.0, 0.0]]),
         atol=1e-8,
     )
+
+
+def test_reference_paths_report_indirect_registration_route():
+    from scripts.five_image_pipeline import build_reference_paths
+
+    paths = build_reference_paths(
+        {0: None, 1: 0, 2: 1, 4: 2}, reference_idx=0, n_images=5
+    )
+
+    assert paths == {
+        0: [0],
+        1: [0, 1],
+        2: [0, 1, 2],
+        3: None,
+        4: [0, 1, 2, 4],
+    }

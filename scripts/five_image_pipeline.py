@@ -389,6 +389,35 @@ def solve_registration_network(
     return result
 
 
+def build_reference_paths(
+    parent: Dict[int, Optional[int]],
+    reference_idx: int,
+    n_images: int,
+) -> Dict[int, Optional[List[int]]]:
+    """Expand BFS parents into reference-rooted paths with cycle protection."""
+    paths: Dict[int, Optional[List[int]]] = {}
+    for index in range(n_images):
+        if index not in parent:
+            paths[index] = None
+            continue
+        path: List[int] = []
+        current: Optional[int] = index
+        seen = set()
+        while current is not None:
+            if current in seen:
+                raise ValueError(f"registration graph parent cycle at scene {current}")
+            seen.add(current)
+            path.append(current)
+            if current == reference_idx:
+                break
+            current = parent.get(current)
+        if not path or path[-1] != reference_idx:
+            paths[index] = None
+        else:
+            paths[index] = list(reversed(path))
+    return paths
+
+
 def _build_local_fields(
     target_shape: Tuple[int, int],
     controls: Dict[str, Any],
