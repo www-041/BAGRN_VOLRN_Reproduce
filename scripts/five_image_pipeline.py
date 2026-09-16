@@ -21,13 +21,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.bagrn import bagrn_normalize
 from src.coregistration import (
-    build_local_residual_controls,
     collect_block_matches,
-    compute_shifts_from_overlap,
-    fit_local_rbf,
     multi_image_network_adjustment,
     phase_correlation,
-    spatial_cross_validate,
     warp_with_displacement_field,
 )
 from src.io_utils import read_geotiff, write_geotiff
@@ -144,80 +140,6 @@ def load_scene(path: Path, band: str = DEFAULT_BAND) -> SceneData:
         crs=crs,
         nodata=nodata,
     )
-
-
-def _residual_summary(matches: Sequence[Dict[str, Any]], dx: float, dy: float) -> Dict[str, Any]:
-    """Summarize accepted block residuals relative to the global shift."""
-    if not matches:
-        return {"count": 0, "rmse_pixels": None, "mean_pixels": None,
-                "median_pixels": None, "p95_pixels": None, "max_pixels": None}
-    residual_dx = np.asarray([m["shift_dx"] for m in matches], dtype=float) - dx
-    residual_dy = np.asarray([m["shift_dy"] for m in matches], dtype=float) - dy
-    errors = np.hypot(residual_dx, residual_dy)
-    return {
-        "count": int(errors.size),
-        "rmse_pixels": float(np.sqrt(np.mean(errors ** 2))),
-        "mean_pixels": float(np.mean(errors)),
-        "median_pixels": float(np.median(errors)),
-        "p95_pixels": float(np.percentile(errors, 95)),
-        "max_pixels": float(np.max(errors)),
-    }
-
-
-def _registration_metrics(
-    matches: Sequence[Dict[str, Any]],
-    screening: Dict[str, Any],
-    dx: float,
-    dy: float,
-    confidence: float,
-) -> Dict[str, Any]:
-    """Build concise per-target registration evidence."""
-    accepted = len(matches)
-    candidate = int(screening.get("total", accepted))
-    if accepted:
-        residual_dx = np.asarray([m["shift_dx"] for m in matches], dtype=float) - dx
-        residual_dy = np.asarray([m["shift_dy"] for m in matches], dtype=float) - dy
-        med_dx = np.median(residual_dx)
-        med_dy = np.median(residual_dy)
-        mad_dx = np.median(np.abs(residual_dx - med_dx))
-        mad_dy = np.median(np.abs(residual_dy - med_dy))
-        inliers = (
-            (np.abs(residual_dx - med_dx) < max(3 * mad_dx, 0.3))
-            & (np.abs(residual_dy - med_dy) < max(3 * mad_dy, 0.3))
-        )
-    else:
-        inliers = np.zeros(0, dtype=bool)
-    return {
-        "offset": {
-            "dx_pixels": float(dx),
-            "dy_pixels": float(dy),
-            "magnitude_pixels": float(np.hypot(dx, dy)),
-            "direction_image_degrees": float(np.degrees(np.arctan2(dy, dx)))
-            if dx or dy else 0.0,
-        },
-        "phase_confidence": float(confidence),
-        "matching": {
-            "candidate_blocks": candidate,
-            "accepted_matches": accepted,
-            "inlier_matches": int(inliers.sum()),
-            "accepted_match_ratio": float(accepted / candidate) if candidate else 0.0,
-            "inlier_ratio": float(inliers.sum() / accepted) if accepted else 0.0,
-            "screening": _json_safe(screening),
-        },
-        "residual_relative_to_global_model": _residual_summary(matches, dx, dy),
-    }
-
-
-def _select_translation_or_rbf(summary: Dict[str, Any]) -> str:
-    """Use the same 10% P95 improvement rule as the two-image script."""
-    translation = summary.get("translation", {}).get("p95")
-    rbf = summary.get("rbf", {}).get("p95")
-    if translation is None or rbf is None:
-        return "translation"
-    if np.isfinite(translation) and np.isfinite(rbf) and translation > 0:
-        if (translation - rbf) / translation >= 0.10:
-            return "rbf"
-    return "translation"
 
 
 def _scene_valid_mask(scene: SceneData) -> np.ndarray:
@@ -722,138 +644,6 @@ def write_registration_network_artifacts(
             })
 
     return {"json": json_path, "pairs_csv": pairs_csv, "scenes_csv": scenes_csv}
-
-
-def _build_local_fields(
-    target_shape: Tuple[int, int],
-    controls: Dict[str, Any],
-    rbf_dx: Any,
-    rbf_dy: Any,
-    coord_range: Tuple[float, float, float, float],
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Evaluate the selected local RBF only inside its control-point hull."""
-    from scipy.spatial import Delaunay
-
-    height, width = target_shape
-    hull = Delaunay(controls["points_xy"])
-    yy, xx = np.mgrid[0:height, 0:width]
-    points = np.column_stack([xx.ravel(), yy.ravel()])
-    dx_field = np.zeros(points.shape[0], dtype=np.float64)
-    dy_field = np.zeros(points.shape[0], dtype=np.float64)
-    xmin, ymin, xmax, ymax = coord_range
-    for start in range(0, len(points), 50000):
-        stop = start + 50000
-        chunk = points[start:stop]
-        inside = hull.find_simplex(chunk) >= 0
-        tx = (chunk[:, 0] - xmin) / max(xmax - xmin, 1e-10)
-        ty = (chunk[:, 1] - ymin) / max(ymax - ymin, 1e-10)
-        normalized = np.column_stack([tx, ty])
-        dx_chunk = np.clip(rbf_dx(normalized), -2.5, 2.5)
-        dy_chunk = np.clip(rbf_dy(normalized), -2.5, 2.5)
-        dx_field[start:stop] = np.where(inside, dx_chunk, 0.0)
-        dy_field[start:stop] = np.where(inside, dy_chunk, 0.0)
-    return dx_field.reshape(target_shape), dy_field.reshape(target_shape)
-
-
-def register_scene_to_reference(
-    reference: SceneData,
-    target: SceneData,
-) -> Tuple[SceneData, Dict[str, Any]]:
-    """Apply the existing two-image global/RBF registration flow to one target."""
-    if reference.crs != target.crs:
-        raise ValueError(f"CRS mismatch: {reference.crs} vs {target.crs}")
-
-    matches, screening = collect_block_matches(
-        reference.array, reference.transform,
-        target.array, target.transform,
-        reference.nodata, target.nodata,
-    )
-    lag_y, lag_x, confidence, translation_stats = compute_shifts_from_overlap(
-        reference.array, reference.transform,
-        target.array, target.transform,
-        reference.nodata, target.nodata,
-    )
-    controls = build_local_residual_controls(
-        matches, lag_x, lag_y, confidence_threshold=0.75
-    )
-
-    use_local = False
-    model = "translation"
-    rbf_dx = rbf_dy = None
-    coord_range = None
-    cv_summary: Dict[str, Any] = {}
-    best_smoothing = None
-    if controls["n_valid"] >= 30:
-        cv_summary, _ = spatial_cross_validate(
-            controls["points_xy"], controls["residual_dx"], controls["residual_dy"],
-            lag_x, lag_y, matches, rbf_smoothing=0.1,
-        )
-        if _select_translation_or_rbf(cv_summary) == "rbf":
-            smoothing_rows = []
-            for smoothing in [0.001, 0.01, 0.05, 0.1, 0.5, 1.0]:
-                try:
-                    summary_s, _ = spatial_cross_validate(
-                        controls["points_xy"], controls["residual_dx"], controls["residual_dy"],
-                        lag_x, lag_y, matches, rbf_smoothing=smoothing,
-                    )
-                    smoothing_rows.append({
-                        "smoothing": smoothing,
-                        "p95": summary_s.get("rbf", {}).get("p95"),
-                        "rmse": summary_s.get("rbf", {}).get("rmse"),
-                    })
-                except Exception as exc:
-                    smoothing_rows.append({"smoothing": smoothing, "p95": None, "rmse": None,
-                                           "error": str(exc)})
-            valid_rows = [row for row in smoothing_rows
-                          if row["p95"] is not None and np.isfinite(row["p95"])]
-            if valid_rows:
-                best_smoothing = min(valid_rows, key=lambda row: row["p95"])["smoothing"]
-                rbf_dx, rbf_dy, xmin, xmax = fit_local_rbf(
-                    controls["points_xy"], controls["residual_dx"],
-                    controls["residual_dy"], smoothing=best_smoothing,
-                    neighbors=min(20, controls["n_valid"]),
-                )
-                coord_range = (xmin[0], xmin[1], xmax[0], xmax[1])
-                use_local = True
-                model = "rbf"
-        else:
-            smoothing_rows = []
-    else:
-        smoothing_rows = []
-
-    local_dx = np.zeros_like(target.array, dtype=np.float64)
-    local_dy = np.zeros_like(target.array, dtype=np.float64)
-    if use_local and controls["n_valid"] >= 3:
-        local_dx, local_dy = _build_local_fields(
-            target.array.shape, controls, rbf_dx, rbf_dy, coord_range
-        )
-    warped = warp_with_displacement_field(
-        target.array,
-        lag_x,
-        lag_y,
-        local_dx,
-        local_dy,
-        target.nodata,
-    )
-    diagnostics = _registration_metrics(matches, screening, lag_x, lag_y, confidence)
-    diagnostics.update({
-        "target_scene": target.name,
-        "model_used": model,
-        "matches": _json_safe(matches),
-        "local_control_points": int(controls["n_valid"]),
-        "translation_stats": _json_safe(translation_stats),
-        "local_cross_validation": _json_safe(cv_summary),
-        "rbf_smoothing": best_smoothing,
-        "smoothing_candidates": _json_safe(smoothing_rows),
-    })
-    return SceneData(
-        name=target.name,
-        path=target.path,
-        array=warped,
-        transform=target.transform,
-        crs=target.crs,
-        nodata=target.nodata,
-    ), diagnostics
 
 
 def _write_registration_matches(path: Path, matches: Iterable[Dict[str, Any]]) -> None:

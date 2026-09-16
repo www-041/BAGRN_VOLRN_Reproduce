@@ -393,3 +393,92 @@ def test_formal_pipeline_stops_before_normalization_when_graph_is_disconnected(
         pipeline.run_pipeline(paths, tmp_path / "output", band="B14")
 
     assert normalization_calls == []
+
+
+def test_synthetic_acceptance_covers_all_planned_registration_network_topologies(
+    monkeypatch,
+):
+    from scripts import five_image_pipeline as pipeline
+
+    def solve(pairs, n_images):
+        graph = pipeline.build_registration_graph(pairs, n_images, reference_idx=0)
+        result = pipeline.solve_registration_network(pairs, n_images, reference_idx=0)
+        return graph, result
+
+    # Case 1: direct star graph.
+    star_graph, star_result = solve(
+        [
+            make_pair(0, 1, 1.0, 0.0),
+            make_pair(0, 2, 2.0, 0.0),
+            make_pair(0, 3, 3.0, 0.0),
+        ],
+        4,
+    )
+    assert star_graph["unreachable"] == []
+    np.testing.assert_allclose(star_result["global_shifts"][:, 0], [0, 1, 2, 3])
+
+    # Case 2: chain graph; the last scene is only indirectly connected.
+    chain_pairs = [make_pair(i, i + 1, i + 1.0, 0.0) for i in range(4)]
+    chain_graph, chain_result = solve(chain_pairs, 5)
+    assert chain_graph["reachable"] == [0, 1, 2, 3, 4]
+    np.testing.assert_allclose(chain_result["global_shifts"][4], [10.0, 0.0], atol=1e-8)
+
+    # Case 3: rejected direct edge, but a valid indirect path remains.
+    indirect_pairs = [make_pair(0, 1, 1.0, 0.0), make_pair(1, 2, 2.0, 0.0)]
+    indirect_graph, indirect_result = solve(indirect_pairs, 3)
+    assert indirect_graph["reachable"] == [0, 1, 2]
+    np.testing.assert_allclose(indirect_result["global_shifts"][2], [3.0, 0.0], atol=1e-8)
+
+    # Case 4: the reference has no direct edge to the last scene.
+    last_scene_pairs = [
+        make_pair(0, 1, 1.0, 0.0),
+        make_pair(1, 2, 1.0, 0.0),
+        make_pair(0, 3, 3.0, 0.0),
+        make_pair(3, 4, 4.0, 0.0),
+    ]
+    last_graph, last_result = solve(last_scene_pairs, 5)
+    paths = pipeline.build_reference_paths(last_graph["parent_map"], 0, 5)
+    assert paths[4] == [0, 3, 4]
+    np.testing.assert_allclose(last_result["global_shifts"][4], [7.0, 0.0], atol=1e-8)
+
+    # Case 5: redundant cycle; all five edges participate in adjustment.
+    cycle_pairs = [
+        make_pair(0, 1, 1.0, 0.0),
+        make_pair(1, 2, 2.0, 0.0),
+        make_pair(2, 0, -3.0, 0.0),
+        make_pair(2, 3, 3.0, 0.0),
+        make_pair(1, 3, 5.0, 0.0),
+    ]
+    cycle_graph, cycle_result = solve(cycle_pairs, 4)
+    assert cycle_graph["unreachable"] == []
+    assert cycle_result["n_edges"] == 5
+    np.testing.assert_allclose(cycle_result["global_shifts"][3], [6.0, 0.0], atol=1e-8)
+
+    # Case 6: disconnected component; the formal stage stops before warping.
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=np.ones((4, 4), dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+        for index in range(5)
+    ]
+    disconnected_pairs = [
+        make_pair(0, 1, 1.0, 0.0),
+        make_pair(1, 2, 1.0, 0.0),
+        make_pair(3, 4, 1.0, 0.0),
+    ]
+    monkeypatch.setattr(
+        pipeline,
+        "match_all_overlap_edges",
+        lambda *args, **kwargs: (disconnected_pairs, []),
+    )
+    with pytest.raises(RuntimeError, match="disconnected"):
+        pipeline.run_registration_stage(
+            scenes,
+            [{"idx_i": 0, "idx_j": 1}],
+            reference_idx=0,
+        )
