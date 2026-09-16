@@ -418,6 +418,54 @@ def build_reference_paths(
     return paths
 
 
+def apply_network_shifts_from_original(
+    scenes: Sequence[SceneData],
+    global_shifts: np.ndarray,
+    reference_idx: int,
+) -> Tuple[List[SceneData], Dict[int, str]]:
+    """Warp each original scene once using its network-adjusted displacement."""
+    shifts = np.asarray(global_shifts, dtype=float)
+    if shifts.shape != (len(scenes), 2):
+        raise ValueError(
+            f"global_shifts must have shape {(len(scenes), 2)}, got {shifts.shape}"
+        )
+
+    registered: List[SceneData] = []
+    statuses: Dict[int, str] = {}
+    for index, scene in enumerate(scenes):
+        global_dx = float(shifts[index, 0])
+        global_dy = float(shifts[index, 1])
+        if index == reference_idx:
+            array = scene.array.astype(np.float64, copy=True)
+            statuses[index] = "reference_anchor"
+        elif abs(global_dx) < 1e-6 and abs(global_dy) < 1e-6:
+            array = scene.array.astype(np.float64, copy=True)
+            statuses[index] = "network_solution_zero"
+        else:
+            local_dx = np.zeros_like(scene.array, dtype=np.float64)
+            local_dy = np.zeros_like(scene.array, dtype=np.float64)
+            array = warp_with_displacement_field(
+                scene.array,
+                global_dx,
+                global_dy,
+                local_dx,
+                local_dy,
+                scene.nodata,
+            )
+            statuses[index] = "network_adjusted"
+        registered.append(
+            SceneData(
+                name=scene.name,
+                path=scene.path,
+                array=array,
+                transform=scene.transform,
+                crs=scene.crs,
+                nodata=scene.nodata,
+            )
+        )
+    return registered, statuses
+
+
 def _build_local_fields(
     target_shape: Tuple[int, int],
     controls: Dict[str, Any],

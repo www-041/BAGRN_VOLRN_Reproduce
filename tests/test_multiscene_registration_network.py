@@ -168,3 +168,49 @@ def test_reference_paths_report_indirect_registration_route():
         3: None,
         4: [0, 1, 2, 4],
     }
+
+
+def test_final_warps_are_applied_once_from_original_scene_arrays(monkeypatch):
+    from scripts import five_image_pipeline as pipeline
+
+    original_arrays = [
+        np.arange(25, dtype=np.float32).reshape(5, 5) + index * 100
+        for index in range(3)
+    ]
+    scenes = [
+        pipeline.SceneData(
+            name=f"scene_{index}",
+            path=f"scene_{index}.tif",
+            array=array,
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=0.0,
+        )
+        for index, array in enumerate(original_arrays)
+    ]
+    shifts = np.array([[0.0, 0.0], [0.0, 0.0], [2.0, -1.0]])
+    calls = []
+
+    def fake_warp(array, dx, dy, local_dx, local_dy, nodata):
+        calls.append({"array": array, "dx": dx, "dy": dy})
+        return array.astype(np.float64) + 1000.0
+
+    monkeypatch.setattr(pipeline, "warp_with_displacement_field", fake_warp)
+
+    registered, statuses = pipeline.apply_network_shifts_from_original(
+        scenes, shifts, reference_idx=0
+    )
+
+    assert statuses == {
+        0: "reference_anchor",
+        1: "network_solution_zero",
+        2: "network_adjusted",
+    }
+    assert len(calls) == 1
+    assert calls[0]["array"] is original_arrays[2]
+    assert calls[0]["dx"] == 2.0
+    assert calls[0]["dy"] == -1.0
+    np.testing.assert_array_equal(registered[0].array, original_arrays[0])
+    np.testing.assert_array_equal(registered[1].array, original_arrays[1])
+    np.testing.assert_array_equal(registered[2].array, original_arrays[2] + 1000.0)
+    assert registered[0].array.dtype == np.float64
