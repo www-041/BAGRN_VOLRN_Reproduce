@@ -466,6 +466,25 @@ def apply_network_shifts_from_original(
     return registered, statuses
 
 
+def summarize_registration_edges(
+    geometric_edges: Sequence[Tuple[int, int]],
+    pair_measurements: Sequence[Dict[str, Any]],
+    rejected_edges: Sequence[Dict[str, Any]],
+    radiometric_overlap_count: Optional[int] = None,
+) -> Dict[str, int]:
+    """Return separate counts for geometry, registration, rejection, and radiometry."""
+    return {
+        "geometric_overlap_pairs": len(geometric_edges),
+        "reliable_registration_edges": len(pair_measurements),
+        "rejected_registration_edges": len(rejected_edges),
+        "radiometric_overlap_pairs": (
+            len(geometric_edges)
+            if radiometric_overlap_count is None
+            else int(radiometric_overlap_count)
+        ),
+    }
+
+
 def _build_local_fields(
     target_shape: Tuple[int, int],
     controls: Dict[str, Any],

@@ -214,3 +214,28 @@ def test_final_warps_are_applied_once_from_original_scene_arrays(monkeypatch):
     np.testing.assert_array_equal(registered[1].array, original_arrays[1])
     np.testing.assert_array_equal(registered[2].array, original_arrays[2] + 1000.0)
     assert registered[0].array.dtype == np.float64
+
+
+def test_network_diagnostics_separate_geometric_reliable_rejected_and_radiometric_edges():
+    from scripts.five_image_pipeline import summarize_registration_edges
+
+    geometric = [(0, 1), (1, 2), (2, 3), (0, 3)]
+    reliable = [make_pair(0, 1, 1.0, 0.0), make_pair(1, 2, 1.0, 0.0)]
+    rejected = [
+        {"idx_i": 2, "idx_j": 3, "reason": "low confidence"},
+        {"idx_i": 0, "idx_j": 3, "reason": "no overlap texture"},
+    ]
+
+    summary = summarize_registration_edges(
+        geometric,
+        reliable,
+        rejected,
+        radiometric_overlap_count=len(geometric),
+    )
+
+    assert summary == {
+        "geometric_overlap_pairs": 4,
+        "reliable_registration_edges": 2,
+        "rejected_registration_edges": 2,
+        "radiometric_overlap_pairs": 4,
+    }
