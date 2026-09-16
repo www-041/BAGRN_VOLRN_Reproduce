@@ -25,6 +25,7 @@ from src.coregistration import (
     collect_block_matches,
     compute_shifts_from_overlap,
     fit_local_rbf,
+    multi_image_network_adjustment,
     phase_correlation,
     spatial_cross_validate,
     warp_with_displacement_field,
@@ -372,6 +373,20 @@ def build_registration_graph(
         "unreachable": unreachable,
         "spanning_tree_edges": spanning_tree_edges,
     }
+
+
+def solve_registration_network(
+    pair_measurements: Sequence[Dict[str, Any]],
+    n_images: int,
+    reference_idx: int,
+) -> Dict[str, Any]:
+    """Solve all reliable pair equations with the configured reference fixed."""
+    result = multi_image_network_adjustment(
+        list(pair_measurements), n_images, reference_idx=reference_idx
+    )
+    result["global_shifts"] = np.asarray(result["global_shifts"], dtype=float)
+    result["global_shifts"][reference_idx] = [0.0, 0.0]
+    return result
 
 
 def _build_local_fields(

@@ -129,3 +129,26 @@ def test_registration_graph_does_not_use_rejected_or_unrelated_edges():
     assert graph["reachable"] == [0]
     assert graph["unreachable"] == [1, 2, 3]
     assert graph["spanning_tree_edges"] == []
+
+
+def test_network_solver_uses_all_reliable_edges_and_keeps_reference_anchor():
+    from scripts.five_image_pipeline import solve_registration_network
+
+    pairs = [
+        make_pair(0, 1, 1.0, 0.0),
+        make_pair(1, 2, 2.0, 0.0),
+        make_pair(2, 3, 3.0, 0.0),
+        make_pair(0, 2, 3.0, 0.0),
+        make_pair(1, 3, 5.0, 0.0),
+    ]
+
+    result = solve_registration_network(pairs, n_images=4, reference_idx=0)
+
+    assert result["n_edges"] == 5
+    assert result["is_tree"] is False
+    assert len(result["pair_results"]) == 5
+    np.testing.assert_allclose(
+        result["global_shifts"],
+        np.array([[0.0, 0.0], [1.0, 0.0], [3.0, 0.0], [6.0, 0.0]]),
+        atol=1e-8,
+    )
