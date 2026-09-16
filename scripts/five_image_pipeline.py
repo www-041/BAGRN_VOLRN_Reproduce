@@ -328,6 +328,8 @@ def match_all_overlap_edges(
         if measurement is not None:
             pair_measurements.append(measurement)
         elif rejection is not None:
+            rejection["scene_i"] = scenes[i].name
+            rejection["scene_j"] = scenes[j].name
             rejected_edges.append(rejection)
     return pair_measurements, rejected_edges
 
@@ -370,6 +372,7 @@ def build_registration_graph(
         "adjacency": {
             index: sorted(neighbors) for index, neighbors in adjacency.items()
         },
+        "parent_map": parent,
         "parent": parent,
         "reachable": reachable,
         "unreachable": unreachable,
@@ -487,6 +490,93 @@ def summarize_registration_edges(
     }
 
 
+def run_registration_stage(
+    scenes: Sequence[SceneData],
+    overlaps: Sequence[Dict[str, Any]],
+    reference_idx: int,
+) -> Dict[str, Any]:
+    """Run formal content registration before normalization or mosaicking."""
+    if not overlaps and len(scenes) > 1:
+        raise RuntimeError("No geometric overlap pairs were found for registration")
+
+    pair_measurements, rejected_edges = match_all_overlap_edges(scenes, overlaps)
+    graph = build_registration_graph(pair_measurements, len(scenes), reference_idx)
+    if graph["unreachable"]:
+        unreachable_names = [scenes[index].name for index in graph["unreachable"]]
+        raise RuntimeError(
+            "Reliable registration graph is disconnected from reference: "
+            + ", ".join(unreachable_names)
+        )
+
+    network_result = solve_registration_network(
+        pair_measurements, len(scenes), reference_idx
+    )
+    global_shifts = network_result["global_shifts"]
+    if not np.allclose(global_shifts[reference_idx], [0.0, 0.0], atol=1e-8):
+        raise RuntimeError("Network adjustment violated reference anchor")
+    reference_paths = build_reference_paths(
+        graph["parent_map"], reference_idx, len(scenes)
+    )
+    registered, registration_statuses = apply_network_shifts_from_original(
+        scenes, global_shifts, reference_idx
+    )
+
+    geometric_edges = [
+        (int(overlap["idx_i"]), int(overlap["idx_j"])) for overlap in overlaps
+    ]
+    pair_by_edge = {
+        (int(pair["idx_i"]), int(pair["idx_j"])): pair
+        for pair in pair_measurements
+    }
+    rejected_by_edge = {
+        (int(item["idx_i"]), int(item["idx_j"])): item
+        for item in rejected_edges
+    }
+    print(
+        f"Reference anchor: [{reference_idx}] {scenes[reference_idx].name}"
+    )
+    print(f"Geometric overlap pairs: {len(geometric_edges)}")
+    print("--- Pairwise registration edges ---")
+    for i, j in geometric_edges:
+        pair = pair_by_edge.get((i, j))
+        rejection = rejected_by_edge.get((i, j))
+        if pair is not None:
+            print(
+                f"[{i}]-[{j}] ACCEPTED method={pair.get('method', 'unknown')} "
+                f"dx={pair['shift_dx']:.4f} dy={pair['shift_dy']:.4f} "
+                f"confidence={pair['confidence']:.3f} blocks={pair['n_blocks']}"
+            )
+        else:
+            reason = rejection.get("reason", "unavailable") if rejection else "unavailable"
+            print(f"[{i}]-[{j}] REJECTED {reason}")
+    print(f"Reliable registration edges: {len(pair_measurements)}")
+    print(f"Rejected registration edges: {len(rejected_edges)}")
+    print(f"Reference-connected scenes: {len(graph['reachable'])}/{len(scenes)}")
+    print("Registration paths:")
+    for index in range(len(scenes)):
+        path = reference_paths[index]
+        path_text = "->".join(map(str, path)) if path else "unreachable"
+        print(f"  [{index}] {scenes[index].name} path={path_text}")
+    print("Network-adjusted global residual shifts:")
+    for index, scene in enumerate(scenes):
+        dx, dy = global_shifts[index]
+        print(
+            f"  [{index}] dx={dx:.4f} dy={dy:.4f} "
+            f"{registration_statuses[index]}"
+        )
+
+    return {
+        "registered": registered,
+        "pair_measurements": pair_measurements,
+        "rejected_edges": rejected_edges,
+        "graph": graph,
+        "network_result": network_result,
+        "reference_paths": reference_paths,
+        "registration_statuses": registration_statuses,
+        "geometric_edges": geometric_edges,
+    }
+
+
 def write_registration_network_artifacts(
     output_dir: Path,
     scenes: Sequence[SceneData],
@@ -522,6 +612,7 @@ def write_registration_network_artifacts(
     shifts = np.asarray(network_result["global_shifts"], dtype=float)
 
     global_shift_records = []
+    global_shift_payload = []
     for index, scene in enumerate(scenes):
         path = reference_paths.get(index)
         global_dx = float(shifts[index, 0])
@@ -536,6 +627,15 @@ def write_registration_network_artifacts(
             "global_magnitude_pixels": float(np.hypot(global_dx, global_dy)),
             "registration_status": registration_statuses.get(index, "unknown"),
         })
+        global_shift_payload.append({
+            "scene_index": index,
+            "scene_id": scene.name,
+            "reference_path": path,
+            "dx": global_dx,
+            "dy": global_dy,
+            "magnitude_pixels": float(np.hypot(global_dx, global_dy)),
+            "status": registration_statuses.get(index, "unknown"),
+        })
 
     network_payload = {
         "reference_scene_index": int(reference_idx),
@@ -543,16 +643,25 @@ def write_registration_network_artifacts(
         "reference_role": "anchor_only",
         "geometric_edges": [list(edge) for edge in geometric_edges],
         "geometric_overlap_count": counts["geometric_overlap_pairs"],
-        "reliable_edges": counts["reliable_registration_edges"],
-        "rejected_edges": counts["rejected_registration_edges"],
+        "reliable_edges": [
+            [int(pair["idx_i"]), int(pair["idx_j"])]
+            for pair in pair_measurements
+        ],
+        "rejected_edges": [
+            [int(item["idx_i"]), int(item["idx_j"])]
+            for item in rejected_edges
+        ],
+        "reliable_registration_edge_count": counts["reliable_registration_edges"],
+        "rejected_registration_edge_count": counts["rejected_registration_edges"],
         "radiometric_overlap_pairs": counts["radiometric_overlap_pairs"],
         "connected": not bool(graph["unreachable"]),
         "unreachable": list(graph["unreachable"]),
+        "unreachable_scene_indices": list(graph["unreachable"]),
         "spanning_tree_edges": [list(edge) for edge in graph["spanning_tree_edges"]],
         "reference_paths": {
             str(index): path for index, path in reference_paths.items()
         },
-        "global_shifts": global_shift_records,
+        "global_shifts": global_shift_payload,
         "network_adjustment": {
             "n_edges": int(network_result.get("n_edges", len(pair_measurements))),
             "is_tree": bool(network_result.get("is_tree", False)),
@@ -785,17 +894,28 @@ def run_pipeline(
     scene_paths: Sequence[Path],
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     band: str = DEFAULT_BAND,
+    reference_scene: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run the five-scene registration, normalization, and mosaic workflow."""
+    """Run the reference-anchored network registration and mosaic workflow."""
     if len(scene_paths) != EXPECTED_SCENE_COUNT:
         raise ValueError(f"expected {EXPECTED_SCENE_COUNT} scene paths, got {len(scene_paths)}")
 
     output_band_dir = Path(output_dir) / band
     output_band_dir.mkdir(parents=True, exist_ok=True)
     loaded = [load_scene(Path(path), band=band) for path in scene_paths]
-    reference = loaded[0]
-    registered = [reference]
-    registration_records = []
+    if reference_scene is None:
+        reference_idx = 0
+    else:
+        matching_indices = [
+            index for index, scene in enumerate(loaded)
+            if scene.name == reference_scene
+        ]
+        if not matching_indices:
+            raise ValueError(
+                f"reference scene {reference_scene!r} was not found in loaded scenes"
+            )
+        reference_idx = matching_indices[0]
+    reference = loaded[reference_idx]
     registration_dir = output_band_dir / "registration"
     registered_dir = output_band_dir / "registered"
     bagrn_dir = output_band_dir / "bagrn"
@@ -807,23 +927,52 @@ def run_pipeline(
 
     print(f"Reference scene: {reference.name}")
     print(f"Scenes: {len(loaded)}")
-    for target in loaded[1:]:
-        print(f"\n--- Co-registration: {reference.name} -> {target.name} ---")
-        registered_target, diagnostics = register_scene_to_reference(reference, target)
-        registered.append(registered_target)
-        registration_records.append(diagnostics)
-        print(
-            f"  Translation: dx={diagnostics['offset']['dx_pixels']:.4f}, "
-            f"dy={diagnostics['offset']['dy_pixels']:.4f}, "
-            f"matches={diagnostics['matching']['accepted_matches']}/"
-            f"{diagnostics['matching']['candidate_blocks']}, model={diagnostics['model_used']}"
-        )
+    original_bounds = [
+        _compute_bounds(scene.transform, scene.array.shape) for scene in loaded
+    ]
+    overlaps = detect_multi_overlap(original_bounds, [scene.transform for scene in loaded], min_pixels=100)
+    if not overlaps:
+        raise RuntimeError("No valid overlap pairs were found for the five scenes")
+
+    registration = run_registration_stage(loaded, overlaps, reference_idx)
+    registered = registration["registered"]
+    pair_measurements = registration["pair_measurements"]
+    rejected_edges = registration["rejected_edges"]
+    network_result = registration["network_result"]
+    graph = registration["graph"]
+    reference_paths = registration["reference_paths"]
+    registration_statuses = registration["registration_statuses"]
+    artifact_paths = write_registration_network_artifacts(
+        output_band_dir,
+        loaded,
+        reference_idx,
+        overlaps,
+        pair_measurements,
+        rejected_edges,
+        graph,
+        network_result,
+        reference_paths,
+        registration_statuses,
+    )
+
+    pair_by_edge = {
+        (int(pair["idx_i"]), int(pair["idx_j"])): pair
+        for pair in pair_measurements
+    }
+    rejected_by_edge = {
+        (int(item["idx_i"]), int(item["idx_j"])): item
+        for item in rejected_edges
+    }
+    for i, j in registration["geometric_edges"]:
+        pair = pair_by_edge.get((i, j))
+        record = pair if pair is not None else rejected_by_edge[(i, j)]
+        edge_stem = f"{i:02d}_{loaded[i].name}__{j:02d}_{loaded[j].name}_{band}"
         _write_registration_matches(
-            registration_dir / f"{len(registered) - 1:02d}_{target.name}_{band}_matches.csv",
-            diagnostics.get("matches", []),
+            registration_dir / f"{edge_stem}_matches.csv",
+            record.get("matches", []),
         )
-        (registration_dir / f"{len(registered) - 1:02d}_{target.name}_{band}_metrics.json").write_text(
-            json.dumps(_json_safe(diagnostics), indent=2, ensure_ascii=False),
+        (registration_dir / f"{edge_stem}_metrics.json").write_text(
+            json.dumps(_json_safe(record), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -831,10 +980,6 @@ def run_pipeline(
     nodatas = [scene.nodata for scene in registered]
     transforms = [scene.transform for scene in registered]
     bounds = [_compute_bounds(scene.transform, scene.array.shape) for scene in registered]
-    overlaps = detect_multi_overlap(bounds, transforms, min_pixels=100)
-    if not overlaps:
-        raise RuntimeError("No valid overlap pairs were found for the five registered scenes")
-    print(f"\nOverlap pairs: {len(overlaps)}")
 
     for index, scene in enumerate(registered):
         write_geotiff(
@@ -845,10 +990,10 @@ def run_pipeline(
             nodata=scene.nodata,
         )
 
-    original_metrics = compute_all(arrays, arrays, nodatas, overlaps, [0])
+    original_metrics = compute_all(arrays, arrays, nodatas, overlaps, [reference_idx])
     start = time.time()
     bagrn_result, bagrn_coeffs, bagrn_info = bagrn_normalize(
-        arrays, nodatas, overlaps, control_idx=0
+        arrays, nodatas, overlaps, control_idx=reference_idx
     )
     bagrn_seconds = time.time() - start
 
@@ -866,8 +1011,12 @@ def run_pipeline(
         verbose=False,
     )
     volrn_seconds = time.time() - start
-    bagrn_metrics = compute_all(arrays, bagrn_result, nodatas, overlaps, [0])
-    volrn_metrics = compute_all(arrays, volrn_result, nodatas, overlaps, [0])
+    bagrn_metrics = compute_all(
+        arrays, bagrn_result, nodatas, overlaps, [reference_idx]
+    )
+    volrn_metrics = compute_all(
+        arrays, volrn_result, nodatas, overlaps, [reference_idx]
+    )
 
     for method, normalized in (("bagrn", bagrn_result), ("volrn", volrn_result)):
         method_dir = bagrn_dir if method == "bagrn" else volrn_dir
@@ -891,10 +1040,32 @@ def run_pipeline(
         "band": band,
         "scene_count": len(registered),
         "reference_scene": reference.name,
+        "reference_scene_index": reference_idx,
         "scene_order": [scene.name for scene in registered],
         "overlap_count": len(overlaps),
         "overlaps": overlaps,
-        "registration": registration_records,
+        "registration": _json_safe(pair_measurements),
+        "registration_rejected": _json_safe(rejected_edges),
+        "registration_network": _json_safe({
+            "geometric_edges": registration["geometric_edges"],
+            "reliable_edges": [
+                [int(pair["idx_i"]), int(pair["idx_j"])]
+                for pair in pair_measurements
+            ],
+            "rejected_edges": [
+                [int(item["idx_i"]), int(item["idx_j"])]
+                for item in rejected_edges
+            ],
+            "reachable": graph["reachable"],
+            "unreachable": graph["unreachable"],
+            "spanning_tree_edges": graph["spanning_tree_edges"],
+            "reference_paths": reference_paths,
+            "global_shifts": network_result["global_shifts"],
+            "registration_statuses": registration_statuses,
+        }),
+        "registration_artifacts": {
+            key: str(path) for key, path in artifact_paths.items()
+        },
         "metrics": {
             "original": original_metrics,
             "bagrn": bagrn_metrics,
@@ -932,7 +1103,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--reference-scene", default=DEFAULT_REFERENCE_SCENE)
     args = parser.parse_args(argv)
     paths = discover_scene_paths(args.input_dir, args.band, args.reference_scene)
-    run_pipeline(paths, args.output_dir, args.band)
+    run_pipeline(paths, args.output_dir, args.band, args.reference_scene)
     return 0
 
 

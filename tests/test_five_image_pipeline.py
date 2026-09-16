@@ -86,32 +86,39 @@ def test_run_pipeline_uses_reference_plus_four_registered_scenes(tmp_path, monke
             nodata=None,
         )
 
-    registration_calls = []
-
-    def fake_register(reference, target):
-        registration_calls.append((reference.name, target.name))
-        return target, {
-            "target_scene": target.name,
-            "model_used": "translation",
-            "offset": {"dx_pixels": 0.0, "dy_pixels": 0.0},
-            "matching": {
-                "accepted_matches": 4,
-                "candidate_blocks": 4,
-            },
-        }
-
     overlap_pairs = [
         {
-            "idx_i": 0,
-            "idx_j": 1,
+            "idx_i": i,
+            "idx_j": i + 1,
             "window_i": (0, 4, 0, 4),
             "window_j": (0, 4, 0, 4),
             "pixel_count": 16,
         }
+        for i in range(4)
+    ]
+    pair_measurements = [
+        {
+            "idx_i": i,
+            "idx_j": i + 1,
+            "shift_dx": 0.0,
+            "shift_dy": 0.0,
+            "confidence": 0.9,
+            "n_blocks": 4,
+            "rmse": 0.0,
+            "p95": 0.0,
+            "matches": [],
+            "screening": {"total": 4},
+            "method": "synthetic",
+        }
+        for i in range(4)
     ]
     monkeypatch.setattr(pipeline, "load_scene", fake_load_scene)
-    monkeypatch.setattr(pipeline, "register_scene_to_reference", fake_register)
     monkeypatch.setattr(pipeline, "detect_multi_overlap", lambda *args, **kwargs: overlap_pairs)
+    monkeypatch.setattr(
+        pipeline,
+        "match_all_overlap_edges",
+        lambda scenes, overlaps: (pair_measurements, []),
+    )
 
     calls = {"bagrn": None, "volrn": None, "mosaics": []}
 
@@ -138,13 +145,7 @@ def test_run_pipeline_uses_reference_plus_four_registered_scenes(tmp_path, monke
 
     result = pipeline.run_pipeline(paths, tmp_path / "output", band="B14")
 
-    assert registration_calls == [
-        ("reference", "target_b"),
-        ("reference", "target_c"),
-        ("reference", "target_d"),
-        ("reference", "target_e"),
-    ]
-    assert calls["bagrn"] == (5, 0, 1)
+    assert calls["bagrn"] == (5, 0, 4)
     assert calls["volrn"] == (5, 5, 5, 5)
     assert calls["mosaics"] == [(5, "mosaic_B14_bagrn.tif"), (5, "mosaic_B14_volrn.tif")]
     assert result["scene_count"] == 5
@@ -155,7 +156,7 @@ def test_run_pipeline_uses_reference_plus_four_registered_scenes(tmp_path, monke
     assert summary_path.exists()
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["scene_count"] == 5
-    assert summary["overlap_count"] == 1
+    assert summary["overlap_count"] == 4
     registration_dir = tmp_path / "output" / "B14" / "registration"
     assert len(list(registration_dir.glob("*_matches.csv"))) == 4
     assert len(list(registration_dir.glob("*_metrics.json"))) == 4

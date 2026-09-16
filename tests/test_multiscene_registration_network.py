@@ -1,7 +1,9 @@
 import csv
 import json
+from pathlib import Path
 
 import numpy as np
+import pytest
 import rasterio
 
 
@@ -298,11 +300,14 @@ def test_registration_network_artifacts_preserve_indirect_paths_and_edge_rows(tm
     assert data["reference_scene_id"] == "scene_0"
     assert data["reference_role"] == "anchor_only"
     assert data["geometric_edges"] == [[0, 1], [1, 2], [2, 3], [0, 3]]
-    assert data["reliable_edges"] == 3
-    assert data["rejected_edges"] == 1
+    assert data["reliable_edges"] == [[0, 1], [1, 2], [2, 3]]
+    assert data["rejected_edges"] == [[0, 3]]
     assert data["connected"] is True
+    assert data["unreachable_scene_indices"] == []
     assert data["reference_paths"]["3"] == [0, 1, 2, 3]
     assert data["reference_paths"]["3"] != [0, 3]
+    assert np.isclose(data["global_shifts"][3]["dx"], 6.0)
+    assert data["global_shifts"][3]["status"] == "network_adjusted"
 
     with artifacts["pairs_csv"].open(newline="", encoding="utf-8") as handle:
         pair_rows = list(csv.DictReader(handle))
@@ -326,3 +331,65 @@ def test_registration_network_artifacts_preserve_indirect_paths_and_edge_rows(tm
     }
     scene_three = next(row for row in scene_rows if row["scene_index"] == "3")
     assert scene_three["reference_path"] == "0 -> 1 -> 2 -> 3"
+
+
+def test_formal_pipeline_stops_before_normalization_when_graph_is_disconnected(
+    tmp_path, monkeypatch
+):
+    from scripts import five_image_pipeline as pipeline
+
+    scene_names = ["reference", "scene_1", "scene_2", "scene_3", "scene_4"]
+    paths = [tmp_path / f"{name}_B14.TIF" for name in scene_names]
+    for path in paths:
+        path.touch()
+
+    def fake_load_scene(path, band):
+        index = scene_names.index(Path(path).stem.removesuffix("_B14"))
+        return pipeline.SceneData(
+            name=scene_names[index],
+            path=str(path),
+            array=np.full((8, 8), index + 1, dtype=np.float32),
+            transform=rasterio.Affine.identity(),
+            crs="EPSG:4326",
+            nodata=None,
+        )
+
+    overlaps = [
+        {"idx_i": 0, "idx_j": 1},
+        {"idx_i": 1, "idx_j": 2},
+        {"idx_i": 3, "idx_j": 4},
+    ]
+    pairs = [
+        make_pair(0, 1, 1.0, 0.0),
+        make_pair(1, 2, 1.0, 0.0),
+        make_pair(3, 4, 1.0, 0.0),
+    ]
+    normalization_calls = []
+
+    monkeypatch.setattr(pipeline, "load_scene", fake_load_scene)
+    monkeypatch.setattr(pipeline, "detect_multi_overlap", lambda *args, **kwargs: overlaps)
+    monkeypatch.setattr(
+        pipeline,
+        "match_all_overlap_edges",
+        lambda *args, **kwargs: (pairs, []),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "bagrn_normalize",
+        lambda *args, **kwargs: normalization_calls.append("bagrn"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "volrn_normalize",
+        lambda *args, **kwargs: normalization_calls.append("volrn"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "create_mosaic",
+        lambda *args, **kwargs: normalization_calls.append("mosaic"),
+    )
+
+    with pytest.raises(RuntimeError, match="disconnected"):
+        pipeline.run_pipeline(paths, tmp_path / "output", band="B14")
+
+    assert normalization_calls == []
