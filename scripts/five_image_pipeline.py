@@ -329,6 +329,51 @@ def match_all_overlap_edges(
     return pair_measurements, rejected_edges
 
 
+def build_registration_graph(
+    pair_measurements: Sequence[Dict[str, Any]],
+    n_images: int,
+    reference_idx: int = 0,
+) -> Dict[str, Any]:
+    """Build a deterministic reference-rooted graph from reliable edges."""
+    if not 0 <= reference_idx < n_images:
+        raise ValueError(f"reference_idx {reference_idx} is outside 0..{n_images - 1}")
+
+    adjacency = {index: set() for index in range(n_images)}
+    for pair in pair_measurements:
+        i = int(pair["idx_i"])
+        j = int(pair["idx_j"])
+        if i == j or not (0 <= i < n_images and 0 <= j < n_images):
+            raise ValueError(f"invalid registration edge: {i}-{j}")
+        adjacency[i].add(j)
+        adjacency[j].add(i)
+
+    from collections import deque
+
+    parent: Dict[int, Optional[int]] = {reference_idx: None}
+    queue = deque([reference_idx])
+    spanning_tree_edges: List[Tuple[int, int]] = []
+    while queue:
+        node = queue.popleft()
+        for neighbor in sorted(adjacency[node]):
+            if neighbor in parent:
+                continue
+            parent[neighbor] = node
+            spanning_tree_edges.append((node, neighbor))
+            queue.append(neighbor)
+
+    reachable = sorted(parent)
+    unreachable = [index for index in range(n_images) if index not in parent]
+    return {
+        "adjacency": {
+            index: sorted(neighbors) for index, neighbors in adjacency.items()
+        },
+        "parent": parent,
+        "reachable": reachable,
+        "unreachable": unreachable,
+        "spanning_tree_edges": spanning_tree_edges,
+    }
+
+
 def _build_local_fields(
     target_shape: Tuple[int, int],
     controls: Dict[str, Any],

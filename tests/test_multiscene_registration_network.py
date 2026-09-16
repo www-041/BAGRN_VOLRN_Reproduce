@@ -96,3 +96,36 @@ def test_all_geometric_overlap_edges_are_matched_not_only_reference_edges(monkey
         (0, 1), (1, 2), (2, 3)
     ]
     assert rejected == []
+
+
+def test_registration_graph_finds_indirect_reachability_and_unreachable_scene():
+    from scripts.five_image_pipeline import build_registration_graph
+
+    graph = build_registration_graph(
+        [
+            make_pair(0, 1, 1.0, 0.0),
+            make_pair(1, 2, 1.0, 0.0),
+            make_pair(2, 4, 1.0, 0.0),
+        ],
+        n_images=5,
+        reference_idx=0,
+    )
+
+    assert graph["reachable"] == [0, 1, 2, 4]
+    assert graph["unreachable"] == [3]
+    assert graph["parent"] == {0: None, 1: 0, 2: 1, 4: 2}
+    assert graph["spanning_tree_edges"] == [(0, 1), (1, 2), (2, 4)]
+
+
+def test_registration_graph_does_not_use_rejected_or_unrelated_edges():
+    from scripts.five_image_pipeline import build_registration_graph
+
+    graph = build_registration_graph(
+        [make_pair(1, 2, 1.0, 0.0)],
+        n_images=4,
+        reference_idx=0,
+    )
+
+    assert graph["reachable"] == [0]
+    assert graph["unreachable"] == [1, 2, 3]
+    assert graph["spanning_tree_edges"] == []
