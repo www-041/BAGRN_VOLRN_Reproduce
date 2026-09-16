@@ -396,7 +396,13 @@ def run_pipeline(
     registered = [reference]
     registration_records = []
     registration_dir = output_band_dir / "registration"
+    registered_dir = output_band_dir / "registered"
+    bagrn_dir = output_band_dir / "bagrn"
+    volrn_dir = output_band_dir / "volrn"
     registration_dir.mkdir(parents=True, exist_ok=True)
+    registered_dir.mkdir(parents=True, exist_ok=True)
+    bagrn_dir.mkdir(parents=True, exist_ok=True)
+    volrn_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Reference scene: {reference.name}")
     print(f"Scenes: {len(loaded)}")
@@ -429,7 +435,6 @@ def run_pipeline(
         raise RuntimeError("No valid overlap pairs were found for the five registered scenes")
     print(f"\nOverlap pairs: {len(overlaps)}")
 
-    registered_dir = output_band_dir / "registered"
     for index, scene in enumerate(registered):
         write_geotiff(
             registered_dir / f"{index:02d}_{scene.name}_{band}_registered.tif",
@@ -464,7 +469,7 @@ def run_pipeline(
     volrn_metrics = compute_all(arrays, volrn_result, nodatas, overlaps, [0])
 
     for method, normalized in (("bagrn", bagrn_result), ("volrn", volrn_result)):
-        method_dir = output_band_dir / method
+        method_dir = bagrn_dir if method == "bagrn" else volrn_dir
         for index, scene_array in enumerate(normalized):
             write_geotiff(
                 method_dir / f"{index:02d}_{registered[index].name}_{band}_{method}.tif",

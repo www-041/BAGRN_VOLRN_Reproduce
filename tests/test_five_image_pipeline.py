@@ -126,11 +126,6 @@ def test_run_pipeline_uses_reference_plus_four_registered_scenes(tmp_path, monke
         calls["volrn"] = (len(arrays), len(transforms), len(bounds), len(nodatas))
         return list(arrays), {"coefficients": "synthetic"}
 
-    def fake_write(path, array, transform, crs, nodata=None, dtype=None):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).touch()
-        return str(path)
-
     def fake_mosaic(arrays, transforms, crs, nodatas, path):
         calls["mosaics"].append((len(arrays), Path(path).name))
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -139,7 +134,6 @@ def test_run_pipeline_uses_reference_plus_four_registered_scenes(tmp_path, monke
     monkeypatch.setattr(pipeline, "compute_all", fake_compute_all)
     monkeypatch.setattr(pipeline, "bagrn_normalize", fake_bagrn)
     monkeypatch.setattr(pipeline, "volrn_normalize", fake_volrn)
-    monkeypatch.setattr(pipeline, "write_geotiff", fake_write)
     monkeypatch.setattr(pipeline, "create_mosaic", fake_mosaic)
 
     result = pipeline.run_pipeline(paths, tmp_path / "output", band="B14")
