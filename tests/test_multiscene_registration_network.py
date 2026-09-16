@@ -629,7 +629,10 @@ def test_indirect_scene_can_use_parent_edge_rbf(monkeypatch):
     }]
     requested_edges = []
 
-    def fake_controls(image_idx, parent_idx, pair_measurements, shifts):
+    def fake_controls(
+        image_idx, parent_idx, pair_measurements, shifts, confidence_threshold
+    ):
+        assert confidence_threshold == 0.75
         requested_edges.append((image_idx, parent_idx))
         return valid_controls if image_idx == 4 and parent_idx == 3 else {
             "points_xy": np.empty((0, 2)),
