@@ -1,14 +1,10 @@
-"""CLI entry-point for five-scene SIFT mosaic benchmark.
+"""CLI entry-point for five-scene SIFT + BAGRN + VOLRN multi-image mosaic.
 
 Usage::
 
     python -m scripts.run_five_scene_sift_mosaic \\
         --input-root <path> \\
-        --output-dir <path> \\
-        [--registration-band B14] \\
-        [--bands B14,B8,B5] \\
-        [--match-max-side 1600] \\
-        [--ransac-threshold 2.0]
+        --output-dir <path>
 """
 
 from __future__ import annotations
@@ -28,8 +24,9 @@ logging.basicConfig(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Five-scene SIFT multi-image registration and mosaic"
+        description="Five-scene SIFT + BAGRN + VOLRN multi-image registration and mosaic"
     )
+    # Registration
     parser.add_argument("--input-root", required=True,
                         help="Path to the flat/ input directory")
     parser.add_argument("--output-dir", required=True,
@@ -43,6 +40,22 @@ def main():
     parser.add_argument("--ransac-threshold", type=float, default=2.0,
                         help="RANSAC threshold in pixels (default: 2.0)")
 
+    # Radiometric
+    parser.add_argument("--block-size", type=int, default=200,
+                        help="VOLRN block size (default: 200)")
+    parser.add_argument("--lambda-param", type=float, default=0.1,
+                        help="VOLRN lambda (default: 0.1)")
+    parser.add_argument("--rho", type=float, default=1.0,
+                        help="VOLRN rho (default: 1.0)")
+    parser.add_argument("--max-iter", type=int, default=200,
+                        help="VOLRN max iterations (default: 200)")
+    parser.add_argument("--tol", type=float, default=1e-4,
+                        help="VOLRN tolerance (default: 1e-4)")
+
+    # Diagnostics
+    parser.add_argument("--save-diagnostics", action="store_true",
+                        help="Save diagnostic plots and detail mosaics")
+
     args = parser.parse_args()
 
     bands = tuple(b.strip() for b in args.bands.split(","))
@@ -54,6 +67,12 @@ def main():
         bands=bands,
         match_max_side=args.match_max_side,
         ransac_threshold=args.ransac_threshold,
+        save_diagnostics=args.save_diagnostics,
+        block_size=args.block_size,
+        lambda_param=args.lambda_param,
+        rho=args.rho,
+        max_iter=args.max_iter,
+        tol=args.tol,
     )
 
     if result.get("status") == "DISCONNECTED":

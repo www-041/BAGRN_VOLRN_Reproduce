@@ -38,6 +38,16 @@ from src.multiscene_sift.diagnostics import (
     draw_global_consistency,
 )
 
+from src.multiscene_sift.radiometric import (
+    BandRadiometricResult,
+    normalize_registered_band,
+    release_band_result,
+)
+from src.multiscene_sift.radiometric_reporting import (
+    save_radiometric_metrics,
+    save_normalization_info,
+)
+
 logger = logging.getLogger(__name__)
 
 # Default scene names (DZ01V flat-terrain)
@@ -58,8 +68,14 @@ def run_five_scene_mosaic(
     match_max_side: int = 1600,
     ransac_threshold: float = 2.0,
     scene_names: list[str] | None = None,
+    save_diagnostics: bool = False,
+    block_size: int = 200,
+    lambda_param: float = 0.1,
+    rho: float = 1.0,
+    max_iter: int = 200,
+    tol: float = 1e-4,
 ) -> dict:
-    """Run the full five-scene SIFT mosaic pipeline.
+    """Run the full five-scene SIFT + BAGRN + VOLRN mosaic pipeline.
 
     Args:
         input_root: Path to the ``flat/`` input directory.
@@ -69,6 +85,12 @@ def run_five_scene_mosaic(
         match_max_side: Max side for match-view images.
         ransac_threshold: RANSAC inlier threshold in pixels.
         scene_names: Override default scene names.
+        save_diagnostics: If True, save diagnostic plots and detail mosaics.
+        block_size: VOLRN block size.
+        lambda_param: VOLRN lambda.
+        rho: VOLRN rho.
+        max_iter: VOLRN max iterations.
+        tol: VOLRN tolerance.
 
     Returns:
         Summary dict with status and output paths.
@@ -206,76 +228,114 @@ def run_five_scene_mosaic(
                 mosaic_grid.height, mosaic_grid.resolution)
 
     # =====================================================================
-    # 10. B14 before-registration mosaic
+    # 10. Diagnostic mosaics (only if --save-diagnostics)
     # =====================================================================
-    logger.info("=== Step 10: B14 Before-Registration Mosaic ===")
-    make_mosaic_original_transforms(
-        scenes, registration_band, mosaic_grid,
-        out / "mosaic_B14_before_registration_source_selection.tif",
-        mode="source_selection",
-    )
+    if save_diagnostics:
+        logger.info("=== Step 10: Diagnostic Mosaics ===")
+        make_mosaic_original_transforms(
+            scenes, registration_band, mosaic_grid,
+            out / "mosaic_B14_before_registration_source_selection.tif",
+            mode="source_selection",
+        )
+        make_mosaic(
+            scenes, G, registration_band, mosaic_grid,
+            out / "mosaic_B14_after_registration_source_selection.tif",
+            mode="source_selection",
+        )
 
     # =====================================================================
-    # 11. B14 after-registration mosaic
+    # 11. Radiometric normalization (BAGRN → VOLRN per band)
     # =====================================================================
-    logger.info("=== Step 11: B14 After-Registration Mosaic ===")
-    make_mosaic(
-        scenes, G, registration_band, mosaic_grid,
-        out / "mosaic_B14_after_registration_source_selection.tif",
-        mode="source_selection",
-    )
+    logger.info("=== Step 11: Radiometric Normalization ===")
+    band_results: dict[str, BandRadiometricResult] = {}
+    mosaic_paths: dict[str, str] = {}
+    total_bagrn_time = 0.0
+    total_volrn_time = 0.0
 
-    # =====================================================================
-    # 12. Weighted mosaics for B14/B8/B5
-    # =====================================================================
-    logger.info("=== Step 12: Weighted Band Mosaics ===")
-    mosaic_paths = {}
     for band in bands:
-        path = out / f"mosaic_{band}_weighted.tif"
-        make_mosaic(scenes, G, band, mosaic_grid, path, mode="weighted")
-        mosaic_paths[band] = str(path)
+        logger.info("--- Processing band: %s ---", band)
+
+        # A. Radiometric normalization
+        result = normalize_registered_band(
+            scenes, G, band, ref_idx,
+            block_size_pixels=block_size,
+            lambda_param=lambda_param,
+            rho=rho,
+            max_iter=max_iter,
+            tol=tol,
+        )
+        band_results[band] = result
+        total_bagrn_time += result.bagrn_runtime_sec
+        total_volrn_time += result.volrn_runtime_sec
+
+        # B. Final VOLRN weighted mosaic on shared grid
+        from src.mosaic import create_mosaic
+        mosaic_path = out / f"mosaic_{band}_SIFT_BAGRN_VOLRN_weighted.tif"
+        create_mosaic(
+            arrays=result.normalized_arrays,
+            transforms=result.corrected_transforms,
+            crs=str(mosaic_grid.crs),
+            nodata_values=result.nodata_values,
+            output_path=str(mosaic_path),
+            resolution=mosaic_grid.resolution,
+            mode="weighted",
+            output_transform=mosaic_grid.transform,
+            output_width=mosaic_grid.width,
+            output_height=mosaic_grid.height,
+        )
+        mosaic_paths[band] = str(mosaic_path)
+
+        # C. Release memory
+        release_band_result(result)
+        logger.info("--- Band %s complete ---", band)
+
+    # ---- Save radiometric reports ------------------------------------------
+    save_radiometric_metrics(band_results, out)
+    save_normalization_info(band_results, ref_idx, ref_name, out)
 
     # =====================================================================
-    # 13. Three-band GeoTIFF
+    # 12. Three-band GeoTIFF
     # =====================================================================
-    logger.info("=== Step 13: B14-B8-B5 Three-Band GeoTIFF ===")
-    rgb_path = out / "mosaic_RGB_B14_B8_B5.tif"
+    logger.info("=== Step 12: B14-B8-B5 Three-Band GeoTIFF ===")
+    rgb_path = out / "mosaic_RGB_B14_B8_B5_SIFT_BAGRN_VOLRN.tif"
     stack_three_band_geotiff(
-        {"R": mosaic_paths["B14"], "G": mosaic_paths["B8"], "B": mosaic_paths["B5"]},
+        {"R": mosaic_paths["B14"],
+         "G": mosaic_paths["B8"],
+         "B": mosaic_paths["B5"]},
         rgb_path,
     )
 
     # =====================================================================
-    # 14. RGB preview PNG
+    # 13. RGB preview PNG
     # =====================================================================
-    logger.info("=== Step 14: RGB Preview PNG ===")
-    preview_path = out / "mosaic_RGB_B14_B8_B5_preview.png"
+    logger.info("=== Step 13: RGB Preview PNG ===")
+    preview_path = out / "mosaic_RGB_B14_B8_B5_SIFT_BAGRN_VOLRN_preview.png"
     stretch_path = out / "rgb_preview_stretch.json"
     make_rgb_preview(rgb_path, preview_path, stretch_path)
 
     # =====================================================================
-    # 15. Diagnostic plots
+    # 14. Diagnostic plots (only if --save-diagnostics)
     # =====================================================================
-    logger.info("=== Step 15: Diagnostic Plots ===")
-    diag_dir = out / "diagnostics"
-    diag_dir.mkdir(exist_ok=True)
-
-    try:
-        draw_footprints(scenes, diag_dir / "scene_footprints_before.png",
-                        "Scene Footprints (Before Registration)")
-        draw_footprints(scenes, diag_dir / "scene_footprints_after.png",
-                        "Scene Footprints (After Registration)",
-                        corrected=True, G=G)
-        draw_overlap_graph(edges, scenes,
-                          diag_dir / "overlap_graph.png")
-        draw_accepted_sift_graph(accepted, pairwise_results, scenes,
-                                diag_dir / "accepted_sift_graph.png")
-        draw_spanning_tree(tree_edges, scenes,
-                          diag_dir / "spanning_tree.png")
-        draw_global_consistency(consistency,
-                               diag_dir / "global_edge_consistency.png")
-    except Exception as exc:
-        logger.warning("Diagnostic plot generation failed: %s", exc)
+    if save_diagnostics:
+        logger.info("=== Step 14: Diagnostic Plots ===")
+        diag_dir = out / "diagnostics"
+        diag_dir.mkdir(exist_ok=True)
+        try:
+            draw_footprints(scenes, diag_dir / "scene_footprints_before.png",
+                            "Scene Footprints (Before Registration)")
+            draw_footprints(scenes, diag_dir / "scene_footprints_after.png",
+                            "Scene Footprints (After Registration)",
+                            corrected=True, G=G)
+            draw_overlap_graph(edges, scenes,
+                              diag_dir / "overlap_graph.png")
+            draw_accepted_sift_graph(accepted, pairwise_results, scenes,
+                                    diag_dir / "accepted_sift_graph.png")
+            draw_spanning_tree(tree_edges, scenes,
+                              diag_dir / "spanning_tree.png")
+            draw_global_consistency(consistency,
+                                   diag_dir / "global_edge_consistency.png")
+        except Exception as exc:
+            logger.warning("Diagnostic plot generation failed: %s", exc)
 
     # =====================================================================
     # Summary
@@ -293,12 +353,15 @@ def run_five_scene_mosaic(
         "reference_name": ref_name,
         "spanning_tree_edges": len(tree_edges),
         "worst_global_p95_px": worst_p95,
+        "bagrn_runtime_sec": round(total_bagrn_time, 1),
+        "volrn_runtime_sec": round(total_volrn_time, 1),
+        "radiometric_overlap_pairs": sum(
+            len(r.overlaps) for r in band_results.values()
+        ),
         "outputs": {
-            "b14_diag_before": str(out / "mosaic_B14_before_registration_source_selection.tif"),
-            "b14_diag_after": str(out / "mosaic_B14_after_registration_source_selection.tif"),
-            "b14_weighted": str(out / "mosaic_B14_weighted.tif"),
-            "b8_weighted": str(out / "mosaic_B8_weighted.tif"),
-            "b5_weighted": str(out / "mosaic_B5_weighted.tif"),
+            "b14_normalized": str(out / "mosaic_B14_SIFT_BAGRN_VOLRN_weighted.tif"),
+            "b8_normalized": str(out / "mosaic_B8_SIFT_BAGRN_VOLRN_weighted.tif"),
+            "b5_normalized": str(out / "mosaic_B5_SIFT_BAGRN_VOLRN_weighted.tif"),
             "rgb_geotiff": str(rgb_path),
             "rgb_preview": str(preview_path),
         },
@@ -308,27 +371,24 @@ def run_five_scene_mosaic(
         json.dump(summary, f, indent=2)
 
     # Console summary
-    _print_summary(summary, consistency, tree_edges)
+    _print_summary(summary, consistency, tree_edges, band_results)
 
     return summary
 
 
-def _print_summary(summary, consistency, tree_edges):
+def _print_summary(summary, consistency, tree_edges, band_results=None):
     """Print end-of-run console summary."""
     print("\n" + "=" * 60)
-    print("Five-scene SIFT mosaic complete")
+    print("Five-scene SIFT + BAGRN + VOLRN mosaic complete")
     print("=" * 60)
     print(f"\nScenes: {summary['n_scenes']}")
-    print(f"Geographic overlap edges: {summary['geographic_edges']}")
+    print(f"Reference: [{summary['reference_index']}] {summary['reference_name']}")
     print(f"Accepted SIFT edges: {summary['accepted_sift_edges']}")
-    print(f"Failed SIFT edges: {summary['failed_sift_edges']}")
-    print(f"\nReference: [{summary['reference_index']}] {summary['reference_name']}")
-    print(f"\nSpanning tree:")
-    for e in tree_edges:
-        print(f"  {e['parent']} → {e['child']} (Q={e['weight']})")
-    print(f"\nWorst global-consistency P95: {summary['worst_global_p95_px']:.3f} px")
-    print(f"\nOutputs:")
+    print(f"Radiometric overlap pairs: {summary.get('radiometric_overlap_pairs', 'N/A')}")
+    print(f"\nBAGRN runtime: {summary.get('bagrn_runtime_sec', 'N/A')} s")
+    print(f"VOLRN runtime: {summary.get('volrn_runtime_sec', 'N/A')} s")
+    print(f"Total runtime: {summary['runtime_sec']:.1f} s")
+    print(f"\nFinal outputs:")
     for k, v in summary["outputs"].items():
         print(f"  {k}: {v}")
-    print(f"\nTotal runtime: {summary['runtime_sec']:.1f} s")
     print("=" * 60)
