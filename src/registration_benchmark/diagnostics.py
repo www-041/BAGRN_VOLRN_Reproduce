@@ -160,6 +160,18 @@ class MethodDiagnostics:
             "warp_applied": warp_applied,
             "status": self.geom.status,
         }
+
+        # Phase screening diagnostics
+        screening = self.matches.metadata.get("screening")
+        if screening:
+            metrics.update({
+                "phase_blocks_total": screening.get("total"),
+                "phase_blocks_low_valid": screening.get("low_valid"),
+                "phase_blocks_low_texture": screening.get("low_texture"),
+                "phase_blocks_low_conf": screening.get("low_conf"),
+                "phase_blocks_large_shift": screening.get("large_shift"),
+                "phase_blocks_accepted": screening.get("accepted"),
+            })
         with open(self.out / "metrics.json", "w") as f:
             json.dump(sanitize_json(metrics), f, indent=2, allow_nan=False)
         logger.info("  [%s] metrics.json", self.method)

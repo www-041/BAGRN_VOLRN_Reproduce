@@ -103,3 +103,21 @@ class TestPhaseMatcher:
         result = match_phase(view, block_size=64)
         assert "screening" in result.metadata
         assert "block_size" in result.metadata
+
+    def test_screening_fields_present(self, tmp_dir):
+        """Screening dict must have all expected keys."""
+        from tests.registration_benchmark.conftest import make_translated_texture_pair
+
+        ref_path, tgt_path = make_translated_texture_pair(
+            tmp_dir, size=128, dx=2.0, dy=-1.0
+        )
+        pair = load_pair_to_common_grid(ref_path, tgt_path)
+        view = build_match_view(pair, max_side=128)
+
+        result = match_phase(view, block_size=32, max_shift=20.0)
+
+        screening = result.metadata["screening"]
+        for key in ("total", "low_valid", "low_texture", "low_conf",
+                     "large_shift", "accepted"):
+            assert key in screening, f"Missing screening key: {key}"
+            assert isinstance(screening[key], int)

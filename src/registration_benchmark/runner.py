@@ -199,6 +199,20 @@ def _run_one_method(
     matches.validate()
     logger.info("  raw matches: %d", len(matches.ref_xy))
 
+    # Phase block screening diagnostics
+    screening = matches.metadata.get("screening")
+    if screening:
+        logger.info(
+            "  Phase screening: total=%d low_valid=%d low_texture=%d "
+            "low_conf=%d large_shift=%d accepted=%d",
+            screening.get("total", 0),
+            screening.get("low_valid", 0),
+            screening.get("low_texture", 0),
+            screening.get("low_conf", 0),
+            screening.get("large_shift", 0),
+            screening.get("accepted", 0),
+        )
+
     # 2. RANSAC Affine -------------------------------------------------------
     geom = fit_affine_ransac(matches, residual_threshold=ransac_threshold)
     logger.info("  geometry: status=%s, inliers=%d/%d",
