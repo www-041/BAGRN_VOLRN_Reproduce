@@ -161,7 +161,7 @@ class MethodDiagnostics:
             "status": self.geom.status,
         }
         with open(self.out / "metrics.json", "w") as f:
-            json.dump(metrics, f, indent=2, default=_json_default)
+            json.dump(sanitize_json(metrics), f, indent=2, allow_nan=False)
         logger.info("  [%s] metrics.json", self.method)
 
     # -----------------------------------------------------------------------
@@ -385,14 +385,19 @@ def _draw_match_figure(ref_img, tgt_img, ref_pts, tgt_pts, path, title):
     plt.close(fig)
 
 
-def _json_default(obj):
-    """Handle non-serialisable types in JSON."""
+def sanitize_json(obj):
+    """Recursively sanitise for strict JSON: NaN/Inf → None."""
+    if isinstance(obj, dict):
+        return {k: sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_json(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return sanitize_json(obj.tolist())
+    if isinstance(obj, (np.floating,)):
+        val = float(obj)
+        return None if val != val or val in (float("inf"), float("-inf")) else val
+    if isinstance(obj, float):
+        return None if obj != obj or obj in (float("inf"), float("-inf")) else obj
     if isinstance(obj, (np.integer,)):
         return int(obj)
-    if isinstance(obj, (np.floating,)):
-        if np.isnan(obj):
-            return None
-        return float(obj)
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    return str(obj)
+    return obj

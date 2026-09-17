@@ -116,7 +116,7 @@ def run_two_image_benchmark(
         "device": device,
     }
     with open(out / "run_config.json", "w") as f:
-        json.dump(config, f, indent=2)
+        json.dump(sanitize_json(config), f, indent=2, allow_nan=False)
 
     # --- Common grid preparation -----------------------------------------------
     logger.info("=== Common grid preparation ===")
@@ -163,7 +163,7 @@ def run_two_image_benchmark(
     # --- Write summary files ---------------------------------------------------
     _write_summary_csv(out / "summary.csv", summary)
     with open(out / "summary.json", "w") as f:
-        json.dump(summary, f, indent=2, default=_json_default)
+        json.dump(sanitize_json(summary), f, indent=2, allow_nan=False)
 
     elapsed = time.perf_counter() - t_total
     logger.info("=== Benchmark complete (%.1f s) ===", elapsed)
@@ -276,9 +276,27 @@ def _write_summary_csv(path: Path, summary: list[dict]):
         w.writerows(summary)
 
 
-def _json_default(obj):
+def sanitize_json(obj):
+    """Recursively sanitise a Python object for strict JSON output.
+
+    Rules:
+    * ``NaN``, ``+Inf``, ``-Inf`` → ``None`` (serialised as ``null``)
+    * ``np.integer`` → ``int``
+    * ``np.floating`` → ``float`` or ``None``
+    * ``dict`` / ``list`` → recurse
+    * other → ``str(obj)``
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_json(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return sanitize_json(obj.tolist())
+    if isinstance(obj, (np.floating,)):
+        val = float(obj)
+        return None if val != val or val in (float("inf"), float("-inf")) else val
+    if isinstance(obj, float):
+        return None if obj != obj or obj in (float("inf"), float("-inf")) else obj
     if isinstance(obj, (np.integer,)):
         return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj) if not np.isnan(obj) else None
-    return str(obj)
+    return obj

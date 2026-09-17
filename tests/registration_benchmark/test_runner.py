@@ -5,7 +5,35 @@ from pathlib import Path
 
 import pytest
 
-from src.registration_benchmark.runner import MATCHERS, _run_matcher, run_two_image_benchmark
+from src.registration_benchmark.runner import (
+    MATCHERS,
+    _run_matcher,
+    run_two_image_benchmark,
+    sanitize_json,
+)
+
+
+class TestSanitizeJson:
+    """Tests for :func:`sanitize_json`."""
+
+    def test_nan_to_none(self):
+        result = sanitize_json({"val": float("nan")})
+        assert result["val"] is None
+
+    def test_inf_to_none(self):
+        result = sanitize_json({"val": float("inf"), "neg": float("-inf")})
+        assert result["val"] is None
+        assert result["neg"] is None
+
+    def test_nested_dict(self):
+        result = sanitize_json({"a": {"b": float("nan")}})
+        assert result["a"]["b"] is None
+
+    def test_list_recursion(self):
+        result = sanitize_json([float("nan"), 1.0, {"x": float("-inf")}])
+        assert result[0] is None
+        assert result[1] == 1.0
+        assert result[2]["x"] is None
 
 
 class TestRunMatcher:
