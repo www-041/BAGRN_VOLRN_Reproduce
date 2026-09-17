@@ -117,29 +117,43 @@ def make_rgb_preview(
 
     with rasterio.open(tif_path) as src:
         data = src.read()  # (3, H, W)
+        src_nodata = src.nodata
 
     stretched = np.zeros_like(data, dtype=np.uint8)
     stretch_params = {}
 
     for b in range(3):
         band = data[b].astype(np.float64)
-        finite = band[np.isfinite(band)]
-        if len(finite) == 0:
+        # Exclude NaN/Inf and NoData from percentile computation
+        valid = np.isfinite(band)
+        if src_nodata is not None:
+            valid &= (band != src_nodata)
+        values = band[valid]
+        n_valid = len(values)
+
+        if n_valid == 0:
             stretched[b] = 0
-            stretch_params[f"band_{b}"] = {"p2": 0, "p98": 0}
+            stretch_params[f"band_{b}"] = {
+                "percentile_2": 0, "percentile_98": 0,
+                "valid_pixel_count": 0, "nodata": src_nodata,
+            }
             continue
 
-        p2 = np.percentile(finite, 2)
-        p98 = np.percentile(finite, 98)
+        p2 = np.percentile(values, 2)
+        p98 = np.percentile(values, 98)
         stretch_params[f"band_{b}"] = {
             "percentile_2": float(p2),
             "percentile_98": float(p98),
+            "valid_pixel_count": int(n_valid),
+            "nodata": src_nodata,
         }
 
         if p98 > p2:
+            # Only stretch valid pixels; invalid remain 0
+            mask = valid
             clipped = np.clip(band, p2, p98)
             normalized = (clipped - p2) / (p98 - p2) * 255
-            stretched[b] = normalized.astype(np.uint8)
+            stretched[b][mask] = normalized[mask].astype(np.uint8)
         else:
             stretched[b] = 0
 

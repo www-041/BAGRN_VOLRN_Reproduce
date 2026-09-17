@@ -135,6 +135,9 @@ def create_mosaic(
     mode: str = "weighted",
     feather_width: int = 64,
     return_diagnostics: bool = False,
+    output_transform=None,
+    output_width=None,
+    output_height=None,
 ) -> str:
     """
     创建镶嵌图。
@@ -164,10 +167,12 @@ def create_mosaic(
         "weighted" | "source_selection" | "narrow_feather"
     feather_width : int
         narrow_feather 模式下接缝两侧羽化半宽（像素）。
-
-    返回
-    -------
-    output_path : str
+    output_transform : rasterio.Affine or None
+        如果给定，直接用作输出 transform（跳过自动计算）。
+    output_width : int or None
+        如果给定，直接用作输出宽度。
+    output_height : int or None
+        如果给定，直接用作输出高度。
     """
     n_images = len(arrays)
     if n_images == 0:
@@ -179,24 +184,38 @@ def create_mosaic(
         raise ValueError(f"未知的镶嵌模式: '{mode}'，可选值: {VALID_MOSAIC_MODES}")
 
     # ---- 1. 联合包围盒 ----
-    left, bottom, right, top = _combined_bounds(arrays, transforms)
-    out_width_geo = right - left
-    out_height_geo = top - bottom
+    has_explicit = (output_transform is not None
+                    or output_width is not None
+                    or output_height is not None)
+    if has_explicit:
+        if output_transform is None or output_width is None or output_height is None:
+            raise ValueError(
+                "output_transform/output_width/output_height must all be "
+                "supplied together, or all left as None"
+            )
+        out_transform = output_transform
+        width = output_width
+        height = output_height
+        if resolution is None:
+            resolution = abs(out_transform.a)
+    else:
+        left, bottom, right, top = _combined_bounds(arrays, transforms)
+        out_width_geo = right - left
+        out_height_geo = top - bottom
 
-    if resolution is None:
-        resolution = min(abs(tr.a) for tr in transforms)
+        if resolution is None:
+            resolution = min(abs(tr.a) for tr in transforms)
 
-    if resolution <= 0:
-        raise ValueError(f"无效分辨率: {resolution}")
+        if resolution <= 0:
+            raise ValueError(f"无效分辨率: {resolution}")
 
-    import math
-    width = max(1, int(math.ceil(out_width_geo / resolution)))
-    height = max(1, int(math.ceil(out_height_geo / resolution)))
+        import math
+        width = max(1, int(math.ceil(out_width_geo / resolution)))
+        height = max(1, int(math.ceil(out_height_geo / resolution)))
 
-    out_transform = rasterio.Affine(resolution, 0, left, 0, -resolution, top)
+        out_transform = rasterio.Affine(resolution, 0, left, 0, -resolution, top)
 
-    print(f"  镶嵌画布: {width}×{height}, 分辨率={resolution:.2f}")
-    print(f"  地理范围: ({left:.2f}, {bottom:.2f}, {right:.2f}, {top:.2f})")
+    print(f"  镶嵌画布: {width}×{height}, 分辨率={abs(out_transform.a):.2f}")
 
     # ---- 2. 投影所有影像到输出网格 ----
     projected = []

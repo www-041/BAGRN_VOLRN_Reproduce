@@ -16,6 +16,31 @@ from src.multiscene_sift.band_geometry import apply_world_correction_to_transfor
 logger = logging.getLogger(__name__)
 
 
+def raster_bounds_from_transform(transform, height: int, width: int):
+    """Compute geographic (left, bottom, right, top) from four corners.
+
+    Handles arbitrary affine transforms (rotation, shear) by transforming
+    all four image corners and taking the bounding envelope.
+
+    Args:
+        transform: Rasterio ``Affine``.
+        height: Image height in pixels.
+        width: Image width in pixels.
+
+    Returns:
+        ``(left, bottom, right, top)`` in CRS units.
+    """
+    corners = [
+        transform * (0, 0),
+        transform * (width, 0),
+        transform * (0, height),
+        transform * (width, height),
+    ]
+    xs = [p[0] for p in corners]
+    ys = [p[1] for p in corners]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def compute_shared_mosaic_grid(
     scenes: list[Scene],
     G: list[np.ndarray],
@@ -45,18 +70,15 @@ def compute_shared_mosaic_grid(
     with rasterio.open(ref_path) as src:
         crs = src.crs
 
-    # Union bounds
+    # Union bounds using four-corner method for affine safety
     lefts, bottoms, rights, tops = [], [], [], []
     for s, tf in zip(scenes, corrected_transforms):
         h, w = s.shapes[band]
-        left = tf.c
-        top = tf.f
-        right = tf.c + w * tf.a
-        bottom = tf.f + h * tf.e  # e is negative
-        lefts.append(left)
-        bottoms.append(bottom)
-        rights.append(right)
-        tops.append(top)
+        l, b, r, t = raster_bounds_from_transform(tf, h, w)
+        lefts.append(l)
+        bottoms.append(b)
+        rights.append(r)
+        tops.append(t)
 
     left = min(lefts)
     bottom = min(bottoms)
@@ -124,6 +146,9 @@ def make_mosaic(
         output_path=str(output_path),
         resolution=mosaic_grid.resolution,
         mode=mode,
+        output_transform=mosaic_grid.transform,
+        output_width=mosaic_grid.width,
+        output_height=mosaic_grid.height,
     )
 
 
@@ -168,4 +193,7 @@ def make_mosaic_original_transforms(
         output_path=str(output_path),
         resolution=mosaic_grid.resolution,
         mode=mode,
+        output_transform=mosaic_grid.transform,
+        output_width=mosaic_grid.width,
+        output_height=mosaic_grid.height,
     )
