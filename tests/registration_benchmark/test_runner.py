@@ -5,7 +5,57 @@ from pathlib import Path
 
 import pytest
 
-from src.registration_benchmark.runner import MATCHERS, run_two_image_benchmark
+from src.registration_benchmark.runner import MATCHERS, _run_matcher, run_two_image_benchmark
+
+
+class TestRunMatcher:
+    """Tests for :func:`_run_matcher` device forwarding."""
+
+    def test_device_forwarded_to_learned(self):
+        """LightGlue and LoFTR receive device= kwarg."""
+        fake_view = object()
+        calls = []
+
+        def fake_phase(view, **kw):
+            calls.append(("phase", kw))
+            from src.registration_benchmark.models import MatchSet
+            import numpy as np
+            return MatchSet("phase", np.empty((0, 2)), np.empty((0, 2)), np.empty(0), 0.0)
+
+        def fake_lightglue(view, **kw):
+            calls.append(("lightglue", kw))
+            from src.registration_benchmark.models import MatchSet
+            import numpy as np
+            return MatchSet("lightglue", np.empty((0, 2)), np.empty((0, 2)), np.empty(0), 0.0)
+
+        def fake_loftr(view, **kw):
+            calls.append(("loftr", kw))
+            from src.registration_benchmark.models import MatchSet
+            import numpy as np
+            return MatchSet("loftr", np.empty((0, 2)), np.empty((0, 2)), np.empty(0), 0.0)
+
+        _run_matcher("phase", fake_phase, fake_view, "cpu")
+        _run_matcher("sift", fake_phase, fake_view, "cpu")
+        _run_matcher("lightglue", fake_lightglue, fake_view, "cpu")
+        _run_matcher("loftr", fake_loftr, fake_view, "cuda:0")
+
+        assert calls[0] == ("phase", {})
+        assert calls[1] == ("phase", {})  # sift uses same fn
+        assert calls[2] == ("lightglue", {"device": "cpu"})
+        assert calls[3] == ("loftr", {"device": "cuda:0"})
+
+    def test_classical_matchers_no_device_kwarg(self):
+        """Phase and SIFT should NOT receive device kwarg."""
+        def fake_matcher(view, **kw):
+            if "device" in kw:
+                raise TypeError("unexpected keyword argument 'device'")
+            from src.registration_benchmark.models import MatchSet
+            import numpy as np
+            return MatchSet("test", np.empty((0, 2)), np.empty((0, 2)), np.empty(0), 0.0)
+
+        # These must not raise
+        _run_matcher("phase", fake_matcher, object(), "cpu")
+        _run_matcher("sift", fake_matcher, object(), "cuda")
 
 
 class TestRunner:

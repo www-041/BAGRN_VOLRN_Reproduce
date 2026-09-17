@@ -176,6 +176,13 @@ def run_two_image_benchmark(
 # ---------------------------------------------------------------------------
 
 
+def _run_matcher(method: str, matcher_fn: callable, view, device: str):
+    """Invoke a matcher, forwarding ``device`` only to learned methods."""
+    if method in {"lightglue", "loftr"}:
+        return matcher_fn(view, device=device)
+    return matcher_fn(view)
+
+
 def _run_one_method(
     method: str,
     pair,
@@ -188,7 +195,7 @@ def _run_one_method(
 
     # 1. Match ---------------------------------------------------------------
     matcher_fn = MATCHERS[method]
-    matches = matcher_fn(view)
+    matches = _run_matcher(method, matcher_fn, view, device)
     matches.validate()
     logger.info("  raw matches: %d", len(matches.ref_xy))
 
