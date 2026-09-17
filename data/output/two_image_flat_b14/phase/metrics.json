@@ -1,0 +1,20 @@
+{
+  "method": "phase",
+  "raw_matches": 1,
+  "inliers": 0,
+  "inlier_ratio": 0.0,
+  "coverage": 0.0,
+  "residual_median": NaN,
+  "residual_rmse": NaN,
+  "residual_p90": NaN,
+  "residual_p95": NaN,
+  "residual_max": NaN,
+  "gradient_ncc_before": 0.045272137708321794,
+  "gradient_ncc_after": 0.045272137708321794,
+  "verification_dx": -22.0,
+  "verification_dy": 49.0,
+  "verification_magnitude": 53.71219600798314,
+  "verification_confidence": 0.1520831454182855,
+  "match_runtime_sec": 2.6703814000065904,
+  "status": "TOO_FEW_INLIERS"
+}
