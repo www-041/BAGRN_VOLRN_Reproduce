@@ -29,6 +29,16 @@ from src.registration_benchmark.models import MatchSet
 
 logger = logging.getLogger(__name__)
 
+# --- Optional matchers (graceful degradation) --------------------------------
+try:
+    from src.registration_benchmark.matchers.lightglue import (
+        is_lightglue_available,
+        match_lightglue,
+    )
+except ImportError:
+    is_lightglue_available = lambda: False  # noqa: E731
+    match_lightglue = None
+
 # ---------------------------------------------------------------------------
 # Matcher registry
 # ---------------------------------------------------------------------------
@@ -37,6 +47,9 @@ MATCHERS: dict[str, callable] = {
     "phase": match_phase,
     "sift": match_sift,
 }
+
+if is_lightglue_available():
+    MATCHERS["lightglue"] = match_lightglue
 
 
 # ---------------------------------------------------------------------------
