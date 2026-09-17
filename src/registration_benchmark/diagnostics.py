@@ -129,10 +129,10 @@ class MethodDiagnostics:
         ncc_before = gradient_ncc(ref_crop, tgt_crop_before, joint_before)
         ncc_after = gradient_ncc(ref_crop, tgt_crop_after, joint_after)
 
-        # Phase verification on entire overlap
+        # Phase verification on overlap crop
         verify = phase_verification(
-            self.pair.ref_raw, registered_tgt,
-            self.pair.ref_valid, registered_valid,
+            ref_crop, tgt_crop_after,
+            valid_ref_crop, valid_tgt_crop_after,
         )
 
         # Coverage (on inliers only)
@@ -156,6 +156,7 @@ class MethodDiagnostics:
             "verification_dy": verify["dy"],
             "verification_magnitude": verify["magnitude"],
             "verification_confidence": verify["confidence"],
+            "verification_status": verify["status"],
             "match_runtime_sec": self.matches.runtime_sec,
             "warp_applied": warp_applied,
             "status": self.geom.status,

@@ -119,7 +119,8 @@ class TestMethodDiagnostics:
             "residual_median", "residual_rmse", "residual_p90", "residual_p95",
             "residual_max", "gradient_ncc_before", "gradient_ncc_after",
             "verification_dx", "verification_dy", "verification_magnitude",
-            "verification_confidence", "match_runtime_sec", "status",
+            "verification_confidence", "verification_status",
+            "match_runtime_sec", "status",
         ]
         for key in required:
             assert key in data, f"Missing key: {key}"

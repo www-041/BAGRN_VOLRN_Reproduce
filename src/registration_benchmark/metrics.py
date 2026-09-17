@@ -190,9 +190,11 @@ def phase_verification(
     gy_tgt = sobel(tgt_f, axis=0)
     mag_tgt = np.hypot(gx_tgt, gy_tgt)
 
-    # Clip joint mask to match
-    j = joint & np.isfinite(mag_ref) & np.isfinite(mag_tgt)
-    if j.sum() < 100:
+    # Per-image masks: each image's valid + finite-gradient pixels
+    ref_mask = valid_ref & np.isfinite(ref) & np.isfinite(mag_ref)
+    tgt_mask = valid_tgt & np.isfinite(registered_tgt) & np.isfinite(mag_tgt)
+    joint_mask = ref_mask & tgt_mask
+    if joint_mask.sum() < 100:
         return {
             "dx": float("nan"),
             "dy": float("nan"),
@@ -204,8 +206,8 @@ def phase_verification(
     try:
         result = phase_cross_correlation(
             mag_ref, mag_tgt,
-            reference_mask=j,
-            moving_mask=j,
+            reference_mask=ref_mask,
+            moving_mask=tgt_mask,
             normalization="phase",
         )
         # skimage ≥ 0.20 returns (shift, error, phasediff); older returns (shift,)
@@ -215,16 +217,26 @@ def phase_verification(
         else:
             shift_y, shift_x = float(result[0]), float(result[1])
         # Confidence: NCC of gradient magnitudes after shift
+        # Shift both the image and its mask, then recompute joint
         from scipy.ndimage import shift as ndimage_shift
         shifted = ndimage_shift(mag_tgt, (shift_y, shift_x), order=1)
-        a = mag_ref[j]
-        b = shifted[j]
-        a_mean, b_mean = a.mean(), b.mean()
-        a_std, b_std = a.std(ddof=1), b.std(ddof=1)
-        if a_std > 1e-10 and b_std > 1e-10:
-            conf = float(((a - a_mean) * (b - b_mean)).mean() / (a_std * b_std))
-        else:
+        shifted_tgt_mask = ndimage_shift(
+            tgt_mask.astype(np.float64), (shift_y, shift_x), order=0
+        )
+        shifted_tgt_mask = shifted_tgt_mask > 0.5
+        joint_shifted = ref_mask & shifted_tgt_mask
+
+        if joint_shifted.sum() < 10:
             conf = float("nan")
+        else:
+            a = mag_ref[joint_shifted]
+            b = shifted[joint_shifted]
+            a_mean, b_mean = a.mean(), b.mean()
+            a_std, b_std = a.std(ddof=1), b.std(ddof=1)
+            if a_std > 1e-10 and b_std > 1e-10:
+                conf = float(((a - a_mean) * (b - b_mean)).mean() / (a_std * b_std))
+            else:
+                conf = float("nan")
     except Exception as e:
         logger.warning("Phase verification failed: %s", e)
         return {

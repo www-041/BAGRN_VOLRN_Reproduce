@@ -155,6 +155,7 @@ def run_two_image_benchmark(
                 "verification_dy": None,
                 "verification_magnitude": None,
                 "verification_confidence": None,
+                "verification_status": None,
                 "match_runtime_sec": None,
                 "total_runtime_sec": None,
             }
@@ -261,6 +262,7 @@ def _run_one_method(
         "verification_dy": metrics.get("verification_dy"),
         "verification_magnitude": metrics.get("verification_magnitude"),
         "verification_confidence": metrics.get("verification_confidence"),
+        "verification_status": metrics.get("verification_status"),
         "match_runtime_sec": matches.runtime_sec,
         "total_runtime_sec": elapsed,
         "error": metrics.get("error"),
@@ -281,7 +283,8 @@ def _write_summary_csv(path: Path, summary: list[dict]):
         "coverage", "residual_median", "residual_rmse", "residual_p90",
         "residual_p95", "residual_max", "gradient_ncc_before",
         "gradient_ncc_after", "verification_magnitude",
-        "verification_confidence", "match_runtime_sec", "total_runtime_sec",
+        "verification_confidence", "verification_status",
+        "match_runtime_sec", "total_runtime_sec",
         "error",
     ]
     with open(path, "w", newline="") as f:

@@ -152,3 +152,54 @@ class TestPhaseVerification:
 
         assert result["status"] != "OK"
         assert np.isnan(result["dx"])
+
+    def test_fully_aligned_checkerboard_zero_shift(self):
+        """Deterministic checkerboard: identical images should report exact zero shift."""
+        # Build an 8×8 checkerboard of 16 px checks (128×128 total)
+        size = 128
+        check = 16
+        y, x = np.mgrid[0:size, 0:size]
+        row_check = (y // check).astype(int)
+        col_check = (x // check).astype(int)
+        board = np.where((row_check + col_check) % 2 == 0, 200.0, 50.0).astype(np.float64)
+        # Tiny noise so constant-region gradient variance is non-zero
+        rng = np.random.default_rng(42)
+        board += rng.uniform(-0.5, 0.5, size=(size, size))
+
+        tgt = board.copy()
+        valid = np.ones((size, size), dtype=bool)
+
+        result = phase_verification(board, tgt, valid, valid)
+
+        assert result["status"] == "OK"
+        assert result["dx"] == pytest.approx(0.0, abs=1e-3)
+        assert result["dy"] == pytest.approx(0.0, abs=1e-3)
+        assert result["magnitude"] == pytest.approx(0.0, abs=1e-3)
+        assert result["confidence"] == pytest.approx(1.0, abs=0.05)
+
+    def test_known_translation_checkerboard_exact(self):
+        """Deterministic checkerboard shifted by (5, -3) px via np.roll."""
+        size = 128
+        check = 16
+        y, x = np.mgrid[0:size, 0:size]
+        row_check = (y // check).astype(int)
+        col_check = (x // check).astype(int)
+        board = np.where((row_check + col_check) % 2 == 0, 200.0, 50.0).astype(np.float64)
+        rng = np.random.default_rng(42)
+        board += rng.uniform(-0.5, 0.5, size=(size, size))
+
+        # np.roll shifts RIGHT (positive axis=1) and DOWN (positive axis=0).
+        # To align tgt back to ref, phase_cross_correlation reports
+        # dx = -shift_x, dy = -shift_y
+        shift_y, shift_x = -3, 5
+        tgt = np.roll(board, shift=(shift_y, shift_x), axis=(0, 1))
+
+        valid = np.ones((size, size), dtype=bool)
+
+        result = phase_verification(board, tgt, valid, valid)
+
+        assert result["status"] == "OK"
+        assert result["dx"] == pytest.approx(-float(shift_x), abs=1e-3)
+        assert result["dy"] == pytest.approx(-float(shift_y), abs=1e-3)
+        assert result["magnitude"] > 4.0
+        assert result["confidence"] == pytest.approx(1.0, abs=0.05)

@@ -80,8 +80,8 @@ def match_lightglue(
 
     # --- Feature extraction & matching --------------------------------------
     with torch.inference_mode():
-        feats0 = extractor.extract({"image": ref_t})
-        feats1 = extractor.extract({"image": tgt_t})
+        feats0 = extractor.extract(ref_t)
+        feats1 = extractor.extract(tgt_t)
 
         matches01 = matcher({
             "image0": feats0,
