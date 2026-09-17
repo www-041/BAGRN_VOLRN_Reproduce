@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
 
 import numpy as np
 
@@ -89,30 +88,21 @@ def match_lightglue(
             "image1": feats1,
         })
 
-    # Remove batch dimension
-    feats0, feats1, matches01 = rbd(
-        {**feats0, **feats1, **matches01}
-    )
+    # Remove batch dimension — rbd each dict separately
+    feats0 = rbd(feats0)
+    feats1 = rbd(feats1)
+    matches01 = rbd(matches01)
 
     # --- Extract matched keypoints and scores -------------------------------
-    kpts0 = feats0["keypoints"]  # (N0, 2)  x, y in view pixel space
-    kpts1 = feats1["keypoints"]  # (N1, 2)
-    m = matches01["matches"]     # (M,)
-    scores = matches01.get("scores", torch.ones(len(m)))
+    ref_xy_view, tgt_xy_view, conf_np, conf_source = _extract_lightglue_matches(
+        feats0, feats1, matches01, min_confidence
+    )
 
-    # Filter by confidence
-    valid = m >= 0
-    if len(valid) > 0:
-        valid = valid & (scores >= min_confidence)
-
-    match_indices = m[valid]
-    conf = scores[valid]
-
-    ref_xy_view = kpts0[match_indices].cpu().numpy()  # (M', 2)
-    tgt_xy_view = kpts1[valid].cpu().numpy()
-
-    # Apply confidence/reorder
-    conf_np = conf.cpu().numpy()
+    # --- Valid-mask filtering ------------------------------------------------
+    if len(ref_xy_view) > 0:
+        ref_xy_view, tgt_xy_view, conf_np = _filter_by_valid_mask(
+            ref_xy_view, tgt_xy_view, conf_np, view
+        )
 
     # --- Map to common-grid coordinates ------------------------------------
     if len(ref_xy_view) == 0:
@@ -127,8 +117,9 @@ def match_lightglue(
                 "max_num_keypoints": max_num_keypoints,
                 "min_confidence": min_confidence,
                 "device": device,
-                "keypoints_ref": len(kpts0),
-                "keypoints_tgt": len(kpts1),
+                "confidence_source": conf_source,
+                "keypoints_ref": len(feats0.get("keypoints", [])),
+                "keypoints_tgt": len(feats1.get("keypoints", [])),
             },
         )
 
@@ -147,8 +138,9 @@ def match_lightglue(
             "max_num_keypoints": max_num_keypoints,
             "min_confidence": min_confidence,
             "device": device,
-            "keypoints_ref": len(kpts0),
-            "keypoints_tgt": len(kpts1),
+            "confidence_source": conf_source,
+            "keypoints_ref": len(feats0.get("keypoints", [])),
+            "keypoints_tgt": len(feats1.get("keypoints", [])),
         },
     )
 
@@ -156,6 +148,111 @@ def match_lightglue(
 def is_lightglue_available() -> bool:
     """Return ``True`` if the LightGlue package is importable."""
     return _LIGHTGLUE_AVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# Match extraction (handles multiple LightGlue output formats)
+# ---------------------------------------------------------------------------
+
+
+def _extract_lightglue_matches(
+    feats0: dict,
+    feats1: dict,
+    matches01: dict,
+    min_confidence: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+    """Parse LightGlue output into ``(ref_xy_view, tgt_xy_view, confidence, source_name)``.
+
+    Supports both the current official ``matches`` shape ``(M, 2)`` and
+    the legacy ``matches0`` shape ``(N0,)`` formats.
+    """
+    kpts0 = feats0["keypoints"]   # (N0, 2)  [x, y]
+    kpts1 = feats1["keypoints"]   # (N1, 2)
+
+    # Detect output format ---------------------------------------------------
+    if "matches" in matches01 and matches01["matches"].ndim == 2:
+        # Official format: matches shaped (M, 2) — index pairs
+        pairs = matches01["matches"]  # (M, 2)  [ref_idx, tgt_idx]
+        ref_idx = pairs[:, 0].long()
+        tgt_idx = pairs[:, 1].long()
+
+    elif "matches0" in matches01:
+        # Legacy format: matches0 shaped (N0,) with -1 = unmatched
+        matches0 = matches01["matches0"]
+        valid = matches0 >= 0
+        ref_idx = torch.where(valid)[0]
+        tgt_idx = matches0[valid].long()
+
+    else:
+        # Fallback: try matches as 1-D indices
+        m = matches01.get("matches")
+        if m is not None and m.ndim == 1:
+            valid = m >= 0
+            ref_idx = torch.where(valid)[0]
+            tgt_idx = m[valid].long()
+        else:
+            return np.empty((0, 2)), np.empty((0, 2)), np.empty(0), "detection_failed"
+
+    # Extract coordinates -----------------------------------------------------
+    ref_xy_view = kpts0[ref_idx].cpu().numpy()
+    tgt_xy_view = kpts1[tgt_idx].cpu().numpy()
+
+    # Confidence --------------------------------------------------------------
+    conf = None
+    conf_source = "fallback_ones"
+
+    for key in ("scores", "matching_scores0", "scores0"):
+        if key in matches01 :
+            s = matches01[key]
+            if s is not None:
+                conf = s[ref_idx] if s.shape[0] == len(kpts0) else s
+                conf_source = key
+                break
+
+    if conf is None:
+        conf = torch.ones(len(ref_idx))
+        conf_source = "fallback_ones"
+    else:
+        conf = conf.float()
+
+    conf_np = conf.cpu().numpy()
+
+    # Filter by min_confidence ------------------------------------------------
+    if min_confidence > 0 and len(ref_xy_view) > 0:
+        keep = conf_np >= min_confidence
+        ref_xy_view = ref_xy_view[keep]
+        tgt_xy_view = tgt_xy_view[keep]
+        conf_np = conf_np[keep]
+
+    return ref_xy_view, tgt_xy_view, conf_np, conf_source
+
+
+# ---------------------------------------------------------------------------
+# Valid-mask filter
+# ---------------------------------------------------------------------------
+
+
+def _filter_by_valid_mask(
+    ref_xy_view: np.ndarray,
+    tgt_xy_view: np.ndarray,
+    confidence: np.ndarray,
+    view: MatchView,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Discard points that fall outside the valid-pixel masks."""
+    h, w = view.ref_valid.shape
+    keep = np.ones(len(ref_xy_view), dtype=bool)
+
+    for i in range(len(ref_xy_view)):
+        rx, ry = int(round(ref_xy_view[i, 0])), int(round(ref_xy_view[i, 1]))
+        tx, ty = int(round(tgt_xy_view[i, 0])), int(round(tgt_xy_view[i, 1]))
+        if 0 <= ry < h and 0 <= rx < w:
+            if not view.ref_valid[ry, rx]:
+                keep[i] = False
+        if 0 <= ty < h and 0 <= tx < w:
+            if not view.tgt_valid[ty, tx]:
+                keep[i] = False
+
+    return ref_xy_view[keep], tgt_xy_view[keep], confidence[keep]
 
 
 # ---------------------------------------------------------------------------
