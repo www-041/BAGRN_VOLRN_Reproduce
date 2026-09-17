@@ -51,6 +51,15 @@ MATCHERS: dict[str, callable] = {
 if is_lightglue_available():
     MATCHERS["lightglue"] = match_lightglue
 
+try:
+    from src.registration_benchmark.matchers.loftr import is_loftr_available, match_loftr
+except ImportError:
+    is_loftr_available = lambda: False  # noqa: E731
+    match_loftr = None
+
+if is_loftr_available():
+    MATCHERS["loftr"] = match_loftr
+
 
 # ---------------------------------------------------------------------------
 # Public API
