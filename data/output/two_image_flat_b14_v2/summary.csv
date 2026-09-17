@@ -1,0 +1,4 @@
+method,status,raw_matches,inliers,inlier_ratio,coverage,residual_median,residual_rmse,residual_p90,residual_p95,residual_max,gradient_ncc_before,gradient_ncc_after,verification_magnitude,verification_confidence,match_runtime_sec,total_runtime_sec,error
+phase,TOO_FEW_INLIERS,1,0,0.0,0.0,nan,nan,nan,nan,nan,0.045272137708321794,0.045272137708321794,53.71219600798314,0.1520831454182855,2.861693300001207,421.28233630000614,
+sift,OK,176,70,0.3977272727272727,0.328125,1.1786503680298348,1.2694296720286373,1.807498258452057,1.8554826359342884,2.079266268015283,0.045272137708321794,0.13942681470021714,1.4142135623730951,0.13755759889775676,1.1287982000067132,571.0734150000062,
+loftr,FAILED,,,,,,,,,,,,,,,,<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1077)>

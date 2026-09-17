@@ -1,0 +1,14 @@
+{
+  "ref_path": "D:/\u79d1\u7814/\u5730\u8d28\u4e00\u53f7/\u6587\u732e/BAGRN_VOLRN_Reproduce/data/input/flat/DZ01V_L2_E113.6_N36.3_20260616031133_01_T1/DZ01V_L2_E113.6_N36.3_20260616031133_01_T1_B14.TIF",
+  "tgt_path": "D:/\u79d1\u7814/\u5730\u8d28\u4e00\u53f7/\u6587\u732e/BAGRN_VOLRN_Reproduce/data/input/flat/DZ01V_L2_E113.4_N36.6_20260810030932_01_T1/DZ01V_L2_E113.4_N36.6_20260810030932_01_T1_B14.TIF",
+  "output_dir": "data/output/two_image_flat_b14_v2",
+  "band": 1,
+  "methods": [
+    "phase",
+    "sift",
+    "loftr"
+  ],
+  "match_max_side": 1600,
+  "ransac_threshold": 2.0,
+  "device": "auto"
+}
