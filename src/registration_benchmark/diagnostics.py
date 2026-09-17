@@ -62,19 +62,27 @@ class MethodDiagnostics:
         self.matches = matches
         self.geom = geom
 
-    def run_all(self, registered_tgt: np.ndarray, registered_valid: np.ndarray):
-        """Generate all diagnostics."""
+    def run_all(self, registered_tgt: np.ndarray, registered_valid: np.ndarray,
+                warp_applied: bool = True):
+        """Generate all diagnostics.
+
+        When *warp_applied* is ``False`` (failed geometry), skip outputs
+        that imply a successful registration.
+        """
         self._save_matches_csv()
-        self._save_metrics_json(registered_tgt, registered_valid)
+        self._save_metrics_json(registered_tgt, registered_valid, warp_applied)
         self._draw_raw_matches()
         self._draw_inlier_matches()
         self._draw_coverage()
         self._draw_checkerboard("before", self.pair.ref_raw, self.pair.tgt_raw,
                                 self.pair.ref_valid, self.pair.tgt_valid)
-        self._draw_checkerboard("after", self.pair.ref_raw, registered_tgt,
-                                self.pair.ref_valid, registered_valid)
-        self._save_registered_geotiff(registered_tgt, registered_valid)
-        self._save_mosaic(registered_tgt, registered_valid)
+        if warp_applied:
+            self._draw_checkerboard("after", self.pair.ref_raw, registered_tgt,
+                                    self.pair.ref_valid, registered_valid)
+            self._save_registered_geotiff(registered_tgt, registered_valid)
+            self._save_mosaic(registered_tgt, registered_valid)
+        else:
+            logger.info("  [%s] skipping warp/mosaic (geometry failed)", self.method)
 
     # -----------------------------------------------------------------------
     # CSV
@@ -106,7 +114,7 @@ class MethodDiagnostics:
     # JSON metrics
     # -----------------------------------------------------------------------
 
-    def _save_metrics_json(self, registered_tgt, registered_valid):
+    def _save_metrics_json(self, registered_tgt, registered_valid, warp_applied=True):
         row_start, row_end, col_start, col_end = self.pair.overlap_window
         ref_crop = self.pair.ref_raw[row_start:row_end, col_start:col_end]
         tgt_crop_before = self.pair.tgt_raw[row_start:row_end, col_start:col_end]
@@ -149,6 +157,7 @@ class MethodDiagnostics:
             "verification_magnitude": verify["magnitude"],
             "verification_confidence": verify["confidence"],
             "match_runtime_sec": self.matches.runtime_sec,
+            "warp_applied": warp_applied,
             "status": self.geom.status,
         }
         with open(self.out / "metrics.json", "w") as f:

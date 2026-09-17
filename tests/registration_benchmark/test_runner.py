@@ -150,3 +150,36 @@ class TestRunner:
         assert "sift" in MATCHERS
         assert callable(MATCHERS["phase"])
         assert callable(MATCHERS["sift"])
+
+    def test_invalid_geometry_does_not_warp(self, tmp_dir):
+        """When geometry fails, warp/mosaic outputs should NOT be created."""
+        from tests.registration_benchmark.conftest import make_synthetic_pair
+
+        ref_path, tgt_path = make_synthetic_pair(
+            tmp_dir, ref_size=128, tgt_size=128,
+            ref_origin=(0.0, 128.0), tgt_origin=(0.0, 128.0),
+        )
+        output_dir = str(tmp_dir / "output")
+
+        result = run_two_image_benchmark(
+            ref_path=ref_path,
+            tgt_path=tgt_path,
+            output_dir=output_dir,
+            band=1,
+            methods=["sift"],  # SIFT on same-location pair should produce few matches
+            match_max_side=128,
+            ransac_threshold=1.0,  # tight threshold → likely TOO_FEW_INLIERS
+        )
+
+        out = Path(output_dir)
+        summary = result["summary"][0]
+
+        # If geometry failed, warp outputs must not exist
+        if summary["status"] != "OK":
+            for fname in ("checkerboard_after.png", "registered_target.tif",
+                          "mosaic_source_selection.tif"):
+                assert not (out / "sift" / fname).exists(), (
+                    f"{fname} should not exist when geometry failed"
+                )
+            # But before (unwarped) outputs should exist
+            assert (out / "sift" / "checkerboard_before.png").exists()

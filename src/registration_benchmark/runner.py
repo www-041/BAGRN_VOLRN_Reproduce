@@ -204,18 +204,20 @@ def _run_one_method(
     logger.info("  geometry: status=%s, inliers=%d/%d",
                 geom.status, geom.n_inlier, geom.n_raw)
 
-    # 3. Warp (even if geometry invalid — diagnostics still need it) --------
-    if geom.model is not None and (geom.n_inlier > 0 or True):
+    # 3. Warp (only if geometry is valid) ---------------------------------
+    warp_applied = False
+    if geom.status == STATUS_OK and geom.model is not None:
         registered, registered_valid = warp_target_common_grid(
             pair.tgt_raw, pair.tgt_valid, geom.model
         )
+        warp_applied = True
     else:
         registered = pair.tgt_raw.copy()
         registered_valid = pair.tgt_valid.copy()
 
     # 4. Diagnostics ---------------------------------------------------------
     diag = MethodDiagnostics(str(out), method, pair, matches, geom)
-    diag.run_all(registered, registered_valid)
+    diag.run_all(registered, registered_valid, warp_applied=warp_applied)
 
     elapsed = time.perf_counter() - t0
 
