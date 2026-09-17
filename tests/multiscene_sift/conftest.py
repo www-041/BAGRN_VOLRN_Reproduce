@@ -28,10 +28,82 @@ def _make_band(
     height: int = IMAGE_SIZE,
     dtype: str = "uint16",
 ) -> None:
-    """Write a synthetic GeoTIFF with random texture."""
-    rng = np.random.default_rng(abs(hash(str(path))) % (2**31))
-    data = rng.integers(0, 65535, size=(height, width)).astype(dtype)
+    """Write a synthetic GeoTIFF with structured non-repeating texture."""
+    data = _get_or_create_master_texture(origin_x, origin_y, width, height, path)
     transform = from_origin(origin_x, origin_y, RESOLUTION, RESOLUTION)
+    with rasterio.open(
+        path, "w",
+        driver="GTiff",
+        height=height,
+        width=width,
+        count=1,
+        dtype=dtype,
+        crs=crs,
+        transform=transform,
+    ) as dst:
+        dst.write(data, 1)
+
+
+# Cache for master texture to ensure overlapping scenes share features
+_MASTER_CACHE: dict[tuple[float, float], np.ndarray] = {}
+
+
+def _get_or_create_master_texture(
+    origin_x: float, origin_y: float,
+    width: int, height: int, path: Path,
+) -> np.ndarray:
+    """Return a texture that varies deterministically with position."""
+    # Key: rounded origin to group overlapping scenes
+    key = (round(origin_x / 1000) * 1000, round(origin_y / 1000) * 1000)
+
+    if key not in _MASTER_CACHE:
+        # Create a master image 3× the scene size centered on key
+        mw, mh = width * 3, height * 3
+        mx0 = key[0] - width * RESOLUTION
+        my0 = key[1] - height * RESOLUTION
+        rng = np.random.default_rng(abs(hash(key)) % (2**31))
+        y, x = np.mgrid[0:mh, 0:mw]
+
+        master = np.full((mh, mw), 30000.0, dtype=np.float64)
+
+        # Large-scale gradient
+        master += 10000 * np.sin(x * 0.02 + rng.random() * 10)
+        master += 8000 * np.cos(y * 0.015 + rng.random() * 10)
+
+        # Many unique blobs scattered across the master
+        for _ in range(mw // 4):
+            cx = int(rng.integers(10, mw - 10))
+            cy = int(rng.integers(10, mh - 10))
+            rr = rng.integers(6, 25)
+            dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+            inside = dist < rr
+            val = rng.integers(40000, 60000)
+            master[inside] = master[inside] * 0.4 + val * 0.6
+
+        # Fine texture
+        check = 10
+        rc = (y // check).astype(int)
+        cc = (x // check).astype(int)
+        master *= np.where((rc + cc) % 2 == 0, 1.0, 0.92)
+
+        master += rng.uniform(-300, 300, size=(mh, mw))
+        _MASTER_CACHE[key] = np.clip(master, 0, 65535).astype("uint16")
+
+    # Extract the window for this scene
+    master = _MASTER_CACHE[key]
+    mw, mh = width * 3, height * 3
+    mx0 = key[0] - width * RESOLUTION
+    my0 = key[1] - height * RESOLUTION
+
+    # Compute pixel offset within master
+    px_off = int(round((origin_x - mx0) / RESOLUTION))
+    py_off = int(round((origin_y - my0) / RESOLUTION))
+
+    # Clamp to valid range
+    px_off = max(0, min(px_off, mw - width))
+    py_off = max(0, min(py_off, mh - height))
+
+    return master[py_off:py_off + height, px_off:px_off + width]
     with rasterio.open(
         path, "w",
         driver="GTiff",
@@ -105,5 +177,7 @@ def make_five_scene_path(tmp_path: Path) -> Path:
 @pytest.fixture(autouse=True)
 def _rasterio_env():
     """Ensure rasterio doesn't leak global state across tests."""
+    _MASTER_CACHE.clear()
     yield
+    _MASTER_CACHE.clear()
     # No explicit teardown needed for rasterio in test context
