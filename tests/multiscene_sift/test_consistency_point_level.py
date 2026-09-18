@@ -58,35 +58,58 @@ class TestPointLevelConsistency:
             assert r["n_points"] == 3
 
     def test_non_tree_has_visible_error(self):
-        """Non-tree edge with 3px inconsistency: P95 > 0, visible error."""
-        T = from_origin(500000, 4000000, 30, 30)
-        pts = [[10, 10], [20, 20], [30, 30]]
+        """Triangle 0-1-2: non-tree 0-2 with 3px point inconsistency must show error.
 
-        # tree edge 0→1: perfect
+        Tree edges are 0-1 and 1-2 (both perfect). The non-tree edge 0-2
+        carries a deterministic ~3px shift in its stored inlier point
+        coordinates (tgt points shifted +3 in col), so — because
+        consistency uses the inlier point coordinates directly — it must
+        appear as a non-tree residual well above both tree edges.
+        """
+        pts = [[10.0, 10.0], [20.0, 20.0], [30.0, 30.0],
+               [40.0, 40.0], [50.0, 50.0], [60.0, 60.0],
+               [70.0, 70.0], [80.0, 80.0], [90.0, 90.0], [100.0, 100.0]]
+
+        # --- Tree edges: perfect -------------------------------------------------
         r01 = _make_pair_with_points(0, 1, pts, pts)
-        # non-tree edge 0→2: with translation inconsistency
-        # Scene 2 global transform has 3px shift in world (90m = 3 * 30m)
-        r02 = _make_pair_with_points(0, 2, pts, pts,
-                                     pixel_mat=[[1, 0, 3], [0, 1, 0], [0, 0, 1]])
+        r12 = _make_pair_with_points(1, 2, pts, pts)
 
-        # G[0]=I, G[2]=I but pair matrix says (3,0) shift
+        # --- Non-tree edge 0-2: scene-2 points shifted +3 in col (+90 m world,
+        #     = 3 px at 30 m/px), applied to the stored inlier coordinates. -----
+        tgt_pts_offset = np.asarray(pts, dtype=np.float64).copy()
+        tgt_pts_offset[:, 0] += 3.0  # col shift
+        r02 = _make_pair_with_points(0, 2, np.asarray(pts), tgt_pts_offset)
+
+        # All global transforms identity: residuals keep pair-internal offsets.
         G = [np.eye(3) for _ in range(3)]
         tree = [{"parent": 0, "child": 1, "depth": 1, "weight": 10},
-                {"parent": 0, "child": 2, "depth": 1, "weight": 5}]
+                {"parent": 1, "child": 2, "depth": 2, "weight": 10}]
 
         results = global_consistency_diagnostics(
-            [r01, r02], G, tree, pixel_size=30,
+            [r01, r12, r02], G, tree, pixel_size=30,
         )
 
-        # tree edge (0→1) should be near 0
+        # --- Tree edges must be ~0 ----------------------------------------------
         tree_res = [r for r in results if r["in_tree"]]
+        assert len(tree_res) == 2, f"expected 2 tree edges, got {len(tree_res)}"
         for r in tree_res:
-            assert r["global_p95_px"] < 1e-6
+            assert r["global_p95_px"] < 1e-6, (
+                f"tree edge {r['idx_i']}-{r['idx_j']} should be ~0, "
+                f"got P95={r['global_p95_px']}"
+            )
 
-        # non-tree edge (0→2) should show error
+        # --- Non-tree edge must be clearly above 2 px ---------------------------
         non_tree = [r for r in results if not r["in_tree"]]
-        # If all pairs are "in_tree" because the pair is tree, this won't work.
-        # Actually both edges are tree edges here. Let me think differently.
+        assert len(non_tree) == 1, f"expected 1 non-tree edge, got {len(non_tree)}"
+        r_nt = non_tree[0]
+        assert r_nt["idx_i"] == 0 and r_nt["idx_j"] == 2
+        # All 10 points shifted by exactly 3 px → P95 = max = 3
+        assert r_nt["global_p95_px"] == pytest.approx(3.0, abs=1e-6)
+        assert r_nt["global_p95_px"] > 2.0
+
+        # --- Non-tree error must exceed tree error ------------------------------
+        max_tree_p95 = max(r["global_p95_px"] for r in tree_res)
+        assert r_nt["global_p95_px"] > max_tree_p95
 
     def test_median_not_equal_max(self):
         """Verify median≠max and p95≠median for varied residuals."""
