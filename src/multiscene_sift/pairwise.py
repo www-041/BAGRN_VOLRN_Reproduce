@@ -22,11 +22,9 @@ from src.multiscene_sift.models import OverlapEdge, PairwiseRegistration, Scene
 
 logger = logging.getLogger(__name__)
 
-# Fixed registration parameters
+# Fixed registration parameters (quality thresholds, not tunable via CLI)
 SIFT_NFEATURES = 8000
 LOWE_RATIO = 0.75
-MATCH_MAX_SIDE = 1600
-RANSAC_THRESHOLD = 2.0
 RANSAC_MAX_TRIALS = 5000
 MIN_INLIERS = 20
 MIN_INLIER_RATIO = 0.30
@@ -36,6 +34,8 @@ def register_pair(
     scene_i: Scene,
     scene_j: Scene,
     band: str = "B14",
+    match_max_side: int = 1600,
+    ransac_threshold: float = 2.0,
 ) -> PairwiseRegistration:
     """Register scene_j (target) to scene_i (reference) using SIFT + RANSAC Affine.
 
@@ -43,6 +43,8 @@ def register_pair(
         scene_i: Reference scene.
         scene_j: Target scene.
         band: Registration band (default: B14).
+        match_max_side: Max side for match-view downscaling.
+        ransac_threshold: RANSAC inlier threshold in pixels.
 
     Returns:
         :class:`PairwiseRegistration` with results and common-grid pixel matrix.
@@ -75,7 +77,7 @@ def register_pair(
         )
 
     # 2. Build match view
-    view = build_match_view(pair, max_side=MATCH_MAX_SIDE)
+    view = build_match_view(pair, max_side=match_max_side)
 
     # 3. SIFT matching
     matches = match_sift(view, nfeatures=SIFT_NFEATURES,
@@ -84,7 +86,7 @@ def register_pair(
     # 4. RANSAC Affine
     geom = fit_affine_ransac(
         matches,
-        residual_threshold=RANSAC_THRESHOLD,
+        residual_threshold=ransac_threshold,
         max_trials=RANSAC_MAX_TRIALS,
     )
 
@@ -174,6 +176,8 @@ def run_all_pairs(
     edges: list[OverlapEdge],
     out_dir: str | Path,
     band: str = "B14",
+    match_max_side: int = 1600,
+    ransac_threshold: float = 2.0,
 ) -> list[PairwiseRegistration]:
     """Run pairwise SIFT registration for all overlap edges.
 
@@ -182,6 +186,8 @@ def run_all_pairs(
         edges: Geographic overlap edges.
         out_dir: Output directory for pairwise results.
         band: Registration band.
+        match_max_side: Max side for match-view downscaling.
+        ransac_threshold: RANSAC inlier threshold in pixels.
 
     Returns:
         List of :class:`PairwiseRegistration`, one per edge.
@@ -199,7 +205,12 @@ def run_all_pairs(
             scenes[edge.idx_j].name, scenes[edge.idx_i].name,
         )
         try:
-            reg = register_pair(scenes[edge.idx_i], scenes[edge.idx_j], band=band)
+            reg = register_pair(
+                    scenes[edge.idx_i], scenes[edge.idx_j],
+                    band=band,
+                    match_max_side=match_max_side,
+                    ransac_threshold=ransac_threshold,
+                )
         except Exception as exc:
             logger.exception(
                 "Pair (%d, %d) failed with exception: %s",

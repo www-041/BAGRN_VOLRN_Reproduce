@@ -136,7 +136,12 @@ def run_five_scene_mosaic(
     # 3. Pairwise B14 SIFT registration
     # =====================================================================
     logger.info("=== Step 3: Pairwise B14 SIFT Registration ===")
-    pairwise_results = run_all_pairs(scenes, edges, out, band=registration_band)
+    pairwise_results = run_all_pairs(
+        scenes, edges, out,
+        band=registration_band,
+        match_max_side=match_max_side,
+        ransac_threshold=ransac_threshold,
+    )
     n_ok = sum(1 for r in pairwise_results if r.status == "OK")
     n_fail = len(pairwise_results) - n_ok
     logger.info("Pairwise: %d OK, %d failed", n_ok, n_fail)
