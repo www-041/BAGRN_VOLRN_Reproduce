@@ -199,8 +199,75 @@ class TestWriteJson:
         assert loaded["c"] == 5
 
 
-class TestUnionVsFinal:
-    """Lightweight check of the mosaic union-vs-final comparison."""
+class TestRegistrationGeometryDefaults:
+    """When --scene-names is not given, default five scenes must be used."""
+
+    def test_none_scene_names_falls_back_to_default(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        from scripts.diagnose_b14_white_artifacts import run_registration_geometry
+        from src.multiscene_sift.runner import DEFAULT_SCENE_NAMES
+
+        captured = {}
+
+        fake_scene = SimpleNamespace(
+            index=0, name="scene_0",
+            transforms={"B14": from_origin(500000, 4000000, 30, 30)},
+        )
+
+        def fake_discover(root, names, bands):
+            captured["names"] = names
+            return [fake_scene], {"n_scenes": 1, "scenes": [], "bands": ["B14"]}
+
+        monkeypatch.setattr(
+            "scripts.diagnose_b14_white_artifacts.discover_five_scenes",
+            fake_discover,
+        )
+        # Patch the rest of the geometry chain so the call stops at discovery.
+        monkeypatch.setattr(
+            "scripts.diagnose_b14_white_artifacts.build_geographic_overlap_graph",
+            lambda *a, **k: [],
+        )
+        monkeypatch.setattr(
+            "scripts.diagnose_b14_white_artifacts.run_all_pairs",
+            lambda *a, **k: [],
+        )
+        monkeypatch.setattr(
+            "scripts.diagnose_b14_white_artifacts.build_accepted_sift_graph",
+            lambda *a, **k: ({}, []),
+        )
+
+        def fake_select_reference(adj, accepted):
+            return {"reference_index": 0, "degree": 0, "sum_q": 0.0,
+                    "all_degrees": {}, "all_sum_q": {},
+                    "selection_reason": "test"}
+
+        monkeypatch.setattr(
+            "scripts.diagnose_b14_white_artifacts.select_reference_scene",
+            fake_select_reference,
+        )
+        monkeypatch.setattr(
+            "scripts.diagnose_b14_white_artifacts.build_spanning_tree",
+            lambda *a, **k: [],
+        )
+        monkeypatch.setattr(
+            "scripts.diagnose_b14_white_artifacts.compose_global_transforms",
+            lambda *a, **k: [],
+        )
+        monkeypatch.setattr(
+            "scripts.diagnose_b14_white_artifacts.global_consistency_diagnostics",
+            lambda accept, G, tree, pixel_size=30.0: [],
+        )
+        monkeypatch.setattr(
+            "scripts.diagnose_b14_white_artifacts.compute_shared_mosaic_grid",
+            lambda *a, **k: None,
+        )
+
+        run_registration_geometry(
+            tmp_path / "input", tmp_path / "out",
+            None, "B14", 1600, 2.0,
+        )
+
+        assert captured["names"] == list(DEFAULT_SCENE_NAMES)
 
     def _make_mosaic(self, tmp_path):
         from src.mosaic import create_mosaic

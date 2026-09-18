@@ -30,6 +30,7 @@ import numpy as np
 import rasterio
 
 from src.multiscene_sift.dataset import discover_five_scenes
+from src.multiscene_sift.runner import DEFAULT_SCENE_NAMES
 from src.multiscene_sift.overlap_graph import (
     build_geographic_overlap_graph,
 )
@@ -82,6 +83,8 @@ def run_registration_geometry(
 ):
     """Run B14 SIFT geometry; return scenes, G, ref info, grid."""
     out = output_dir
+    if scene_names is None:
+        scene_names = list(DEFAULT_SCENE_NAMES)
 
     scenes, manifest = discover_five_scenes(
         input_root, scene_names, bands=(registration_band, "B8", "B5")
@@ -516,7 +519,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--match-max-side", type=int, default=1600)
     p.add_argument("--ransac-threshold", type=float, default=2.0)
     p.add_argument("--scene-names", default=None,
-                   help="comma-separated scene dir names (default: 5 data scenes)")
+                   help="comma-separated scene dir names "
+                        "(default: the 5 DZ01V flat scenes in DEFAULT_SCENE_NAMES)")
     p.add_argument("--block-size", type=int, default=200)
     p.add_argument("--lambda-param", type=float, default=0.1)
     p.add_argument("--rho", type=float, default=1.0)
