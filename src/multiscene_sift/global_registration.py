@@ -293,17 +293,27 @@ def global_consistency_diagnostics(
     G: list[np.ndarray],
     tree_edges: list[dict],
     pixel_size: float = 30.0,
+    pixel_size_x: float | None = None,
+    pixel_size_y: float | None = None,
 ) -> list[dict]:
-    """Evaluate global consistency using ALL accepted edges (including non-tree).
+    """Evaluate global consistency using ALL accepted edges' inlier points.
 
-    For each accepted pair (i, j):
-        e_k = || G_i @ p_i - G_j @ p_j ||
+    For each accepted pair (i, j) and every RANSAC inlier point k:
+        P_i_world = pair_common_transform * ref_xy[k]
+        P_j_world = pair_common_transform * tgt_xy[k]
+        e_k = || G_i @ P_i_world - G_j @ P_j_world ||
+        e_px_k = sqrt((dx/res_x)^2 + (dy/res_y)^2)
 
-    Reports residuals in pixel units (using B14 pixel size).
+    Reports point-level median, RMSE, P90, P95, max per edge.
 
     Returns:
         List of per-edge diagnostics dicts.
     """
+    if pixel_size_x is None:
+        pixel_size_x = pixel_size
+    if pixel_size_y is None:
+        pixel_size_y = pixel_size
+
     tree_pairs: set[tuple[int, int]] = set()
     for e in tree_edges:
         tree_pairs.add((e["parent"], e["child"]))
@@ -311,27 +321,40 @@ def global_consistency_diagnostics(
 
     results = []
     for r in accepted:
-        if r.inliers < 1:
+        # Skip pairs with no inlier point data
+        if r.inlier_ref_xy is None or r.inlier_tgt_xy is None:
+            continue
+        ref_pts = np.asarray(r.inlier_ref_xy)
+        tgt_pts = np.asarray(r.inlier_tgt_xy)
+        if len(ref_pts) == 0:
             continue
 
-        M = pixel_affine_to_world(
-            np.array(r.pair_pixel_matrix), r.pair_common_transform,
-        )
+        # Convert pixel coords to world coords using pair's common-grid transform
+        ref_world = np.array([
+            r.pair_common_transform * (px, py)
+            for px, py in ref_pts
+        ])
+        tgt_world = np.array([
+            r.pair_common_transform * (px, py)
+            for px, py in tgt_pts
+        ])
 
-        # Compose the implied transformation
-        # G_j @ M ≈ G_i  →  M maps j → i
-        # Residual: G_i * M * j_coord ≈ G_j * j_coord
-        # Or equivalently: use the pair model as reference
-        # Compute G_i @ M vs G_j
-        expected = G[r.idx_i] @ M
-        actual = G[r.idx_j]
+        # Apply global transforms (G_i, G_j are 3×3 in world coords)
+        Gi, Gj = G[r.idx_i], G[r.idx_j]
+        # Homogeneous coords
+        ref_h = np.column_stack([ref_world, np.ones(len(ref_world))])
+        tgt_h = np.column_stack([tgt_world, np.ones(len(tgt_world))])
 
-        # Residual = frobenius norm of the difference, in world units
-        diff = expected - actual
-        # Translate the translation part to pixel units
-        tx_diff = diff[0, 2] / pixel_size
-        ty_diff = diff[1, 2] / pixel_size
-        residual_px = np.sqrt(tx_diff**2 + ty_diff**2)
+        ref_transformed = (Gi @ ref_h.T).T[:, :2]  # (N, 2)
+        tgt_transformed = (Gj @ tgt_h.T).T[:, :2]  # (N, 2)
+
+        # Per-point residuals
+        dx_world = ref_transformed[:, 0] - tgt_transformed[:, 0]
+        dy_world = ref_transformed[:, 1] - tgt_transformed[:, 1]
+
+        dx_px = dx_world / pixel_size_x
+        dy_px = dy_world / pixel_size_y
+        errors_px = np.sqrt(dx_px**2 + dy_px**2)
 
         is_tree = (r.idx_i, r.idx_j) in tree_pairs
 
@@ -339,19 +362,13 @@ def global_consistency_diagnostics(
             "idx_i": r.idx_i,
             "idx_j": r.idx_j,
             "in_tree": is_tree,
-            "inliers": r.inliers,
-            "global_residual_px": round(float(residual_px), 4),
-            "tx_diff_px": round(float(tx_diff), 4),
-            "ty_diff_px": round(float(ty_diff), 4),
+            "n_points": len(errors_px),
+            "global_median_px": round(float(np.median(errors_px)), 4),
+            "global_rmse_px": round(float(np.sqrt(np.mean(errors_px**2))), 4),
+            "global_p90_px": round(float(np.percentile(errors_px, 90)), 4),
+            "global_p95_px": round(float(np.percentile(errors_px, 95)), 4),
+            "global_max_px": round(float(np.max(errors_px)), 4),
         })
-
-    # Compute per-edge stats
-    for entry in results:
-        entry["global_median_px"] = entry["global_residual_px"]
-        entry["global_rmse_px"] = entry["global_residual_px"]
-        entry["global_p90_px"] = entry["global_residual_px"]
-        entry["global_p95_px"] = entry["global_residual_px"]
-        entry["global_max_px"] = entry["global_residual_px"]
 
     return results
 
@@ -403,12 +420,13 @@ def save_consistency_diagnostics(
     # CSV
     csv_path = out_dir / "global_edge_consistency.csv"
     with open(csv_path, "w") as f:
-        f.write("idx_i,idx_j,in_tree,inliers,global_residual_px,"
-                "tx_diff_px,ty_diff_px\n")
+        f.write("idx_i,idx_j,in_tree,n_points,global_median_px,"
+                "global_rmse_px,global_p90_px,global_p95_px,global_max_px\n")
         for r in results:
-            f.write(f"{r['idx_i']},{r['idx_j']},{r['in_tree']},{r['inliers']},"
-                    f"{r['global_residual_px']},{r['tx_diff_px']},"
-                    f"{r['ty_diff_px']}\n")
+            f.write(f"{r['idx_i']},{r['idx_j']},{r['in_tree']},"
+                    f"{r['n_points']},{r['global_median_px']},"
+                    f"{r['global_rmse_px']},{r['global_p90_px']},"
+                    f"{r['global_p95_px']},{r['global_max_px']}\n")
 
     # JSON
     with open(out_dir / "global_edge_consistency.json", "w") as f:

@@ -128,6 +128,9 @@ def _make_result(
     runtime: float,
 ) -> PairwiseRegistration:
     """Build a PairwiseRegistration from geometry result."""
+    inlier_ref = np.empty((0, 2))
+    inlier_tgt = np.empty((0, 2))
+
     if status == STATUS_OK and geom.model is not None:
         pixel_mat = geom.model.params.tolist()
         raw_matches = int(geom.n_raw)
@@ -145,6 +148,10 @@ def _make_result(
             float(geom.residual_p95) if not np.isnan(geom.residual_p95)
             else None
         )
+        # Save inlier point coordinates in pair's common-grid pixel space
+        if geom.inlier_mask is not None and geom.inlier_mask.any():
+            inlier_ref = np.asarray(matches.ref_xy[geom.inlier_mask], dtype=np.float64)
+            inlier_tgt = np.asarray(matches.tgt_xy[geom.inlier_mask], dtype=np.float64)
     else:
         pixel_mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]  # identity as fallback
         raw_matches = int(geom.n_raw) if geom.n_raw else 0
@@ -168,6 +175,8 @@ def _make_result(
         pair_pixel_matrix=pixel_mat,
         pair_common_transform=common_transform,
         runtime_sec=runtime,
+        inlier_ref_xy=inlier_ref,
+        inlier_tgt_xy=inlier_tgt,
     )
 
 

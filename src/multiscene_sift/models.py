@@ -52,6 +52,9 @@ class PairwiseRegistration:
     pair_pixel_matrix: list[list[float]]
     pair_common_transform: object  # rasterio Affine for the pair's common grid
     runtime_sec: float
+    # Inlier point coordinates in pair common-grid pixel space (for global consistency)
+    inlier_ref_xy: np.ndarray | None = None  # (N,2) ref inlier points
+    inlier_tgt_xy: np.ndarray | None = None  # (N,2) tgt inlier points
 
 
 @dataclass
