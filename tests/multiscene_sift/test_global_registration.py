@@ -205,3 +205,73 @@ class TestGlobalTransforms:
         # All transforms are 3×3
         for g in G:
             assert g.shape == (3, 3)
+
+
+class TestSpanningTreeDirectionIndependent:
+    """Tests verifying spanning tree edge weight direction independence."""
+
+    def test_reversed_edge_gets_same_weight(self):
+        """A high-Q edge that can only be accessed in reverse must still be chosen."""
+        # 4-node graph:
+        #   0──1  (Q=10)
+        #   0──2  (Q=5)
+        #   2──3  (Q=100, but stored as (3,2) in accepted list)
+        #   1──3  (Q=1)
+        # Starting from 0, Prim must choose (2,3) despite being stored reversed.
+        results = [
+            _make_pair_reg(0, 1, inliers=20, ratio=0.5, coverage=1.0),   # Q=10
+            _make_pair_reg(0, 2, inliers=10, ratio=0.5, coverage=1.0),   # Q=5
+            _make_pair_reg(3, 2, inliers=100, ratio=1.0, coverage=1.0),  # Q=100, reversed!
+            _make_pair_reg(1, 3, inliers=2, ratio=0.5, coverage=1.0),    # Q=1
+        ]
+        adj, accepted = build_accepted_sift_graph(results)
+
+        ref_idx = 0
+        tree = build_spanning_tree(adj, accepted, ref_idx)
+
+        # Should have 3 edges for 4 nodes
+        assert len(tree) == 3
+
+        # The tree MUST include edge (2,3) because Q=100 is highest
+        edge_pairs = {(e["parent"], e["child"]) for e in tree}
+        has_23 = (2, 3) in edge_pairs or (3, 2) in edge_pairs
+        assert has_23, f"Tree missing high-Q edge (2,3). Got: {edge_pairs}"
+
+        # Max spanning tree: 0-1(10) + 0-2(5) + 2-3(100) = 115
+        total_q = sum(e["weight"] for e in tree)
+        assert total_q == pytest.approx(115.0, abs=0.1), (
+            f"Expected max spanning tree weight 115, got {total_q}"
+        )
+
+    def test_max_spanning_tree_deterministic(self):
+        """Given a known graph, spanning tree must be deterministic max-Q."""
+        # 4-node complete graph with distinct Q values
+        #   0──1  Q=8
+        #   0──2  Q=3
+        #   0──3  Q=5
+        #   1──2  Q=9
+        #   1──3  Q=2
+        #   2──3  Q=7
+        # Max spanning tree from ref=0:
+        # Step 1: 0→1 (Q=8 nearest from 0)
+        # Step 2: 1→2 (Q=9, best from {0,1} to {2,3})
+        # Step 3: 2→3 (Q=7, best from {0,1,2} to {3})
+        # Total weight: 8+9+7=24
+        results = [
+            _make_pair_reg(0, 1, inliers=8, ratio=1.0, coverage=1.0),
+            _make_pair_reg(0, 2, inliers=3, ratio=1.0, coverage=1.0),
+            _make_pair_reg(0, 3, inliers=5, ratio=1.0, coverage=1.0),
+            _make_pair_reg(1, 2, inliers=9, ratio=1.0, coverage=1.0),
+            _make_pair_reg(1, 3, inliers=2, ratio=1.0, coverage=1.0),
+            _make_pair_reg(2, 3, inliers=7, ratio=1.0, coverage=1.0),
+        ]
+        adj, accepted = build_accepted_sift_graph(results)
+
+        ref_idx = 0
+        tree = build_spanning_tree(adj, accepted, ref_idx)
+
+        assert len(tree) == 3  # n-1
+        total_q = sum(e["weight"] for e in tree)
+        assert total_q == pytest.approx(24.0, abs=0.1), (
+            f"Expected 24, got {total_q}"
+        )

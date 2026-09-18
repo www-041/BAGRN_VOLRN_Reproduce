@@ -161,11 +161,12 @@ def build_spanning_tree(
     """
     n = len(adj)
 
-    # Build weighted edge list
+    # Build weighted edge list (direction-independent)
     edge_map: dict[tuple[int, int], float] = {}
     for r in accepted:
         q = r.inliers * r.inlier_ratio * r.coverage
-        edge_map[(r.idx_i, r.idx_j)] = q
+        key = tuple(sorted((r.idx_i, r.idx_j)))
+        edge_map[key] = q
 
     # Prim's algorithm for max spanning tree
     # Start from ref_idx
@@ -184,7 +185,8 @@ def build_spanning_tree(
             for j in adj[i]:
                 if j in in_tree:
                     continue
-                w = edge_map.get((i, j), 0.0)
+                key = tuple(sorted((i, j)))
+                w = edge_map.get(key, 0.0)
                 if w > best_weight:
                     best_weight = w
                     best_edge = (i, j)
