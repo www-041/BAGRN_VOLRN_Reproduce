@@ -70,17 +70,30 @@ def _pixel_window_from_bounds(
     transform,
     img_shape: Tuple[int, int],
 ) -> Optional[Tuple[int, int, int, int]]:
-    """根据地理包围盒，计算在影像中的像素窗口。"""
+    """根据地理包围盒，计算在影像中的像素窗口。
+
+    使用全部四个地理角点转换为像素坐标，正确处理 affine
+    旋转/剪切/缩放变换。
+    """
     rows, cols = img_shape
     left, bottom, right, top = geo_bounds
 
-    c_min, r_min = ~transform * (left, top)
-    c_max, r_max = ~transform * (right, bottom)
+    # All four geographic corners
+    geo_corners = [
+        (left, top),
+        (right, top),
+        (left, bottom),
+        (right, bottom),
+    ]
+    # Convert to pixel coordinates
+    pixel_corners = [~transform * p for p in geo_corners]
+    all_cols = [p[0] for p in pixel_corners]
+    all_rows = [p[1] for p in pixel_corners]
 
-    r_s = max(0, int(np.floor(min(r_min, r_max))))
-    r_e = min(rows, int(np.ceil(max(r_min, r_max))))
-    c_s = max(0, int(np.floor(min(c_min, c_max))))
-    c_e = min(cols, int(np.ceil(max(c_min, c_max))))
+    r_s = max(0, int(np.floor(min(all_rows))))
+    r_e = min(rows, int(np.ceil(max(all_rows))))
+    c_s = max(0, int(np.floor(min(all_cols))))
+    c_e = min(cols, int(np.ceil(max(all_cols))))
 
     if r_e <= r_s or c_e <= c_s:
         return None
