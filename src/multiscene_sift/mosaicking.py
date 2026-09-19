@@ -85,9 +85,14 @@ def compute_shared_mosaic_grid(
     right = max(rights)
     top = max(tops)
 
-    # Resolution
+    # Resolution: use the full affine pixel-vector lengths.  abs(tf.a) alone
+    # underestimates resolution when the corrected transform has rotation/shear.
     if resolution is None:
-        resolution = min(abs(tf.a) for tf in corrected_transforms)
+        pixel_sizes = []
+        for tf in corrected_transforms:
+            pixel_sizes.append(float(np.hypot(tf.a, tf.d)))
+            pixel_sizes.append(float(np.hypot(tf.b, tf.e)))
+        resolution = min(v for v in pixel_sizes if v > 0)
 
     width = int(np.ceil((right - left) / resolution))
     height = int(np.ceil((top - bottom) / resolution))

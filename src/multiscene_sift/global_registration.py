@@ -1,4 +1,4 @@
-"""Multi-scene global registration: accepted graph, spanning tree, transforms."""
+"""Multi-scene global registration: accepted matcher graph, spanning tree, transforms."""
 
 from __future__ import annotations
 
@@ -14,12 +14,13 @@ from src.multiscene_sift.band_geometry import pixel_affine_to_world
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Task 5 — Accepted SIFT graph
+# Task 5 — Accepted matcher graph
 # ---------------------------------------------------------------------------
 
 
-def build_accepted_sift_graph(
+def build_accepted_graph(
     pairwise_results: list[PairwiseRegistration],
+    matcher_name: str = "matcher",
 ) -> tuple[dict[int, set[int]], list[PairwiseRegistration]]:
     """Build adjacency dict of pairs with ``status == "OK"``.
 
@@ -44,10 +45,17 @@ def build_accepted_sift_graph(
     if n > 0 and not _is_connected(n, adj):
         components = _connected_components(n, adj)
         raise RuntimeError(
-            f"Accepted SIFT graph is DISCONNECTED. Components: {components}"
+            f"Accepted {matcher_name} graph is DISCONNECTED. Components: {components}"
         )
 
     return adj, accepted
+
+
+def build_accepted_sift_graph(
+    pairwise_results: list[PairwiseRegistration],
+) -> tuple[dict[int, set[int]], list[PairwiseRegistration]]:
+    """Backward-compatible alias for legacy SIFT callers."""
+    return build_accepted_graph(pairwise_results, matcher_name="SIFT")
 
 
 def _is_connected(n: int, adj: dict[int, set[int]]) -> bool:

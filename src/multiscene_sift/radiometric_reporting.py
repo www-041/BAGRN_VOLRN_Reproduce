@@ -99,14 +99,18 @@ def save_radiometric_metrics(
 
 def save_normalization_info(
     band_results: dict[str, BandRadiometricResult],
-    reference_idx: int,
-    reference_name: str,
+    radiometric_control_idx: int,
+    radiometric_control_name: str,
     out_dir: Path,
 ) -> None:
     """Save radiometric_normalization_info.json."""
     info = {
-        "reference_idx": reference_idx,
-        "reference_name": reference_name,
+        "radiometric_control_idx": radiometric_control_idx,
+        "radiometric_control_name": radiometric_control_name,
+        # Backward-compatible aliases. These refer to the radiometric control,
+        # not the geometry reference.
+        "reference_idx": radiometric_control_idx,
+        "reference_name": radiometric_control_name,
         "per_band": {},
     }
     for band_name, result in band_results.items():

@@ -21,11 +21,22 @@ from typing import List, Tuple, Optional
 # 辅助：有效像素掩码（排除 nodata AND NaN/Inf）
 # ---------------------------------------------------------------------------
 
-def _valid_mask(data: np.ndarray, nodata: Optional[float]) -> np.ndarray:
-    """创建有效像素掩码：有限值 AND（如果定义了 nodata）不等于 nodata。"""
+def _valid_mask(
+    data: np.ndarray,
+    nodata: Optional[float],
+    cloud_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """创建有效像素掩码：有限值、非 NoData，且可选地排除云。"""
     mask = np.isfinite(data)
     if nodata is not None:
         mask &= (data != nodata)
+    if cloud_mask is not None:
+        cm = np.asarray(cloud_mask, dtype=bool)
+        if cm.shape != data.shape:
+            raise ValueError(
+                f"cloud_mask shape {cm.shape} != data shape {data.shape}"
+            )
+        mask &= ~cm
     return mask
 
 
@@ -38,6 +49,7 @@ def _overlap_means_stds(
     nodata_values: List[Optional[float]],
     overlaps: List[dict],
     bands: List[int],
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> Tuple[List[np.ndarray], List[np.ndarray], np.ndarray]:
     """
     对每对重叠影像、每个指定波段，计算重叠区（排除 nodata 和非有限值）的 mean 和 std。
@@ -59,6 +71,14 @@ def _overlap_means_stds(
         arr_j = arrays[j]
         nd_i = nodata_values[i]
         nd_j = nodata_values[j]
+        cloud_i = (
+            cloud_masks[i][r1_s:r1_e, c1_s:c1_e]
+            if cloud_masks is not None else None
+        )
+        cloud_j = (
+            cloud_masks[j][r2_s:r2_e, c2_s:c2_e]
+            if cloud_masks is not None else None
+        )
 
         pair_pixels[k] = (r1_e - r1_s) * (c1_e - c1_s)
 
@@ -67,8 +87,8 @@ def _overlap_means_stds(
             patch_j = arr_j[band, r2_s:r2_e, c2_s:c2_e]
 
             # 独立过滤有效像素（支持不同分辨率）
-            mask_i = _valid_mask(patch_i, nd_i)
-            mask_j = _valid_mask(patch_j, nd_j)
+            mask_i = _valid_mask(patch_i, nd_i, cloud_i)
+            mask_j = _valid_mask(patch_j, nd_j, cloud_j)
 
             n_valid_i = mask_i.sum()
             n_valid_j = mask_j.sum()
@@ -168,6 +188,140 @@ def _solve_compensation(
 
     return comp
 
+def _compute_overlap_moment_params(
+    img_idx: int,
+    control_idx: int,
+    overlaps: List[dict],
+    pair_means: List[np.ndarray],
+    pair_stds: List[np.ndarray],
+    pair_pixels: np.ndarray,
+    theta_mu: np.ndarray,
+    theta_sigma: np.ndarray,
+    n_bands: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    根据重叠区域统计量计算某幅目标影像的 Moment Matching 参数。
+
+    对目标影像 h 的每个邻居 g_i：
+
+        mu_ref_i =
+            mu_neighbor_overlap + theta_mu_neighbor
+
+        sigma_ref_i =
+            sigma_neighbor_overlap + theta_sigma_neighbor
+
+        mu_tar_i =
+            mu_target_overlap
+
+        sigma_tar_i =
+            sigma_target_overlap
+
+    多个 overlap 按 overlap pixel count 加权。
+
+    最后：
+
+        omega   = sigma_ref / sigma_tar
+        upsilon = mu_ref - omega * mu_tar
+
+    control image 保持恒等变换。
+    """
+
+    # 控制影像不修改
+    if img_idx == control_idx:
+        return (
+            np.ones(n_bands, dtype=np.float64),
+            np.zeros(n_bands, dtype=np.float64),
+        )
+
+    # 找出所有包含当前影像的 overlap
+    related = []
+
+    for k, ov in enumerate(overlaps):
+        if ov["idx_i"] == img_idx or ov["idx_j"] == img_idx:
+            related.append(k)
+
+    if not related:
+        raise ValueError(
+            f"Image {img_idx} has no overlap for moment matching"
+        )
+
+    # overlap 权重
+    weights = np.array(
+        [pair_pixels[k] for k in related],
+        dtype=np.float64,
+    )
+
+    if weights.sum() <= 0:
+        weights[:] = 1.0
+
+    weights /= weights.sum()
+
+    omega = np.ones(n_bands, dtype=np.float64)
+    upsilon = np.zeros(n_bands, dtype=np.float64)
+
+    for b_idx in range(n_bands):
+
+        mu_tar = 0.0
+        sigma_tar = 0.0
+
+        mu_ref = 0.0
+        sigma_ref = 0.0
+
+        for w, k in zip(weights, related):
+
+            ov = overlaps[k]
+            i = ov["idx_i"]
+            j = ov["idx_j"]
+
+            if img_idx == i:
+                # 当前图是 pair 的 i 端
+                target_side = 0
+                neighbor_side = 1
+                neighbor_idx = j
+
+            else:
+                # 当前图是 pair 的 j 端
+                target_side = 1
+                neighbor_side = 0
+                neighbor_idx = i
+
+            # 当前目标影像在 overlap 中的原始统计量
+            mu_tar_i = pair_means[k][b_idx, target_side]
+            sigma_tar_i = pair_stds[k][b_idx, target_side]
+
+            # 邻居 overlap 经过 block-adjustment compensation 后
+            # 得到的理想参考统计量
+            mu_ref_i = (
+                pair_means[k][b_idx, neighbor_side]
+                + theta_mu[b_idx, neighbor_idx]
+            )
+
+            sigma_ref_i = (
+                pair_stds[k][b_idx, neighbor_side]
+                + theta_sigma[b_idx, neighbor_idx]
+            )
+
+            mu_tar += w * mu_tar_i
+            sigma_tar += w * sigma_tar_i
+
+            mu_ref += w * mu_ref_i
+            sigma_ref += w * sigma_ref_i
+
+        # Eq.(11)
+        if sigma_tar < 1e-12 or sigma_ref < 1e-12:
+            # 标准差退化时不做 contrast scaling，
+            # 但仍允许做均值平移
+            omega[b_idx] = 1.0
+        else:
+            omega[b_idx] = sigma_ref / sigma_tar
+
+        upsilon[b_idx] = (
+            mu_ref
+            - omega[b_idx] * mu_tar
+        )
+
+    return omega, upsilon
+
 
 # ---------------------------------------------------------------------------
 # Moment matching 应用到整幅影像
@@ -176,34 +330,26 @@ def _solve_compensation(
 def _apply_moment_matching(
     array: np.ndarray,
     nodata: Optional[float],
-    mu_orig: np.ndarray,
-    sigma_orig: np.ndarray,
-    theta_mu: np.ndarray,
-    theta_sigma: np.ndarray,
+    omega: np.ndarray,
+    upsilon: np.ndarray,
     bands: List[int],
 ) -> np.ndarray:
     """
-    对整幅影像逐波段应用 moment matching（Eq.10-11）。
+    使用由重叠区域统计量计算出的 gain/offset，
+    将 Eq.(10) 的线性变换应用到整幅影像。
 
-    有效像素使用 _valid_mask：排除 nodata AND NaN/Inf。
+    f' = omega * f + upsilon
     """
     result = array.astype(np.float64, copy=True)
 
     for b_idx, band in enumerate(bands):
-        mu_t = mu_orig[b_idx] + theta_mu[b_idx]
-        sg_t = sigma_orig[b_idx] + theta_sigma[b_idx]
-
-        sg_orig = sigma_orig[b_idx]
-        if sg_orig < 1e-12 or sg_t < 1e-12:
-            omega = 1.0
-        else:
-            omega = sg_t / sg_orig
-
-        upsilon = mu_t - omega * mu_orig[b_idx]
-
         band_data = result[band]
         valid = _valid_mask(band_data, nodata)
-        band_data[valid] = omega * band_data[valid] + upsilon
+
+        band_data[valid] = (
+            omega[b_idx] * band_data[valid]
+            + upsilon[b_idx]
+        )
 
     return result
 
@@ -217,6 +363,7 @@ def bagrn_normalize(
     nodata_values: List[Optional[float]],
     overlaps: List[dict],
     control_idx: int = 0,
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> Tuple[List[np.ndarray], np.ndarray, np.ndarray]:
     """
     BAGRN 全局辐射归一化主函数。
@@ -257,6 +404,17 @@ def bagrn_normalize(
     if len(nodata_values) != n_images:
         raise ValueError(
             f"nodata_values length ({len(nodata_values)}) != arrays length ({n_images})")
+    if cloud_masks is not None:
+        if len(cloud_masks) != n_images:
+            raise ValueError(
+                f"cloud_masks length ({len(cloud_masks)}) != arrays length ({n_images})"
+            )
+        for idx, (arr, cm) in enumerate(zip(arrays, cloud_masks)):
+            if np.asarray(cm).shape != arr.shape[1:]:
+                raise ValueError(
+                    f"cloud mask {idx} shape {np.asarray(cm).shape} != "
+                    f"array spatial shape {arr.shape[1:]}"
+                )
 
     # 验证 3D 输入和公共波段数
     n_bands = arrays[0].shape[0] if arrays[0].ndim == 3 else None
@@ -290,7 +448,7 @@ def bagrn_normalize(
 
     # ---- 步骤 1: 计算重叠区的 μ 和 σ ----
     pair_means, pair_stds, pair_pixels = _overlap_means_stds(
-        arrays, nodata_values, overlaps, bands,
+        arrays, nodata_values, overlaps, bands, cloud_masks=cloud_masks,
     )
 
     # ---- 步骤 2: 求解补偿系数 ----
@@ -301,28 +459,31 @@ def bagrn_normalize(
         n_images, overlaps, pair_stds, pair_pixels, control_idx, n_bands,
     )
 
-    # ---- 步骤 3: 对每幅影像计算全局 μ、σ 然后 moment matching ----
+    # ---- 步骤 3: 基于 overlap statistics 计算 Moment Matching 参数 ----
     normalized = []
+
     for img_idx in range(n_images):
         arr = arrays[img_idx]
         nd = nodata_values[img_idx]
 
-        mu_i = np.zeros(n_bands)
-        sg_i = np.zeros(n_bands)
-        for b_idx, band in enumerate(bands):
-            band_data = arr[band]
-            valid = _valid_mask(band_data, nd)
-            n_valid = valid.sum()
-            mu_i[b_idx] = band_data[valid].mean() if n_valid > 0 else 0.0
-            sg_i[b_idx] = band_data[valid].std()  if n_valid > 0 else 0.0
+        omega, upsilon = _compute_overlap_moment_params(
+            img_idx=img_idx,
+            control_idx=control_idx,
+            overlaps=overlaps,
+            pair_means=pair_means,
+            pair_stds=pair_stds,
+            pair_pixels=pair_pixels,
+            theta_mu=theta_mu,
+            theta_sigma=theta_sigma,
+            n_bands=n_bands,
+        )
 
         result = _apply_moment_matching(
-            arr, nd,
-            mu_i, sg_i,
-            theta_mu[:, img_idx],
-            theta_sigma[:, img_idx],
+            arr,
+            nd,
+            omega,
+            upsilon,
             bands,
         )
         normalized.append(result)
-
     return normalized, theta_mu, theta_sigma

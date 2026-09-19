@@ -50,6 +50,44 @@ class BlockPairInfo:
     grid_n: int
 
 
+def _validate_north_up_aligned_transforms(transforms: List, tol: float = 1e-8) -> None:
+    """Require all VOLRN inputs to use one aligned north-up pixel lattice.
+
+    Scheme A performs the geometric warp before BAGRN/VOLRN.  VOLRN's
+    separable row/column IDW coordinate construction is valid only after that
+    warp, so rotated/sheared or sub-pixel-shifted grids are rejected here.
+    """
+    if not transforms:
+        return
+
+    ref = transforms[0]
+    if abs(ref.b) > tol or abs(ref.d) > tol:
+        raise ValueError("VOLRN requires north-up registered rasters (b=d=0)")
+    if ref.a <= 0 or ref.e >= 0:
+        raise ValueError("VOLRN north-up grid must have a>0 and e<0")
+
+    res_x = float(ref.a)
+    res_y = float(abs(ref.e))
+    for idx, tr in enumerate(transforms):
+        if abs(tr.b) > tol or abs(tr.d) > tol:
+            raise ValueError(
+                f"VOLRN requires north-up registered rasters (b=d=0); "
+                f"scene {idx} has b={tr.b}, d={tr.d}"
+            )
+        if not np.isclose(tr.a, ref.a, rtol=0.0, atol=tol) or not np.isclose(tr.e, ref.e, rtol=0.0, atol=tol):
+            raise ValueError("VOLRN requires identical x/y resolution on all registered rasters")
+
+        col_offset = (tr.c - ref.c) / res_x
+        row_offset = (ref.f - tr.f) / res_y
+        if not np.isclose(col_offset, round(col_offset), rtol=0.0, atol=1e-7) or not np.isclose(
+            row_offset, round(row_offset), rtol=0.0, atol=1e-7
+        ):
+            raise ValueError(
+                f"VOLRN requires one aligned north-up pixel lattice; scene {idx} "
+                "has a sub-pixel origin offset"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Step 2.3.1: 图像分块
 # ---------------------------------------------------------------------------
@@ -107,10 +145,21 @@ def image_blocking(
     nodata_values: List[Optional[float]],
     block_size: int,
     bands: List[int],
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> Tuple[List[BlockInfo], List[BlockPairInfo]]:
     """
     对所有影像进行规则网格分块（Section 2.3.1）。
     """
+    if cloud_masks is not None:
+        if len(cloud_masks) != len(arrays):
+            raise ValueError("cloud_masks length must match arrays length")
+        for idx, (arr, cm) in enumerate(zip(arrays, cloud_masks)):
+            if np.asarray(cm).shape != arr.shape[1:]:
+                raise ValueError(
+                    f"cloud mask {idx} shape {np.asarray(cm).shape} != "
+                    f"array spatial shape {arr.shape[1:]}"
+                )
+
     left, bottom, right, top = _compute_combined_bounds(bounds_list)
     width_geo = right - left
     height_geo = top - bottom
@@ -172,6 +221,9 @@ def image_blocking(
                         valid = (patch != nd) & np.isfinite(patch)
                     else:
                         valid = np.isfinite(patch)
+                    if cloud_masks is not None:
+                        cloud_patch = cloud_masks[img_idx][r_s:r_e, c_s:c_e]
+                        valid &= ~np.asarray(cloud_patch, dtype=bool)
 
                     block_mask[b_idx] = valid
                     if valid.sum() > 0:
@@ -620,6 +672,7 @@ def volrn_normalize(
     tol: float = 1e-4,
     verbose: bool = False,
     return_diagnostics: bool = False,
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> Tuple[List[np.ndarray], np.ndarray]:
     """
     VOLRN 局部辐射归一化主函数。
@@ -650,6 +703,18 @@ def volrn_normalize(
             return [], np.array([]), {}
         return [], np.array([])
 
+    _validate_north_up_aligned_transforms(transforms)
+
+    if cloud_masks is not None:
+        if len(cloud_masks) != len(arrays):
+            raise ValueError("cloud_masks length must match arrays length")
+        for idx, (arr, cm) in enumerate(zip(arrays, cloud_masks)):
+            if np.asarray(cm).shape != arr.shape[1:]:
+                raise ValueError(
+                    f"cloud mask {idx} shape {np.asarray(cm).shape} != "
+                    f"array spatial shape {arr.shape[1:]}"
+                )
+
     n_bands = arrays[0].shape[0]
     bands = list(range(n_bands))
 
@@ -666,6 +731,8 @@ def volrn_normalize(
                 valid = (patch != nd) & np.isfinite(patch)
             else:
                 valid = np.isfinite(patch)
+            if cloud_masks is not None:
+                valid &= ~np.asarray(cloud_masks[img_idx], dtype=bool)
             if valid.any():
                 all_valid_vals.append(patch[valid])
         if all_valid_vals:
@@ -708,7 +775,7 @@ def volrn_normalize(
     # ---- Step 1: 图像分块 ----
     blocks, pairs = image_blocking(
         norm_arrays, transforms, bounds_list, nodata_values,
-        block_size_pixels, bands,
+        block_size_pixels, bands, cloud_masks=cloud_masks,
     )
 
     if len(blocks) == 0 or len(pairs) == 0:

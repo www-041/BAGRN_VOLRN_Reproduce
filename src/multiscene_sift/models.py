@@ -1,4 +1,4 @@
-"""Data models for five-scene SIFT multi-image registration."""
+"""Data models for five-scene matcher-selectable registration."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class OverlapEdge:
 
 @dataclass
 class PairwiseRegistration:
-    """Result of pairwise SIFT+RANSAC registration on B14."""
+    """Result of pairwise matcher + shared RANSAC registration on B14."""
 
     idx_i: int
     idx_j: int
@@ -55,6 +55,10 @@ class PairwiseRegistration:
     # Inlier point coordinates in pair common-grid pixel space (for global consistency)
     inlier_ref_xy: np.ndarray | None = None  # (N,2) ref inlier points
     inlier_tgt_xy: np.ndarray | None = None  # (N,2) tgt inlier points
+    # New matcher/timing fields are appended to preserve legacy positional callers.
+    matcher: str = "sift"
+    matcher_runtime_sec: float = 0.0
+    geometry_runtime_sec: float = 0.0
 
 
 @dataclass

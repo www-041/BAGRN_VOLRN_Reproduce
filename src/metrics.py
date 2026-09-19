@@ -29,6 +29,8 @@ def _extract_overlap_pixels(
     nodata_i: Optional[float],
     nodata_j: Optional[float],
     band: int,
+    cloud_mask_i: Optional[np.ndarray] = None,
+    cloud_mask_j: Optional[np.ndarray] = None,
 ):
     """提取一对重叠影像在指定波段上的重叠区有效像素。
 
@@ -46,6 +48,17 @@ def _extract_overlap_pixels(
     if nodata_j is not None:
         mj &= (pj != nodata_j)
 
+    if cloud_mask_i is not None:
+        cm_i = np.asarray(cloud_mask_i, dtype=bool)[r1s:r1e, c1s:c1e].ravel()
+        if cm_i.shape != pi.shape:
+            raise ValueError("cloud_mask_i overlap shape does not match image overlap")
+        mi &= ~cm_i
+    if cloud_mask_j is not None:
+        cm_j = np.asarray(cloud_mask_j, dtype=bool)[r2s:r2e, c2s:c2e].ravel()
+        if cm_j.shape != pj.shape:
+            raise ValueError("cloud_mask_j overlap shape does not match image overlap")
+        mj &= ~cm_j
+
     # 独立过滤，不要求相同长度（支持不同分辨率）
     return pi[mi], pj[mj]
 
@@ -59,6 +72,7 @@ def _has_valid_overlap_pixels(
     nodata_values: List[Optional[float]],
     overlaps: List[dict],
     band: int,
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> bool:
     """检查给定波段在任意重叠对中是否有有效像素。"""
     for ov in overlaps:
@@ -67,6 +81,8 @@ def _has_valid_overlap_pixels(
             ov["window_i"], ov["window_j"],
             nodata_values[ov["idx_i"]], nodata_values[ov["idx_j"]],
             band,
+            cloud_masks[ov["idx_i"]] if cloud_masks is not None else None,
+            cloud_masks[ov["idx_j"]] if cloud_masks is not None else None,
         )
         if len(pi) > 0 and len(pj) > 0:
             return True
@@ -111,6 +127,7 @@ def compute_adm(
     nodata_values: List[Optional[float]],
     overlaps: List[dict],
     bands: Optional[List[int]] = None,
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> float:
     """
     计算 ADM (Absolute Difference of Mean)。
@@ -132,6 +149,8 @@ def compute_adm(
                 ov["window_i"], ov["window_j"],
                 nodata_values[ov["idx_i"]], nodata_values[ov["idx_j"]],
                 band,
+                cloud_masks[ov["idx_i"]] if cloud_masks is not None else None,
+                cloud_masks[ov["idx_j"]] if cloud_masks is not None else None,
             )
             if len(pi) == 0 or len(pj) == 0:
                 continue
@@ -151,6 +170,7 @@ def compute_adsd(
     nodata_values: List[Optional[float]],
     overlaps: List[dict],
     bands: Optional[List[int]] = None,
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> float:
     """
     计算 ADSD (Absolute Difference of Standard Deviation)。
@@ -172,6 +192,8 @@ def compute_adsd(
                 ov["window_i"], ov["window_j"],
                 nodata_values[ov["idx_i"]], nodata_values[ov["idx_j"]],
                 band,
+                cloud_masks[ov["idx_i"]] if cloud_masks is not None else None,
+                cloud_masks[ov["idx_j"]] if cloud_masks is not None else None,
             )
             if len(pi) == 0 or len(pj) == 0:
                 continue
@@ -192,6 +214,7 @@ def compute_cd(
     overlaps: List[dict],
     bands: Optional[List[int]] = None,
     n_bins: int = 256,
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> float:
     """
     计算 CD (Color Distance)。
@@ -217,6 +240,8 @@ def compute_cd(
                 ov["window_i"], ov["window_j"],
                 nodata_values[ov["idx_i"]], nodata_values[ov["idx_j"]],
                 band,
+                cloud_masks[ov["idx_i"]] if cloud_masks is not None else None,
+                cloud_masks[ov["idx_j"]] if cloud_masks is not None else None,
             )
             valid_counts.append(len(pi) + len(pj))
         valid_counts = np.array(valid_counts, dtype=np.float64)
@@ -233,6 +258,8 @@ def compute_cd(
                 ov["window_i"], ov["window_j"],
                 nodata_values[ov["idx_i"]], nodata_values[ov["idx_j"]],
                 band,
+                cloud_masks[ov["idx_i"]] if cloud_masks is not None else None,
+                cloud_masks[ov["idx_j"]] if cloud_masks is not None else None,
             )
             if len(pi) < 2 or len(pj) < 2:
                 continue
@@ -271,6 +298,7 @@ def compute_gl(
     arrays_after: List[np.ndarray],
     nodata_values: List[Optional[float]],
     bands: Optional[List[int]] = None,
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> float:
     """
     计算 GL (Gradient Loss)。
@@ -296,6 +324,13 @@ def compute_gl(
             valid_mask = np.isfinite(before) & np.isfinite(after)
             if nd is not None:
                 valid_mask &= (before != nd) & (after != nd)
+            if cloud_masks is not None:
+                cm = np.asarray(cloud_masks[idx], dtype=bool)
+                if cm.shape != before.shape:
+                    raise ValueError(
+                        f"cloud mask {idx} shape {cm.shape} != image shape {before.shape}"
+                    )
+                valid_mask &= ~cm
 
             n_valid = valid_mask.sum()
             if n_valid == 0:
@@ -339,17 +374,23 @@ def compute_all(
     overlaps: List[dict],
     bands: Optional[List[int]] = None,
     n_bins: int = 256,
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> dict:
     """
     一次性计算全部六项指标。
+
+    注意：Eq.(39) 的 GL 使用 ``arrays_before`` 与 ``arrays_after``；
+    ADM/ADSD/CD 只使用 ``arrays_after``。因此按论文报告最终 RN 结果时，
+    ``arrays_before`` 应传入配准后的源影像，``arrays_after`` 传入最终
+    辐射归一化结果。
     """
     if bands is None:
         bands = list(range(arrays_before[0].shape[0]))
 
-    adm = compute_adm(arrays_after, nodata_values, overlaps, bands)
-    adsd = compute_adsd(arrays_after, nodata_values, overlaps, bands)
-    cd = compute_cd(arrays_after, nodata_values, overlaps, bands, n_bins)
-    gl = compute_gl(arrays_before, arrays_after, nodata_values, bands)
+    adm = compute_adm(arrays_after, nodata_values, overlaps, bands, cloud_masks=cloud_masks)
+    adsd = compute_adsd(arrays_after, nodata_values, overlaps, bands, cloud_masks=cloud_masks)
+    cd = compute_cd(arrays_after, nodata_values, overlaps, bands, n_bins, cloud_masks=cloud_masks)
+    gl = compute_gl(arrays_before, arrays_after, nodata_values, bands, cloud_masks=cloud_masks)
     rdoa = compute_rdoa(adm, adsd, cd)
     ave = compute_ave(adm, adsd, cd, gl)
 
@@ -374,6 +415,7 @@ def compute_per_pair(
     bands: Optional[List[int]] = None,
     n_bins: int = 256,
     arrays_before: Optional[List[np.ndarray]] = None,
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> List[dict]:
     """
     逐影像对计算 ADM / ADSD / CD / GL / RDOA / Ave + 逐波段分解。
@@ -399,7 +441,9 @@ def compute_per_pair(
         adm_vals, adsd_vals, cd_vals = [], [], []
 
         for band in bands:
-            if not _has_valid_overlap_pixels(arrays_after, nodata_values, single_ov, band):
+            if not _has_valid_overlap_pixels(
+                arrays_after, nodata_values, single_ov, band, cloud_masks=cloud_masks
+            ):
                 per_band[band] = {
                     'adm': None, 'adsd': None, 'cd': None,
                     'gl': None, 'rdoa': None, 'ave': None,
@@ -411,11 +455,13 @@ def compute_per_pair(
             pi, pj = _extract_overlap_pixels(
                 arrays_after[i], arrays_after[j],
                 ov['window_i'], ov['window_j'],
-                nodata_values[i], nodata_values[j], band)
+                nodata_values[i], nodata_values[j], band,
+                cloud_masks[i] if cloud_masks is not None else None,
+                cloud_masks[j] if cloud_masks is not None else None)
 
-            adm = compute_adm(arrays_after, nodata_values, single_ov, [band])
-            adsd = compute_adsd(arrays_after, nodata_values, single_ov, [band])
-            cd = compute_cd(arrays_after, nodata_values, single_ov, [band], n_bins)
+            adm = compute_adm(arrays_after, nodata_values, single_ov, [band], cloud_masks=cloud_masks)
+            adsd = compute_adsd(arrays_after, nodata_values, single_ov, [band], cloud_masks=cloud_masks)
+            cd = compute_cd(arrays_after, nodata_values, single_ov, [band], n_bins, cloud_masks=cloud_masks)
             rdoa = (adm + adsd + cd) / 3.0
 
             if arrays_before is not None:
@@ -423,7 +469,8 @@ def compute_per_pair(
                     [arrays_before[i], arrays_before[j]],
                     [arrays_after[i], arrays_after[j]],
                     [nodata_values[i], nodata_values[j]],
-                    [band])
+                    [band],
+                    cloud_masks=[cloud_masks[i], cloud_masks[j]] if cloud_masks is not None else None)
                 ave = compute_ave(adm, adsd, cd, gl)
             else:
                 gl = None
@@ -455,7 +502,8 @@ def compute_per_pair(
             for idx in [i, j]:
                 gl_val = compute_gl(
                     [arrays_before[idx]], [arrays_after[idx]],
-                    [nodata_values[idx]], bands)
+                    [nodata_values[idx]], bands,
+                    cloud_masks=[cloud_masks[idx]] if cloud_masks is not None else None)
                 gl_vals.append(gl_val)
             agg_gl = float(np.mean(gl_vals))
             agg_ave = compute_ave(agg_adm, agg_adsd, agg_cd, agg_gl)
@@ -494,6 +542,7 @@ def compute_per_band(
     bands: Optional[List[int]] = None,
     n_bins: int = 256,
     arrays_before: Optional[List[np.ndarray]] = None,
+    cloud_masks: Optional[List[np.ndarray]] = None,
 ) -> List[dict]:
     """
     逐波段计算全部指标。
@@ -513,7 +562,9 @@ def compute_per_band(
 
     results = []
     for band in bands:
-        if not _has_valid_overlap_pixels(arrays_after, nodata_values, overlaps, band):
+        if not _has_valid_overlap_pixels(
+            arrays_after, nodata_values, overlaps, band, cloud_masks=cloud_masks
+        ):
             results.append({
                 'band': int(band),
                 'adm': None, 'adsd': None, 'cd': None,
@@ -522,13 +573,13 @@ def compute_per_band(
             })
             continue
 
-        adm = compute_adm(arrays_after, nodata_values, overlaps, [band])
-        adsd = compute_adsd(arrays_after, nodata_values, overlaps, [band])
-        cd = compute_cd(arrays_after, nodata_values, overlaps, [band], n_bins)
+        adm = compute_adm(arrays_after, nodata_values, overlaps, [band], cloud_masks=cloud_masks)
+        adsd = compute_adsd(arrays_after, nodata_values, overlaps, [band], cloud_masks=cloud_masks)
+        cd = compute_cd(arrays_after, nodata_values, overlaps, [band], n_bins, cloud_masks=cloud_masks)
         rdoa = (adm + adsd + cd) / 3.0
 
         if arrays_before is not None:
-            gl = compute_gl(arrays_before, arrays_after, nodata_values, [band])
+            gl = compute_gl(arrays_before, arrays_after, nodata_values, [band], cloud_masks=cloud_masks)
             ave = compute_ave(adm, adsd, cd, gl)
         else:
             gl = None
@@ -560,7 +611,8 @@ def save_metrics_csv(metrics: dict, output_dir: str,
                      overlaps: Optional[List[dict]] = None,
                      arrays_before: Optional[List[np.ndarray]] = None,
                      arrays_after: Optional[List[np.ndarray]] = None,
-                     nodata_values: Optional[List[Optional[float]]] = None):
+                     nodata_values: Optional[List[Optional[float]]] = None,
+                     cloud_masks: Optional[List[np.ndarray]] = None):
     """
     将指标保存为 CSV 文件。
     输出：
@@ -589,7 +641,7 @@ def save_metrics_csv(metrics: dict, output_dir: str,
     if bands is not None and arrays_after is not None:
         per_band = compute_per_band(
             arrays_after, nodata_values, overlaps, bands,
-            arrays_before=arrays_before)
+            arrays_before=arrays_before, cloud_masks=cloud_masks)
         per_band_path = os.path.join(output_dir, 'metrics_per_band.csv')
         with open(per_band_path, 'w', newline='', encoding='utf-8') as f:
             w = csv.writer(f)
@@ -612,7 +664,7 @@ def save_metrics_csv(metrics: dict, output_dir: str,
     if overlaps is not None and arrays_after is not None:
         per_pair = compute_per_pair(
             arrays_after, nodata_values, overlaps, bands,
-            arrays_before=arrays_before)
+            arrays_before=arrays_before, cloud_masks=cloud_masks)
         per_pair_path = os.path.join(output_dir, 'metrics_per_pair.csv')
         with open(per_pair_path, 'w', newline='', encoding='utf-8') as f:
             w = csv.writer(f)

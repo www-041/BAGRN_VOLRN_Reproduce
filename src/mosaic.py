@@ -538,11 +538,21 @@ def create_mosaic(
 
     # 强制清理：有效区内残留 NaN/Inf → nodata（检查所有波段）
     bad_mask = ~np.all(np.isfinite(result), axis=0)
+    effective_final_mask = final_mask & ~bad_mask
+    coverage_holes = union_mask & ~effective_final_mask
+    union_valid_pixels = int(union_mask.sum())
+    final_valid_pixels = int(effective_final_mask.sum())
+    union_but_final_invalid_pixels = int(coverage_holes.sum())
+    coverage_hole_ratio = (
+        union_but_final_invalid_pixels / union_valid_pixels
+        if union_valid_pixels > 0 else 0.0
+    )
+
     result[:, bad_mask] = nd_val
     result[:, ~final_mask] = nd_val
 
     # 最终断言
-    nan_check = np.isnan(result[:, final_mask & ~bad_mask]).sum()
+    nan_check = np.isnan(result[:, effective_final_mask]).sum()
     assert nan_check == 0, f"Assertion failed: {nan_check} NaN in final valid pixels"
 
     # ---- 4. 写出 ----
@@ -576,8 +586,12 @@ def create_mosaic(
             'resolution': resolution,
             'n_images': n_images,
             'n_bands': n_bands,
-            'valid_pixels': int(final_mask.sum()),
+            'valid_pixels': final_valid_pixels,
             'total_pixels': width * height,
+            'union_valid_pixels': union_valid_pixels,
+            'final_valid_pixels': final_valid_pixels,
+            'union_but_final_invalid_pixels': union_but_final_invalid_pixels,
+            'coverage_hole_ratio': float(coverage_hole_ratio),
             'nan_in_valid': int(nan_in_valid),
             'inf_in_valid': int(inf_in_valid),
             'source_index_map': best_idx if 'best_idx' in dir() else None,

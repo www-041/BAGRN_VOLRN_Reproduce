@@ -6,6 +6,7 @@ the comparison is purely about tie-point quality, not geometry choice.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass
 
@@ -91,6 +92,7 @@ def fit_affine_ransac(
     matches: MatchSet,
     residual_threshold: float = 2.0,
     max_trials: int = 5000,
+    random_seed: int = 0,
 ) -> GeometryResult:
     """Fit a 2-D affine transform to tie-points via RANSAC.
 
@@ -102,6 +104,7 @@ def fit_affine_ransac(
         matches: A validated :class:`MatchSet`.
         residual_threshold: Inlier threshold in pixels (Euclidean distance).
         max_trials: Maximum RANSAC iterations.
+        random_seed: Seed passed to scikit-image RANSAC for reproducibility.
 
     Returns:
         A :class:`GeometryResult`, with ``status`` indicating whether the fit
@@ -141,6 +144,11 @@ def fit_affine_ransac(
         min_samples=3,
         residual_threshold=residual_threshold,
         max_trials=max_trials,
+        **(
+            {"rng": random_seed}
+            if "rng" in inspect.signature(ransac).parameters
+            else {"random_state": random_seed}
+        ),
     )
 
     inlier_mask = inliers.astype(bool)
