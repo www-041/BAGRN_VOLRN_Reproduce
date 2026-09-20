@@ -421,6 +421,21 @@ def test_overlay_renders_shared_grid_with_large_world_offsets(synth_scenes, tmp_
     assert overlay["mst"].size > 0 and (overlay["mst"] > 0).any()
     # Both overlays must share exactly the same pixel lattice.
     assert overlay["direct"].shape == overlay["mst"].shape
+    assert "ncc_direct" in overlay and "ncc_mst" in overlay
+
+
+def test_ncc_between_overlays_scoring():
+    rng = np.random.default_rng(0)
+    base = rng.uniform(0, 100, (40, 40))
+    valid = np.ones((40, 40), dtype=bool)
+    assert diag._ncc_between_overlays(
+        base, base, valid, valid
+    ) == pytest.approx(1.0, abs=1e-9)
+    noise = base + rng.normal(0, 30.0, base.shape)
+    assert diag._ncc_between_overlays(base, noise, valid, valid) > 0.0
+    assert diag._ncc_between_overlays(base, -base, valid, valid) < 0.0
+    empty = np.zeros((40, 40), dtype=bool)
+    assert math.isnan(diag._ncc_between_overlays(base, base, empty, empty))
 
 
 # ---------------------------------------------------------------------------

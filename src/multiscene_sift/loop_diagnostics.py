@@ -1103,7 +1103,28 @@ def render_closure_overlays(
         out[~v] = 0.0
         return out.astype(np.uint8)
 
-    return _stretch(a0, v0), _stretch(a1, v1), v0, v1
+    return _stretch(a0, v0), _stretch(a1, v1), v0, v1, a0, a1
+
+
+def _ncc_between_overlays(
+    a0: np.ndarray, a1: np.ndarray, v0: np.ndarray, v1: np.ndarray
+) -> float:
+    """Normalised cross-correlation of two warped bands over joint valid px.
+
+    Computed on raw (unstretched) values.  ~1 when the two scenes align well
+    under the assumed geometry; negative/NaN values mean no meaningful match.
+    """
+    joint = v0 & v1
+    if int(joint.sum()) < 20:
+        return float("nan")
+    x = a0[joint].astype(np.float64)
+    y = a1[joint].astype(np.float64)
+    x = x - x.mean()
+    y = y - y.mean()
+    denom = float(np.sqrt(np.sum(x * x) * np.sum(y * y)))
+    if denom < 1e-12:
+        return float("nan")
+    return float(np.sum(x * y) / denom)
 
 
 def _alpha_blend(
@@ -1160,15 +1181,17 @@ def plot_overlay_comparison(
     grid_transform, gw, gh = _north_up_grid(bounds, abs(t0.a), max_side)
     grid_shape = (gh, gw)
 
-    s0_d, s1_d, v0_d, v1_d = render_closure_overlays(
+    s0_d, s1_d, v0_d, v1_d, raw0_d, raw1_d = render_closure_overlays(
         scene0, scene1, band, src0, src1_direct, grid_transform, grid_shape
     )
     blend_direct = _alpha_blend(s0_d, s1_d, v0_d, v1_d)
+    ncc_direct = _ncc_between_overlays(raw0_d, raw1_d, v0_d, v1_d)
 
-    s0_m, s1_m, v0_m, v1_m = render_closure_overlays(
+    s0_m, s1_m, v0_m, v1_m, raw0_m, raw1_m = render_closure_overlays(
         scene0, scene1, band, src0, src1_mst, grid_transform, grid_shape
     )
     blend_mst = _alpha_blend(s0_m, s1_m, v0_m, v1_m)
+    ncc_mst = _ncc_between_overlays(raw0_m, raw1_m, v0_m, v1_m)
 
     out_dir_path = Path(out_dir)
     out_dir_path.mkdir(parents=True, exist_ok=True)
@@ -1196,6 +1219,13 @@ def plot_overlay_comparison(
         "direct": blend_direct,
         "mst": blend_mst,
         "grid_transform_obj": grid_transform,
+        "ncc_direct": float(ncc_direct),
+        "ncc_mst": float(ncc_mst),
+        "ncc_winner": (
+            "direct" if float(ncc_direct) > float(ncc_mst)
+            else "mst" if float(ncc_mst) > float(ncc_direct)
+            else "tie"
+        ),
     }
 
 
@@ -1238,22 +1268,18 @@ def plot_overlay_crops(
         letter = letters[order % 26]
 
         plt = _matplotlib()
-        for label, arr, idx in (
-            (f"{order+11:02d}_crop_{letter}_direct.png", direct, 0),
-            (f"{order+12:02d}_crop_{letter}_mst.png", mst, 1),
-        ):
+        for kind, arr in (("direct", direct), ("mst", mst)):
+            num = 2 * order + 11 if kind == "direct" else 2 * order + 12
+            label = f"{num:02d}_crop_{letter}_{kind}.png"
             crop = arr[y0:y1, x0:x1]
             path = out_dir_path / label
             fig, ax = plt.subplots(figsize=(8, 8))
             ax.imshow(crop, cmap="gray", vmin=0, vmax=255)
-            ax.set_title(
-                f"Crop {letter} ({'Direct' if idx == 0 else 'MST'}) "
-                f"~ x={int(cx)}px"
-            )
+            ax.set_title(f"Crop {letter} ({kind}) ~ x={int(cx)}px")
             ax.axis("off")
             fig.savefig(path, dpi=110, bbox_inches="tight")
             plt.close(fig)
-            saved.append({"label": label, "path": str(path), "kind": "direct" if idx == 0 else "mst"})
+            saved.append({"label": label, "path": str(path), "kind": kind})
     return saved
 
 
@@ -1341,6 +1367,7 @@ def build_diagnosis_summary(
     final_state: dict,
     q5_explanation: str,
     visualization_files: dict | None = None,
+    overlay_alignment: dict | None = None,
 ) -> dict:
     """Assemble the final ``18_diagnosis_summary.json`` payload."""
     i, j = edge
@@ -1382,6 +1409,7 @@ def build_diagnosis_summary(
         "residual_statistics": residual_stats,
         "pair_reproduction": reproduction,
         "visualization_files": visualization_files or {},
+        "overlay_alignment": overlay_alignment,
         "diagnostic_artifacts": {
             "problem_edge": f"{output_dir}/01_problem_edge.json",
             "transform_comparison": f"{output_dir}/02_transform_comparison.json",

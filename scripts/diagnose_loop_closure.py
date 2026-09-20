@@ -248,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     reproduction = pattern = transform_compare = residual_stats = None
     reg = None
     visualization_files: dict = {}
+    overlay_alignment: dict | None = None
 
     # --- Task 3: reproduce the problem pair -----------------------------------
     if scenes is not None:
@@ -350,6 +351,17 @@ def main(argv: list[str] | None = None) -> int:
                         "09_direct_0_1_overlay.png": overlay["direct_path"],
                         "10_mst_0_4_1_overlay.png": overlay["mst_path"],
                     })
+                    overlay_alignment = {
+                        "ncc_direct": float(overlay.get("ncc_direct")),
+                        "ncc_mst": float(overlay.get("ncc_mst")),
+                        "ncc_winner": overlay.get("ncc_winner"),
+                    }
+                    print(
+                        "Overlay alignment NCC: "
+                        f"direct={overlay_alignment['ncc_direct']:.4f}  "
+                        f"mst={overlay_alignment['ncc_mst']:.4f}  "
+                        f"(winner: {overlay_alignment['ncc_winner']})"
+                    )
                     crops = diag.plot_overlay_crops(
                         overlay, reg, out_dir,
                         crop_size=args.crop_size, n_crops=args.n_crops,
@@ -399,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
         final_state=final_state,
         q5_explanation=q5_explanation,
         visualization_files=visualization_files,
+        overlay_alignment=overlay_alignment,
     )
     diag.write_json(out_dir / "18_diagnosis_summary.json", summary)
     diag.write_summary_text(summary, out_dir / "18_diagnosis_summary.txt")
