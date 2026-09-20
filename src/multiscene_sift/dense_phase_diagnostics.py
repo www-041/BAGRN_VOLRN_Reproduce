@@ -381,6 +381,12 @@ def summarize_dense_shift_field(rows: list[dict]) -> dict:
     dx = np.array([r["phase_dx_px"] for r in ok])
     dy = np.array([r["phase_dy_px"] for r in ok])
     mag = np.hypot(dx, dy)
+    # robust scatter: median absolute deviation of per-tile distance to the
+    # median vector, scaled like a standard deviation
+    med_v = np.array([float(np.median(dx)), float(np.median(dy))])
+    dist = np.hypot(dx - med_v[0], dy - med_v[1])
+    mad = float(np.median(dist)) if len(dist) else 0.0
+    robust_range_px = float(1.4826 * mad)
     return {
         "grid_n": ok[0].get("grid_n"),
         "n_total": len(rows),
@@ -398,6 +404,10 @@ def summarize_dense_shift_field(rows: list[dict]) -> dict:
         "p95_dx_px": float(np.percentile(dx, 95)),
         "p05_dy_px": float(np.percentile(dy, 5)),
         "p95_dy_px": float(np.percentile(dy, 95)),
+        "iqr_dx_px": float(np.percentile(dx, 75) - np.percentile(dx, 25)),
+        "iqr_dy_px": float(np.percentile(dy, 75) - np.percentile(dy, 25)),
+        "mad_magnitude_px": mad,
+        "robust_range_px": robust_range_px,
         "median_magnitude_px": float(np.median(mag)),
         "std_magnitude_px": float(np.std(mag)),
         "dx_range_px": float(np.max(dx) - np.min(dx)),
@@ -412,11 +422,26 @@ def summarize_dense_shift_field(rows: list[dict]) -> dict:
 
 
 def fit_shift_spatial_trend(rows: list[dict]) -> dict:
-    """Fit dx/dy as planes over tile centres normalised to [-1, 1]."""
+    """Fit dx/dy as planes over tile centres normalised to [-1, 1].
+
+    Outlier tiles (phase miss-locks) are removed via a median-absolute-
+    deviation gate before fitting so a handful of bad tiles cannot masquerade
+    as a spatial gradient.
+    """
     ok = [r for r in rows if r.get("accepted")
           and np.isfinite(r.get("phase_dx_px"))]
     if len(ok) < 5:
         return {"trend_status": "INSUFFICIENT_TILES"}
+    dx0 = np.array([r["phase_dx_px"] for r in ok])
+    dy0 = np.array([r["phase_dy_px"] for r in ok])
+    med = np.array([np.median(dx0), np.median(dy0)])
+    dist = np.hypot(dx0 - med[0], dy0 - med[1])
+    mad = float(np.median(dist))
+    keep = dist <= max(3.0 * (1.4826 * mad), 6.0)
+    ok = [r for r, k in zip(ok, keep) if k]
+    if len(ok) < 5:
+        return {"trend_status": "INSUFFICIENT_TILES", "n_before_outlier_reject": len(dx0)}
+
     cx = np.array([r["center_pixel_x"] for r in ok], dtype=float)
     cy = np.array([r["center_pixel_y"] for r in ok], dtype=float)
     dx = np.array([r["phase_dx_px"] for r in ok])
@@ -447,6 +472,7 @@ def fit_shift_spatial_trend(rows: list[dict]) -> dict:
     return {
         "trend_status": "OK",
         "n_points": len(ok),
+        "n_outliers_removed": int((~keep).sum()),
         "dx_coefficients": [float(cdx[0]), float(cdx[1]), float(cdx[2])],
         "dy_coefficients": [float(cdy[0]), float(cdy[1]), float(cdy[2])],
         "dx_r2": float(r2dx),
@@ -532,18 +558,28 @@ def classify_multiscale_shift_behavior(
         for i, a in enumerate(keys) for b in keys[i + 1:]
     )
 
-    ranges = [
+    raw_ranges = [
         math.hypot(scale_summaries[g].get("dx_range_px", 0.0),
                    scale_summaries[g].get("dy_range_px", 0.0))
         for g in enough
     ]
-    median_range = float(np.median(ranges)) if ranges else 0.0
+    robust_values = [
+        float(scale_summaries[g].get(
+            "robust_range_px",
+            math.hypot(scale_summaries[g].get("dx_range_px", 0.0),
+                       scale_summaries[g].get("dy_range_px", 0.0)),
+        ))
+        for g in enough
+    ]
+    median_robust = float(np.median(robust_values)) if robust_values else float("nan")
+    reasoning["raw_range_px"] = raw_ranges
+    reasoning["robust_range_px"] = robust_values
 
-    if median_consistent and median_range <= th["constant_field_range_px"]:
+    if median_consistent and median_robust <= th["constant_field_range_px"]:
         return {"state": "STABLE_CONSTANT_SHIFT",
                 "thresholds": th, "reasoning": reasoning,
-                "reason": (f"medians consistent within {tol} px and median "
-                           f"within-scale range {median_range:.2f} px <= "
+                "reason": (f"medians consistent within {tol} px and robust "
+                           f"spread {median_robust:.2f} px <= "
                            f"{th['constant_field_range_px']} px")}
 
     # gradient: need at least the two finer scales, consistent directions,
@@ -563,7 +599,7 @@ def classify_multiscale_shift_behavior(
         ], dtype=float)
         gradient_evidence.append((g, gvec, rn))
 
-    if len(gradient_evidence) >= 2 and median_range > th["constant_field_range_px"]:
+    if len(gradient_evidence) >= 2 and median_robust > th["constant_field_range_px"]:
         v1 = gradient_evidence[0][1]
         v2 = gradient_evidence[1][1]
         cos_angle = float(np.dot(v1, v2) /
