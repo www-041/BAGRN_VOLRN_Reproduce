@@ -362,6 +362,23 @@ def main(argv: list[str] | None = None) -> int:
                         f"mst={overlay_alignment['ncc_mst']:.4f}  "
                         f"(winner: {overlay_alignment['ncc_winner']})"
                     )
+                    shift_report = {
+                        "direct": overlay.get("block_shift_direct"),
+                        "mst": overlay.get("block_shift_mst"),
+                    }
+                    diag.write_json(
+                        out_dir / "overlay_block_shifts.json",
+                        {"block": shift_report},
+                    )
+                    overlay_alignment["block_shifts"] = shift_report
+                    for name, key in (("direct", "direct"), ("mst", "mst")):
+                        bs = shift_report[key]
+                        if bs and bs.get("n_shifts", 0):
+                            print(
+                                f"Phase-correlation residual shift ({name}): "
+                                f"dx={bs['median_dx']:+.2f} px, dy={bs['median_dy']:+.2f} px "
+                                f"({bs['n_shifts']} tiles)"
+                            )
                     crops = diag.plot_overlay_crops(
                         overlay, reg, out_dir,
                         crop_size=args.crop_size, n_crops=args.n_crops,

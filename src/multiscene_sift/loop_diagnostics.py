@@ -1106,6 +1106,92 @@ def render_closure_overlays(
     return _stretch(a0, v0), _stretch(a1, v1), v0, v1, a0, a1
 
 
+def _phase_cross_correlation_shift(
+    reference: np.ndarray, moving: np.ndarray, upsample: int = 5
+) -> tuple[float, float, float]:
+    """FFT phase-correlation shift ``(dx, dy, score)`` in pixels.
+
+    Semantics: moving must be shifted by ``(+dx, +dy)`` (column, row) to align
+    with reference, i.e. ``np.roll(moving, (round(dy), round(dx))) ~= reference``.
+    """
+    from skimage.registration import phase_cross_correlation
+
+    rows, cols = reference.shape
+    if rows < 8 or cols < 8:
+        return 0.0, 0.0, float("nan")
+    if float(np.std(reference)) < 1e-9 or float(np.std(moving)) < 1e-9:
+        return 0.0, 0.0, float("nan")
+    shift, error, _ = phase_cross_correlation(
+        reference, moving, upsample_factor=upsample
+    )
+    # skimage returns (row, col).
+    return float(shift[1]), float(shift[0]), float(error)
+
+
+def _estimate_block_shifts(
+    a0: np.ndarray,
+    a1: np.ndarray,
+    v0: np.ndarray,
+    v1: np.ndarray,
+    block: int = 256,
+    min_cover: float = 0.5,
+    upsample: int = 5,
+    max_shifts: int = 200,
+) -> dict:
+    """Tile-wise phase-correlation shift of scene 1 (warped) vs scene 0.
+
+    Only tiles with at least ``min_cover`` joint-valid pixels are measured.
+    Returns medians of the per-tile ``(dx, dy, score)`` — the overall residual
+    translation still present after the assumed geometry.
+    """
+    joint = v0 & v1
+    h, w = a0.shape
+    use_block = max(min(int(block), h, w), 32)
+    stride = max(use_block // 2, 1)
+
+    results: list[tuple[float, float, float]] = []
+    for y0 in range(0, h - use_block + 1, stride):
+        for x0 in range(0, w - use_block + 1, stride):
+            win_joint = joint[y0:y0 + use_block, x0:x0 + use_block]
+            if float(win_joint.mean()) < min_cover:
+                continue
+            ra = a0[y0:y0 + use_block, x0:x0 + use_block]
+            rb = a1[y0:y0 + use_block, x0:x0 + use_block]
+            # Replace invalid pixels with the per-band window mean.
+            va = v0[y0:y0 + use_block, x0:x0 + use_block]
+            vb = v1[y0:y0 + use_block, x0:x0 + use_block]
+            ma = float(np.mean(ra[va])) if va.any() else float("nan")
+            mb = float(np.mean(rb[vb])) if vb.any() else float("nan")
+            if not np.isfinite(ma) or not np.isfinite(mb):
+                continue
+            ra = np.where(va, ra, ma)
+            rb = np.where(vb, rb, mb)
+            try:
+                dx, dy, score = _phase_cross_correlation_shift(ra, rb, upsample)
+            except Exception:  # noqa: BLE001 -- a single tile must not abort
+                continue
+            if np.isfinite(dx) and np.isfinite(dy):
+                results.append((dx, dy, score))
+            if len(results) >= max_shifts:
+                break
+        if len(results) >= max_shifts:
+            break
+
+    if not results:
+        return {"n_shifts": 0, "median_dx": float("nan"), "median_dy": float("nan"),
+                "median_score": float("nan"), "shifts": []}
+    dxs = np.array([r[0] for r in results])
+    dys = np.array([r[1] for r in results])
+    scs = np.array([r[2] for r in results])
+    return {
+        "n_shifts": int(len(results)),
+        "median_dx": float(np.median(dxs)),
+        "median_dy": float(np.median(dys)),
+        "median_score": float(np.median(scs)),
+        "shifts": [[float(dx), float(dy), float(sc)] for dx, dy, sc in results],
+    }
+
+
 def _ncc_between_overlays(
     a0: np.ndarray, a1: np.ndarray, v0: np.ndarray, v1: np.ndarray
 ) -> float:
@@ -1193,6 +1279,9 @@ def plot_overlay_comparison(
     blend_mst = _alpha_blend(s0_m, s1_m, v0_m, v1_m)
     ncc_mst = _ncc_between_overlays(raw0_m, raw1_m, v0_m, v1_m)
 
+    block_shift_direct = _estimate_block_shifts(raw0_d, raw1_d, v0_d, v1_d)
+    block_shift_mst = _estimate_block_shifts(raw0_m, raw1_m, v0_m, v1_m)
+
     out_dir_path = Path(out_dir)
     out_dir_path.mkdir(parents=True, exist_ok=True)
     path_direct = out_dir_path / "09_direct_0_1_overlay.png"
@@ -1226,6 +1315,8 @@ def plot_overlay_comparison(
             else "mst" if float(ncc_mst) > float(ncc_direct)
             else "tie"
         ),
+        "block_shift_direct": block_shift_direct,
+        "block_shift_mst": block_shift_mst,
     }
 
 

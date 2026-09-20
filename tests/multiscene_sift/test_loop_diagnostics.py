@@ -438,6 +438,23 @@ def test_ncc_between_overlays_scoring():
     assert math.isnan(diag._ncc_between_overlays(base, base, empty, empty))
 
 
+def test_block_shift_semantics_recovers_known_translation():
+    rng = np.random.default_rng(5)
+    ref = rng.uniform(0, 100, (256, 256))
+    # moving content is +17 rows, -11 cols relative to ref.
+    moving = np.roll(ref, (17, -11), axis=(0, 1))
+    valid = np.ones(ref.shape, dtype=bool)
+    report = diag._estimate_block_shifts(
+        ref, moving, valid, valid, block=128, upsample=5
+    )
+    assert report["n_shifts"] >= 1
+    dx, dy = report["median_dx"], report["median_dy"]
+    # Semantics: rolling moving by (dy, dx) must re-align to ref.
+    aligned = np.roll(moving, (int(round(dy)), int(round(dx))), axis=(0, 1))
+    assert np.allclose(aligned, ref, atol=1e-6)
+    assert abs(dx - 11.0) < 2.0 and abs(dy - (-17.0)) < 2.0
+
+
 # ---------------------------------------------------------------------------
 # Sanity: the demo five-scene data shape, end to end (no real imagery)
 # ---------------------------------------------------------------------------
