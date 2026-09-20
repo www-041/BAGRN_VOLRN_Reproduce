@@ -802,6 +802,23 @@ def classify_frame_root_cause(evidence: dict) -> dict:
             "evidence": evidence,
         }
 
+    if (np.isfinite(prod_p95) and prod_p95 > 40.0
+            and np.isfinite(expl_p95) and expl_p95 > 40.0):
+        return {
+            "state": "PAIR_LOCAL_GRID_NOT_ROOT_CAUSE",
+            "reason": (
+                "All frame layers are excluded: origin invariance passes, the "
+                f"pair common grids round-trip to 0 m, the match-view frame "
+                f"correction moves the closure only from {prod_p95:.1f} to "
+                f"{expl_p95:.1f} px, and the tree edges align to ~1 px. The "
+                "residual systematic translation therefore survives a fully "
+                "self-consistent frame chain and lives one level higher: either "
+                "in the scenes' relative georeferencing or in the single-global-"
+                "affine assumption; it is not a pair-common-grid artefact."
+            ),
+            "evidence": evidence,
+        }
+
     if evidence.get("production_equals_explicit", True) \
             and np.isfinite(prod_p95) and prod_p95 > 10.0:
         return {
