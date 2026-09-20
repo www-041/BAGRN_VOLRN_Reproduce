@@ -167,6 +167,7 @@ def edge_world_corrections(
         A = np.linalg.inv(T_meta) @ T_direct
         dec = _decompose(A)
         out[key] = {
+            "available": True,
             "edge": [i, j],
             "T_meta_i_from_j": T_meta.tolist(),
             "T_direct_i_from_j": T_direct.tolist(),
