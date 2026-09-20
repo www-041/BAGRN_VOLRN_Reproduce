@@ -265,6 +265,10 @@ def main(argv: list[str] | None = None) -> int:
         k: v.get("classification", "?") for k, v in spatial.items()
     }
     spatial_supported = "SPATIALLY_VARYING" in spatial_flags.values()
+    # Conflict test per plan Outcome D: direct implies a large correction
+    # while the metadata-only phase field is ~0 (or disagrees in sign).
+    # Uses the content correction (meta_to_direct, which cancels the
+    # scene-spacing anchor) — never the raw C_world global translation.
     conflict_flag = False
     for i, j in EDGES:
         name = f"edge_{i}_{j}"
@@ -272,13 +276,24 @@ def main(argv: list[str] | None = None) -> int:
         shift = shift_summaries.get(name, {})
         if not t.get("available") or not shift.get("n_tiles_accepted"):
             continue
-        corr = t.get("translation_equiv_px14", [0.0, 0.0])
+        mdiff = t.get("meta_to_direct_difference_m")
         phase_mean = (shift.get("mean_dx_px", 0.0) or 0.0,
                       shift.get("mean_dy_px", 0.0) or 0.0)
         phase_mag = np.hypot(*phase_mean)
-        direct_mag = np.hypot(corr[0], corr[1])
-        if phase_mag > 10.0 and abs(phase_mag - direct_mag) > 8.0:
+        if mdiff is not None:
+            meta_px = np.array(mdiff) / 14.0
+            meta_mag = float(np.hypot(*meta_px))
+        else:
+            meta_mag = 0.0
+        # Direct wants a big correction but the metadata-only tiles already
+        # align (or the two disagree in sign by ~180 degrees).
+        if meta_mag > 8.0 and phase_mag <= 3.0:
             conflict_flag = True
+        elif meta_mag > 8.0 and phase_mag > 3.0:
+            cos_angle = float(np.dot(phase_mean, meta_px) /
+                              (phase_mag * meta_mag))
+            if cos_angle < -0.5:
+                conflict_flag = True
 
     evidence = {
         "triangle_closure_mean_px": (
