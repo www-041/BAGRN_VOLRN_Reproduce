@@ -291,6 +291,13 @@ def compare_direct_and_mst_transforms(
             "D = inv(T_direct) @ T_mst acting on scene-i coordinates; "
             "identity when direct and MST paths agree."
         ),
+        "interpretation": (
+            "translation_* and the linear terms are read off D, which mixes the "
+            "coordinate frames the two transforms live in (pair common grid vs "
+            "global reference). A large translation here usually reflects the "
+            "frame anchor offset, not a geometric shift; trust the point-level "
+            "residuals (04/05/06) and the overlays for geometry."
+        ),
         "direct_matrix": np.asarray(T_direct).tolist(),
         "mst_matrix": np.asarray(T_mst).tolist(),
         "translation_x_px": tx / pixel_size_x,
@@ -736,23 +743,34 @@ def decide_final_state(
                 "pattern_class": pattern.get("classification", "NOT_YET_DETERMINED"),
             },
         }
+    pattern_class = pattern.get("classification", "NOT_YET_DETERMINED")
     t_px = float(transform_diff.get("translation_magnitude_px", 0.0))
     rot = abs(float(transform_diff.get("rotation_deg", 0.0)))
-    scale_out = (
-        abs(float(transform_diff.get("scale_x", 1.0)) - 1.0) > 1e-3
-        or abs(float(transform_diff.get("scale_y", 1.0)) - 1.0) > 1e-3
+    scale_drift = (
+        abs(float(transform_diff.get("scale_x", 1.0)) - 1.0) > 5e-3
+        or abs(float(transform_diff.get("scale_y", 1.0)) - 1.0) > 5e-3
     )
-    shear_out = abs(float(transform_diff.get("shear_deg", 0.0))) > 0.05
-    deforms = rot > 0.05 or scale_out or shear_out
+    shear_out = abs(float(transform_diff.get("shear_deg", 0.0))) > 0.3
+    deforms = rot > 0.3 or scale_drift or shear_out
+
+    # Warning: the matrix translation diff is unreliable when the two transforms
+    # live in different coordinate frames (their per-matrix world offsets absorb
+    # the frame anchor, not the geometry); trust the point-level residuals.
+    frame_warning = (
+        t_px > 100.0
+        and pattern_class == "SYSTEMATIC_SHIFT_LIKELY"
+        and float(global_p95_px) <= t_px * 0.5
+    )
 
     evidence = {
         "transform_consistent": t_px < 1.0 and not deforms,
         "global_p95_px": float(global_p95_px),
         "translation_magnitude_px": t_px,
-        "rotation_deg": abs(rot),
-        "scale_drift": bool(scale_out),
-        "shear_deg": abs(float(transform_diff.get("shear_deg", 0.0))),
-        "pattern_class": pattern.get("classification", "NOT_YET_DETERMINED"),
+        "matrix_rotation_deg": rot,
+        "matrix_scale_drift": bool(scale_drift),
+        "matrix_shear_deg": abs(float(transform_diff.get("shear_deg", 0.0))),
+        "pattern_class": pattern_class,
+        "coordinate_frame_warning": frame_warning,
     }
 
     if evidence["transform_consistent"]:
@@ -766,18 +784,35 @@ def decide_final_state(
         else:
             state = "CLOSURE_CONSISTENT"
             reason = "Direct and MST-implied transforms agree and the closure residual is small."
-    elif deforms:
+    elif pattern_class == "SPATIAL_VARIATION_LIKELY":
         state = "AFFINE_MODEL_SUSPECT"
         reason = (
-            "Direct and MST-implied transforms differ with rotation/scale/shear; a single "
-            "affine model may not describe the overlap, or the paths disagree spatially."
+            "The point-level residual pattern varies with position; a single affine "
+            "model may not describe the overlap (or the paths disagree spatially)."
         )
-    elif pattern.get("classification") == "SYSTEMATIC_SHIFT_LIKELY":
+    elif pattern_class == "SYSTEMATIC_SHIFT_LIKELY":
+        state = DEFAULT_PHRASE
+        if frame_warning:
+            reason = (
+                "The clean point-level pattern is ~%.1f px systematic shift (coherence "
+                "%.2f). The large matrix translation (%.1f px) is treated as a "
+                "coordinate-frame anchor difference, not a geometric one; visual "
+                "inspection of the direct vs MST overlays is required to decide which "
+                "side is wrong." % (float(global_p95_px),
+                                   pattern.get("direction_coherence", float("nan")),
+                                   t_px)
+            )
+        else:
+            reason = (
+                "Both paths largely agree in form but differ by an overall translation "
+                "~%.1f px. Visual inspection of the direct vs MST overlays is required "
+                "to decide which side is wrong." % t_px
+            )
+    elif pattern_class == "OUTLIER_DRIVEN":
         state = DEFAULT_PHRASE
         reason = (
-            "Both paths largely agree in form but differ by an overall translation "
-            "~%.1f px. Visual inspection of the direct vs MST overlays is required "
-            "to decide which side is wrong." % t_px
+            "Residual is driven by a few outlier points (median small, tail large); "
+            "drops / bad matches should be reviewed before geometry conclusions."
         )
     else:
         state = DEFAULT_PHRASE
@@ -953,22 +988,36 @@ def plot_residual_histograms(
     return tuple(paths)
 
 
-def _world_overlap_bounds(
-    scene0: Scene, scene1: Scene, band: str
+def _affine_to_matrix(transform: Affine) -> np.ndarray:
+    """Convert a rasterio ``Affine`` into a 3×3 world matrix."""
+    return np.array([
+        [transform.a, transform.b, transform.c],
+        [transform.d, transform.e, transform.f],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float64)
+
+
+def _matrix_to_affine(matrix: np.ndarray) -> Affine:
+    """Convert the top-left 2×3 of a 3×3 matrix back to a rasterio ``Affine``."""
+    from rasterio.transform import Affine as RAffine
+
+    return RAffine(*np.asarray(matrix, dtype=np.float64).flat[:6])
+
+
+def _affine_footprint_bounds(
+    transform: Affine, shape: tuple[int, int]
 ) -> tuple[float, float, float, float]:
-    """Intersection of the two scenes' band footprints."""
-    b0 = scene0.bounds[band]
-    b1 = scene1.bounds[band]
-    left = max(b0.left, b1.left)
-    bottom = max(b0.bottom, b1.bottom)
-    right = min(b0.right, b1.right)
-    top = min(b0.top, b1.top)
-    if right <= left or top <= bottom:
-        raise ValueError(
-            f"Scenes {scene0.index}/{scene1.index} have empty geographic "
-            "overlap for display"
-        )
-    return left, bottom, right, top
+    """World ``(left, bottom, right, top)`` covered by an affine + pixel shape."""
+    rows, cols = int(shape[0]), int(shape[1])
+    corners = [
+        transform * (0, 0),
+        transform * (cols, 0),
+        transform * (0, rows),
+        transform * (cols, rows),
+    ]
+    xs = [p[0] for p in corners]
+    ys = [p[1] for p in corners]
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def _north_up_grid(
@@ -1024,31 +1073,22 @@ def render_closure_overlays(
     scene0: Scene,
     scene1: Scene,
     band: str,
-    t0_matrix: np.ndarray | None,
-    t1_matrix: np.ndarray | None,
+    src0: Affine,
+    src1: Affine,
     grid_transform: Affine,
     grid_shape: tuple[int, int],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Warp both scenes onto one shared grid using per-scene corrections.
+    """Warp both scenes onto one shared grid from pre-corrected geotransforms.
 
-    ``t0_matrix``/``t1_matrix`` are 3×3 world matrices applied to each scene's
-    own geotransform (identity for an uncorrected scene).  Returns
-    ``(s0, s1, valid0, valid1)`` stretched to uint8 with a shared stretch.
+    ``src0``/``src1`` are the (already corrected) rasterio transforms of the
+    two scenes.  Returns ``(s0, s1, valid0, valid1)`` stretched to uint8 with
+    a shared stretch.
     """
-    from rasterio.transform import Affine as RAffine
-
-    def _as_affine(m: np.ndarray) -> Affine:
-        flat = np.asarray(m, dtype=np.float64).flat[:6]
-        return RAffine(*flat)
-
-    t0 = scene0.transforms[band] if t0_matrix is None else _as_affine(t0_matrix)
-    t1 = scene1.transforms[band] if t1_matrix is None else _as_affine(t1_matrix)
-
     a0, v0 = _reproject_band_to_grid(
-        scene0.band_paths[band], t0, scene0.crs, grid_transform, grid_shape
+        scene0.band_paths[band], src0, scene0.crs, grid_transform, grid_shape
     )
     a1, v1 = _reproject_band_to_grid(
-        scene1.band_paths[band], t1, scene1.crs, grid_transform, grid_shape
+        scene1.band_paths[band], src1, scene1.crs, grid_transform, grid_shape
     )
     joint = np.concatenate([a0[v0], a1[v1]])
     if joint.size == 0:
@@ -1096,26 +1136,37 @@ def plot_overlay_comparison(
 ) -> dict:
     """Render and save the direct (09) and MST (10) overlays.
 
-    Both overlays share one geographic region, one pixel grid, one stretch and
-    one alpha so they can be compared side by side.  Returns a dict with grid
-    metadata and the blended arrays (used by the crop step).
+    Both overlays share one display frame based on the *G-corrected scene-0
+    footprint*, one north-up pixel grid, one stretch and one alpha so they can
+    be compared side by side:
+      - Direct: scene 0 = G0∘T0, scene 1 = G0∘T_direct∘T1
+      - MST:    scene 0 = G0∘T0, scene 1 = G1∘T1
+    This keeps both figures in the identical geographic region even though the
+    MST path has its own large world offsets.  Returns grid metadata plus the
+    blended arrays (used by the crop step).
     """
-    res = abs(scene0.transforms[band].a)
-    bounds = _world_overlap_bounds(scene0, scene1, band)
-    grid_transform, gw, gh = _north_up_grid(bounds, res, max_side)
+    t0 = scene0.transforms[band]
+    t1 = scene1.transforms[band]
+    g0 = np.asarray(G[scene0.index], dtype=np.float64)
+    g1 = np.asarray(G[scene1.index], dtype=np.float64)
+
+    src0 = _matrix_to_affine(g0 @ _affine_to_matrix(t0))
+    src1_direct = _matrix_to_affine(
+        g0 @ np.asarray(t_direct, dtype=np.float64) @ _affine_to_matrix(t1)
+    )
+    src1_mst = _matrix_to_affine(g1 @ _affine_to_matrix(t1))
+
+    bounds = _affine_footprint_bounds(src0, scene0.shapes[band])
+    grid_transform, gw, gh = _north_up_grid(bounds, abs(t0.a), max_side)
     grid_shape = (gh, gw)
 
     s0_d, s1_d, v0_d, v1_d = render_closure_overlays(
-        scene0, scene1, band,
-        None, t_direct,
-        grid_transform, grid_shape,
+        scene0, scene1, band, src0, src1_direct, grid_transform, grid_shape
     )
     blend_direct = _alpha_blend(s0_d, s1_d, v0_d, v1_d)
 
     s0_m, s1_m, v0_m, v1_m = render_closure_overlays(
-        scene0, scene1, band,
-        G[scene0.index], G[scene1.index],
-        grid_transform, grid_shape,
+        scene0, scene1, band, src0, src1_mst, grid_transform, grid_shape
     )
     blend_mst = _alpha_blend(s0_m, s1_m, v0_m, v1_m)
 

@@ -347,6 +347,82 @@ def test_final_state_undecided_when_comparison_unavailable():
     assert state["final_state"] == "NOT_YET_DETERMINED"
 
 
+def test_final_state_systematic_shift_with_large_matrix_translation():
+    # Mirrors the SIFT B14 run: clean point-level systematic shift while the
+    # raw matrix difference carries a large coordinate-frame anchor offset.
+    diff = diag.compare_direct_and_mst_transforms(
+        np.eye(3),
+        np.array(
+            [[1.0012, 0.0023, -10473.8],
+             [-0.0024, 0.9981, 8667.7],
+             [0.0, 0.0, 1.0]]
+        ),
+        pixel_size_x=14.0, pixel_size_y=14.0,
+    )
+    pattern = {
+        "classification": "SYSTEMATIC_SHIFT_LIKELY",
+        "direction_coherence": 0.9996,
+    }
+    state = diag.decide_final_state(diff, pattern, global_p95_px=53.6)
+    assert state["final_state"] == "NOT_YET_DETERMINED"
+    assert state["evidence"]["coordinate_frame_warning"] is True
+
+
+# ---------------------------------------------------------------------------
+# Overlay rendering (synthetic images, no real DZ01V data)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def synth_scenes(tmp_path):
+    """Two synthetic overlapping scenes as Scene objects (B14 band)."""
+    from tests.multiscene_sift.conftest import make_five_scene_path
+    from src.multiscene_sift.dataset import discover_five_scenes
+
+    root = make_five_scene_path(tmp_path)
+    names = [
+        "DZ01V_L2_E113.0_N36.4_20260222031837_01_T1",
+        "DZ01V_L2_E113.4_N36.4_20260222031838_01_T2",
+        "DZ01V_L2_E113.8_N36.4_20260222031839_01_T3",
+        "DZ01V_L2_E113.4_N36.2_20260222031840_01_T4",
+        "DZ01V_L2_E113.8_N36.2_20260222031841_01_T5",
+    ]
+    scenes, _ = discover_five_scenes(str(root), names, bands=("B14",))
+    return scenes
+
+
+def test_overlay_renders_shared_grid_with_large_world_offsets(synth_scenes, tmp_path):
+    """The overlay frame must track the corrected scene-0 footprint.
+
+    Large G translations (as in the real run) used to push scene 1 outside the
+    raw-footprint grid, yielding 'No valid overlap pixels'.  The shared frame
+    based on G0 provides a stable region for both overlays.
+    """
+    scene0, scene1 = synth_scenes[0], synth_scenes[1]
+    band = "B14"
+    eye5 = [np.eye(3) for _ in range(5)]
+
+    def _translation(mx, my):
+        return np.array([[1.0, 0.0, mx], [0.0, 1.0, my], [0.0, 0.0, 1.0]])
+
+    # scene 1 tracks scene 0 but with a ~4 px separation at 30 m/pix.
+    t_direct = _translation(2000.0, 1500.0)
+    G = eye5
+    G[0] = _translation(2000.0, 1500.0)
+    G[1] = _translation(2120.0, 1500.0)  # 120 m ≈ 4 px from scene 0
+
+    out_dir = tmp_path / "overlay"
+    overlay = diag.plot_overlay_comparison(
+        scene0, scene1, band, t_direct, G, out_dir, max_side=256
+    )
+    assert (out_dir / "09_direct_0_1_overlay.png").is_file()
+    assert (out_dir / "10_mst_0_4_1_overlay.png").is_file()
+    assert overlay["direct"].size > 0 and (overlay["direct"] > 0).any()
+    assert overlay["mst"].size > 0 and (overlay["mst"] > 0).any()
+    # Both overlays must share exactly the same pixel lattice.
+    assert overlay["direct"].shape == overlay["mst"].shape
+
+
 # ---------------------------------------------------------------------------
 # Sanity: the demo five-scene data shape, end to end (no real imagery)
 # ---------------------------------------------------------------------------
