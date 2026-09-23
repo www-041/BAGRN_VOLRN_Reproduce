@@ -97,3 +97,45 @@ def write_adjustment_input_manifest(manifest: dict, output_dir: str | Path) -> P
     path = out_dir / "00_adjustment_input_manifest.json"
     path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def load_historical_pair_baselines(five_scene_run_dir: str | Path) -> dict:
+    """Freeze the historical pair summary without re-running registration."""
+    run_dir = Path(five_scene_run_dir)
+    summary_path = run_dir / "pairwise_summary.json"
+    if not summary_path.is_file():
+        raise FileNotFoundError(summary_path)
+    payload = _read_json(summary_path, {})
+    rows = payload.get("results", []) if isinstance(payload, dict) else []
+
+    def convert(row: dict) -> dict:
+        i, j = int(row["idx_i"]), int(row["idx_j"])
+        return {
+            "edge": [i, j],
+            "status": row.get("status"),
+            "raw_matches": int(row.get("raw_matches", 0)),
+            "inliers": int(row.get("inliers", 0)),
+            "inlier_ratio": float(row.get("inlier_ratio", 0.0)),
+            "coverage": float(row.get("coverage", 0.0)),
+            "rmse_px": row.get("residual_rmse"),
+            "p95_px": row.get("residual_p95"),
+            "affine_matrix": row.get("pixel_matrix"),
+            "artifact_sources": [str(summary_path)],
+        }
+
+    converted = [convert(row) for row in rows]
+    return {
+        "run_dir": str(run_dir),
+        "source": str(summary_path),
+        "accepted_edges": [row for row in converted if row["status"] == "OK"],
+        "rejected_edges": [row for row in converted if row["status"] != "OK"],
+    }
+
+
+def write_historical_pair_baselines(baselines: dict, output_dir: str | Path) -> Path:
+    """Persist the frozen historical pair baseline artifact."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "00_historical_pair_baselines.json"
+    path.write_text(json.dumps(baselines, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
