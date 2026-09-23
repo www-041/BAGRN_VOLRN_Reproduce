@@ -252,3 +252,15 @@ def test_diagnostic_artifacts_write_required_machine_readable_outputs(tmp_path):
         "12_local_affine_consistency_conclusion.json", "12_local_affine_consistency_conclusion.txt",
     ):
         assert (tmp_path / name).is_file(), name
+
+
+def test_diagnostic_cli_accepts_required_artifact_roots():
+    from scripts.diagnose_local_affine_consistency import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args([
+        "--input-root", "input", "--edge-reliability-dir", "edges",
+        "--selected-pair-dir", "pairs", "--five-scene-run-dir", "run",
+        "--output-dir", "out",
+    ])
+    assert args.output_dir.name == "out"
