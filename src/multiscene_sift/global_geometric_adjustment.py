@@ -829,6 +829,51 @@ def write_method_comparison(comparison: list[dict], output_dir: str | Path) -> d
     return {"csv": csv_path, "json": json_path}
 
 
+def synthetic_accumulation_check(n_nodes: int = 5, bias_px: float = 1.0) -> dict:
+    """Synthetic chain/loop check for path drift versus simultaneous adjustment."""
+    if n_nodes < 3:
+        raise ValueError("synthetic chain needs at least three nodes")
+    observations = {}
+    for i in range(n_nodes - 1):
+        observations[(i, i + 1)] = {
+            "x_i": np.array([[-bias_px, 0.0]]), "x_j": np.array([[0.0, 0.0]])
+        }
+    for j in range(2, n_nodes):
+        observations[(0, j)] = {
+            "x_i": np.array([[0.0, 0.0]]), "x_j": np.array([[0.0, 0.0]])
+        }
+    transforms = {scene: np.eye(3) for scene in range(n_nodes)}
+    system = build_translation_adjustment_system(transforms, observations, reference_idx=0)
+    solution = solve_translation_adjustment(system)
+    mst_error = np.arange(n_nodes, dtype=np.float64) * bias_px
+    adjusted_error = mst_error.copy()
+    for scene, values in solution["scene_corrections_px"].items():
+        adjusted_error[int(scene)] += values[0]
+    return {
+        "n_nodes": n_nodes,
+        "bias_px": bias_px,
+        "mst_endpoint_error_px": float(abs(mst_error[-1] - mst_error[0])),
+        "adjusted_endpoint_error_px": float(abs(adjusted_error[-1] - adjusted_error[0])),
+        "mst_global_rms_px": float(np.sqrt(np.mean(mst_error ** 2))),
+        "adjusted_global_rms_px": float(np.sqrt(np.mean(adjusted_error ** 2))),
+        "scene_adjusted_error_px": adjusted_error.tolist(),
+    }
+
+
+def write_synthetic_accumulation_check(result: dict, output_dir: str | Path) -> dict:
+    out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
+    jp = out / "14_synthetic_accumulation_check.json"
+    pp = out / "14_synthetic_accumulation_check.png"
+    jp.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.plot(range(result["n_nodes"]), np.arange(result["n_nodes"]), "o-", label="MST path error")
+    ax.plot(range(result["n_nodes"]), result["scene_adjusted_error_px"], "o-", label="Global adjustment")
+    ax.set_xlabel("scene index"); ax.set_ylabel("synthetic error (px)"); ax.legend(); ax.grid(alpha=0.25)
+    fig.tight_layout(); fig.savefig(pp, dpi=150); plt.close(fig)
+    return {"json": jp, "png": pp}
+
+
 def apply_translation_corrections(
     mst_global_transforms: dict[int, np.ndarray],
     corrections: dict[int, tuple[float, float]],

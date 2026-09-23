@@ -868,3 +868,14 @@ def test_method_comparison_preserves_na_instead_of_zero():
     comparison = build_method_comparison({"zero_one": {"rmse_px": 1.0}}, {"zero_one": {"rmse_px": 0.5}}, None)
     assert comparison[0]["Metric"] == "0-1 RMSE"
     assert comparison[0]["Affine Adj."] == "N/A"
+
+
+def test_synthetic_chain_loops_reduce_mst_path_drift():
+    from src.multiscene_sift.global_geometric_adjustment import synthetic_accumulation_check
+
+    result = synthetic_accumulation_check(5)
+    assert result["mst_endpoint_error_px"] > result["adjusted_endpoint_error_px"]
+    assert result["adjusted_global_rms_px"] < result["mst_global_rms_px"]
+    larger = synthetic_accumulation_check(10)
+    assert larger["mst_endpoint_error_px"] > larger["adjusted_endpoint_error_px"]
+    assert larger["adjusted_global_rms_px"] < larger["mst_global_rms_px"]
