@@ -879,3 +879,45 @@ def test_synthetic_chain_loops_reduce_mst_path_drift():
     larger = synthetic_accumulation_check(10)
     assert larger["mst_endpoint_error_px"] > larger["adjusted_endpoint_error_px"]
     assert larger["adjusted_global_rms_px"] < larger["mst_global_rms_px"]
+
+
+def test_synthetic_accumulation_uses_real_mst_drift_and_reports_true_final_error():
+    import pytest
+    from src.multiscene_sift.global_geometric_adjustment import synthetic_accumulation_check
+
+    result = synthetic_accumulation_check(5, bias_px=1.0)
+    assert result["mst_endpoint_error_px"] == pytest.approx(4.0, abs=1e-12)
+    assert result["endpoint_correction_magnitude_px"] == pytest.approx(3.380952380952381, abs=1e-9)
+    assert result["adjusted_endpoint_error_px"] == pytest.approx(0.6190476190476195, abs=1e-9)
+    assert result["adjusted_endpoint_error_px"] != pytest.approx(
+        result["endpoint_correction_magnitude_px"], abs=1e-6
+    )
+    assert result["scene_mst_error_px"] == pytest.approx([0.0, 1.0, 2.0, 3.0, 4.0], abs=1e-12)
+    assert result["scene_adjusted_error_px"][-1] == pytest.approx(
+        result["adjusted_endpoint_error_px"], abs=1e-12
+    )
+
+
+def test_synthetic_global_adjustment_stops_endpoint_error_from_scaling_with_path_length():
+    import pytest
+    from src.multiscene_sift.global_geometric_adjustment import synthetic_accumulation_check
+
+    five = synthetic_accumulation_check(5, bias_px=1.0)
+    ten = synthetic_accumulation_check(10, bias_px=1.0)
+    assert five["mst_endpoint_error_px"] == pytest.approx(4.0)
+    assert ten["mst_endpoint_error_px"] == pytest.approx(9.0)
+    assert five["adjusted_endpoint_error_px"] == pytest.approx(0.6190476190476195, abs=1e-9)
+    assert ten["adjusted_endpoint_error_px"] == pytest.approx(0.6180340557275503, abs=1e-9)
+    assert ten["mst_endpoint_error_px"] - five["mst_endpoint_error_px"] == pytest.approx(5.0)
+    assert abs(ten["adjusted_endpoint_error_px"] - five["adjusted_endpoint_error_px"]) < 0.01
+    assert five["adjusted_endpoint_error_px"] < 1.0
+    assert ten["adjusted_endpoint_error_px"] < 1.0
+
+
+def test_synthetic_tree_edges_are_satisfied_by_initial_mst_but_loops_expose_drift():
+    import pytest
+    from src.multiscene_sift.global_geometric_adjustment import synthetic_accumulation_check
+
+    result = synthetic_accumulation_check(5, bias_px=1.0)
+    assert result["initial_tree_edge_max_residual_px"] == pytest.approx(0.0, abs=1e-12)
+    assert result["initial_loop_edge_max_residual_px"] == pytest.approx(4.0, abs=1e-12)
