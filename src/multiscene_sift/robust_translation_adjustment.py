@@ -164,3 +164,77 @@ def write_frozen_baseline(inputs: dict, output_dir: str | Path) -> Path:
     path = out / "00_frozen_baseline.json"
     path.write_text(json.dumps(_json_safe(payload), indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def compute_intrinsic_edge_quality_weights(
+    pairwise_metrics: dict[tuple[int, int], dict],
+    min_weight: float = 0.5,
+    max_weight: float = 2.0,
+) -> dict[tuple[int, int], dict]:
+    """Compute bounded priors from pairwise metrics available before adjustment."""
+    if not pairwise_metrics:
+        raise ValueError("pairwise_metrics must contain at least one accepted edge")
+    if min_weight <= 0.0 or max_weight < min_weight:
+        raise ValueError("invalid quality-weight bounds")
+    raw_values = {}
+    for edge, metrics in pairwise_metrics.items():
+        inlier_ratio = float(metrics["inlier_ratio"])
+        coverage = float(metrics["coverage"])
+        rmse_px = float(metrics["rmse_px"])
+        raw = (
+            max(inlier_ratio, 1e-6)
+            * max(coverage, 1e-6)
+            / max(rmse_px, 0.25)
+        )
+        if not np.isfinite(raw):
+            raise ValueError(f"non-finite intrinsic quality for edge {_edge_key(edge)}")
+        raw_values[_edge_key(edge)] = float(raw)
+    median_quality = float(np.median(list(raw_values.values())))
+    if not np.isfinite(median_quality) or median_quality <= 0.0:
+        raise ValueError("intrinsic quality median must be positive")
+    result = {}
+    for edge in sorted(raw_values):
+        metrics = dict(pairwise_metrics[edge])
+        result[edge] = {
+            "raw_quality": raw_values[edge],
+            "median_quality": median_quality,
+            "weight": float(np.clip(raw_values[edge] / median_quality, min_weight, max_weight)),
+            "input_metrics": metrics,
+            "uses_global_residual": False,
+            "uses_tree_status": False,
+            "uses_inlier_count": False,
+        }
+    return result
+
+
+def write_intrinsic_quality_weights(weights: dict[tuple[int, int], dict], output_dir: str | Path) -> dict:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    json_path = out / "01_intrinsic_quality_weights.json"
+    payload = {
+        "edges": {
+            _edge_label(edge): {**value, "edge": list(edge)}
+            for edge, value in sorted(weights.items())
+        },
+        "uses_global_residual": False,
+        "uses_tree_status": False,
+        "uses_inlier_count": False,
+    }
+    json_path.write_text(json.dumps(_json_safe(payload), indent=2, ensure_ascii=False), encoding="utf-8")
+    csv_path = out / "01_intrinsic_quality_weights.csv"
+    fields = ["edge_i", "edge_j", "inlier_ratio", "coverage", "pairwise_rmse_px", "raw_quality", "median_quality", "weight"]
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for edge, value in sorted(weights.items()):
+            metrics = value["input_metrics"]
+            writer.writerow({
+                "edge_i": edge[0], "edge_j": edge[1],
+                "inlier_ratio": metrics["inlier_ratio"],
+                "coverage": metrics["coverage"],
+                "pairwise_rmse_px": metrics["rmse_px"],
+                "raw_quality": value["raw_quality"],
+                "median_quality": value["median_quality"],
+                "weight": value["weight"],
+            })
+    return {"json": json_path, "csv": csv_path}
