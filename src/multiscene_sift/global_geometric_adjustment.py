@@ -931,7 +931,6 @@ def write_synthetic_accumulation_check(result: dict, output_dir: str | Path) -> 
     ax.set_xlabel("path length from reference (edges)")
     ax.set_ylabel("node position error (px)")
     ax.legend(); ax.grid(alpha=0.25)
-    ax.legend(); ax.grid(alpha=0.25)
     fig.tight_layout(); fig.savefig(pp, dpi=150); plt.close(fig)
     return {"json": jp, "png": pp}
 

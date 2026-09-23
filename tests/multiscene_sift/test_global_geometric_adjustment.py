@@ -926,6 +926,8 @@ def test_synthetic_tree_edges_are_satisfied_by_initial_mst_but_loops_expose_drif
 def test_synthetic_artifact_separates_mst_correction_and_final_error(tmp_path, monkeypatch):
     import json
     import pytest
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from src.multiscene_sift.global_geometric_adjustment import (
         synthetic_accumulation_check,
