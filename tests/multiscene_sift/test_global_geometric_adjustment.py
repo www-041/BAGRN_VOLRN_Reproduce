@@ -489,3 +489,65 @@ def test_inlier_recovery_decision_is_ready_only_after_both_gates(tmp_path):
     assert failed["decision"] == "REPRODUCTION_FAILED"
     assert (tmp_path / "06_inlier_recovery_decision.json").is_file()
     assert (tmp_path / "06_inlier_recovery_decision.txt").is_file()
+
+
+def test_mst_point_residuals_are_zero_for_consistent_global_transforms():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import evaluate_edge_point_residuals
+
+    transforms = {0: np.eye(3), 1: np.array([[1, 0, 10], [0, 1, 0], [0, 0, 1]], float)}
+    observations = {(0, 1): {
+        "x_i": np.array([[1.0, 2.0], [3.0, 4.0]]),
+        "x_j": np.array([[-9.0, 2.0], [-7.0, 4.0]]),
+        "is_tree_edge": True,
+    }}
+
+    result = evaluate_edge_point_residuals(transforms, observations)
+
+    assert list(result["residual_px"]) == [0.0, 0.0]
+    assert result.loc[0, "is_tree_edge"] is True
+
+
+def test_mst_point_residuals_report_known_ten_pixel_mismatch():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import evaluate_edge_point_residuals
+
+    observations = {(0, 1): {
+        "x_i": np.array([[1.0, 2.0]]), "x_j": np.array([[1.0, 2.0]]),
+        "is_tree_edge": False,
+    }}
+
+    result = evaluate_edge_point_residuals({0: np.eye(3), 1: np.eye(3)}, observations)
+
+    assert result.loc[0, "residual_px"] == 0.0
+    shifted = {(0, 1): {**observations[(0, 1)], "x_j": np.array([[-9.0, 2.0]])}}
+    shifted_result = evaluate_edge_point_residuals({0: np.eye(3), 1: np.eye(3)}, shifted)
+    assert shifted_result.loc[0, "residual_px"] == 10.0
+
+
+def test_mst_network_summary_reports_point_and_edge_balanced_metrics():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import (
+        evaluate_edge_point_residuals,
+        summarize_network_residuals,
+    )
+
+    observations = {
+        (0, 1): {"x_i": np.array([[0.0, 0.0], [1.0, 0.0]]),
+                 "x_j": np.array([[0.0, 0.0], [1.0, 0.0]]),
+                 "is_tree_edge": False},
+        (1, 2): {"x_i": np.array([[0.0, 0.0]]),
+                 "x_j": np.array([[3.0, 4.0]]),
+                 "is_tree_edge": True},
+    }
+
+    summary = summarize_network_residuals(
+        evaluate_edge_point_residuals({0: np.eye(3), 1: np.eye(3), 2: np.eye(3)}, observations)
+    )
+
+    assert summary["zero_one"]["rmse_px"] == 0.0
+    assert summary["point_weighted"]["n_points"] == 3
+    assert summary["point_weighted"]["rmse_px"] == 5.0 / np.sqrt(3.0)
+    assert summary["edge_balanced"]["mean_edge_rmse_px"] == 2.5
+    assert summary["tree_edges"]["edge_count"] == 1
+    assert summary["non_tree_edges"]["edge_count"] == 1
