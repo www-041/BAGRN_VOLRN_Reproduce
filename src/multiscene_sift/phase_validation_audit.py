@@ -392,6 +392,43 @@ def translation_metric_surface(
     return result
 
 
+def mask_boundary_stress_test(
+    reference: np.ndarray,
+    moving: np.ndarray,
+    reference_mask: np.ndarray,
+    moving_mask: np.ndarray,
+    min_valid_fraction: float = 0.30,
+) -> dict:
+    """Measure phase under fixed erosion and central-valid-mask variants."""
+    from scipy.ndimage import binary_erosion
+
+    joint = np.asarray(reference_mask, dtype=bool) & np.asarray(moving_mask, dtype=bool)
+    variants = {"V0_original": joint}
+    for radius, name in ((16, "V1_erode_16"), (32, "V2_erode_32"), (64, "V3_erode_64")):
+        variants[name] = binary_erosion(joint, iterations=radius, border_value=0)
+    central = np.zeros_like(joint)
+    if joint.any():
+        ys, xs = np.nonzero(joint)
+        central[ys.min():ys.max() + 1, xs.min():xs.max() + 1] = True
+        central &= joint
+    variants["V4_central_valid_bbox"] = central
+    out = {}
+    for name, variant in variants.items():
+        fraction = float(variant.mean())
+        if fraction < min_valid_fraction:
+            result = {"status": "INSUFFICIENT_VALID_AREA", "valid_fraction": fraction,
+                      "dx_px": None, "dy_px": None, "magnitude_px": None, "response": None}
+        else:
+            result = phase_from_inputs({
+                "ref_crop": reference, "warped_target_crop": moving,
+                "ref_valid_mask": reference_mask, "target_valid_mask": moving_mask,
+                "joint_valid_mask": variant,
+            })
+            result["valid_fraction"] = fraction
+        out[name] = result
+    return out
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)

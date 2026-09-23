@@ -16,6 +16,7 @@ from src.multiscene_sift.phase_validation_audit import (
     run_phase_sign_convention,
     evaluate_shift_counterfactual,
     translation_metric_surface,
+    mask_boundary_stress_test,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -197,3 +198,17 @@ def test_translation_sweep_finds_known_correction_without_phase_correlation():
     assert (result["best_dx"], result["best_dy"]) == (-5, 3)
     assert result["best_score"] > result["score_at_zero"]
     assert len({row["valid_count"] for row in result["rows"]}) > 1
+
+
+def test_mask_boundary_stress_test_is_deterministic_and_reports_validity():
+    rng = np.random.default_rng(10)
+    ref = rng.normal(size=(160, 160)).astype(np.float32)
+    tgt = ref.copy()
+    mask = np.ones_like(ref, dtype=bool)
+    mask[:8, :] = False
+    mask[-8:, :] = False
+    first = mask_boundary_stress_test(ref, tgt, mask, mask)
+    second = mask_boundary_stress_test(ref, tgt, mask, mask)
+    assert first == second
+    assert set(first) == {"V0_original", "V1_erode_16", "V2_erode_32", "V3_erode_64", "V4_central_valid_bbox"}
+    assert first["V0_original"]["valid_fraction"] > first["V1_erode_16"]["valid_fraction"]
