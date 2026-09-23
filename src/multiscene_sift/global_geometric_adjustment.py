@@ -388,6 +388,10 @@ def write_translation_residual_artifacts(point_residuals, summary: dict, output_
     return _write_residual_artifacts(point_residuals, summary, output_dir, "05_translation")
 
 
+def write_affine_residual_artifacts(point_residuals, summary: dict, output_dir: str | Path) -> dict:
+    return _write_residual_artifacts(point_residuals, summary, output_dir, "11_affine")
+
+
 def _write_residual_artifacts(point_residuals, summary: dict, output_dir: str | Path, prefix: str) -> dict:
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -775,6 +779,20 @@ def apply_translation_corrections(
             [0.0, 0.0, 1.0],
         ], dtype=np.float64)
         adjusted[int(scene)] = translation @ np.asarray(matrix, dtype=np.float64)
+    return adjusted
+
+
+def apply_affine_corrections(
+    mst_global_transforms: dict[int, np.ndarray], corrections: dict[int, dict],
+    pixel_size: float = 1.0,
+) -> dict[int, np.ndarray]:
+    """Compose pixel-frame affine corrections on the left of world transforms."""
+    adjusted = {}
+    for scene, matrix in mst_global_transforms.items():
+        correction = np.asarray(corrections.get(int(scene), {"matrix": np.eye(3)})["matrix"], dtype=np.float64)
+        world_correction = correction.copy()
+        world_correction[:2, 2] *= float(pixel_size)
+        adjusted[int(scene)] = world_correction @ np.asarray(matrix, dtype=np.float64)
     return adjusted
 
 

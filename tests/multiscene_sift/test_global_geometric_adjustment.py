@@ -836,3 +836,18 @@ def test_affine_solver_reports_rank_deficiency():
 
     assert result["status"] == "RANK_DEFICIENT"
     assert np.allclose(result["scene_corrections"][0]["matrix"], np.eye(3))
+
+
+def test_affine_correction_composes_on_left_and_preserves_reference():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import apply_affine_corrections
+
+    transforms = {0: np.eye(3), 1: np.array([[1, 0, 10], [0, 1, 20], [0, 0, 1.]], float)}
+    corrections = {
+        0: {"matrix": np.eye(3).tolist()},
+        1: {"matrix": [[1.0, 0.0, 2.0], [0.0, 1.0, -3.0], [0.0, 0.0, 1.0]]},
+    }
+    adjusted = apply_affine_corrections(transforms, corrections)
+
+    assert np.allclose(adjusted[0], np.eye(3))
+    assert np.allclose(adjusted[1], [[1, 0, 12], [0, 1, 17], [0, 0, 1]])
