@@ -287,3 +287,128 @@ def write_huber_configuration(
     path = out / "02_huber_configuration.json"
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def _edge_residual_medians(global_transforms: dict[int, np.ndarray], edge_observations: dict) -> dict:
+    point_residuals = evaluate_edge_point_residuals(global_transforms, edge_observations)
+    grouped = {}
+    for row in point_residuals.to_dict(orient="records"):
+        grouped.setdefault(_edge_key((row["edge_i"], row["edge_j"])), []).append(float(row["residual_px"]))
+    return {edge: float(np.median(values)) for edge, values in grouped.items()}
+
+
+def solve_edge_weighted_translation_irls(
+    mst_global_transforms: dict[int, np.ndarray],
+    edge_observations: dict[tuple[int, int], dict],
+    reference_idx: int,
+    prior_edge_weights: dict[tuple[int, int], float],
+    *,
+    use_huber: bool,
+    huber_delta_px: float,
+    min_robust_factor: float = 0.1,
+    max_iterations: int = 50,
+    convergence_tol_px: float = 1e-6,
+) -> dict:
+    """Solve edge-balanced translation corrections with optional edge Huber IRLS."""
+    base_system = build_translation_adjustment_system(
+        mst_global_transforms, edge_observations, reference_idx, weight_mode="equal_edge"
+    )
+    edges = sorted(_edge_key(edge) for edge in edge_observations)
+    missing = set(edges).difference(_edge_key(edge) for edge in prior_edge_weights)
+    if missing:
+        raise ValueError(f"missing prior weights for edges: {sorted(missing)}")
+    prior = {_edge_key(edge): float(value) for edge, value in prior_edge_weights.items()}
+    if not all(np.isfinite(value) and value > 0.0 for value in prior.values()):
+        raise ValueError("prior edge weights must be finite and positive")
+
+    edge_point_slices = {}
+    offset = 0
+    for edge in edges:
+        n_points = len(edge_observations[edge]["x_i"])
+        edge_point_slices[edge] = slice(offset, offset + 2 * n_points)
+        offset += 2 * n_points
+    expected_rank = int(base_system["rank_expectation"])
+    scenes = sorted(int(scene) for scene in mst_global_transforms)
+    corrections = {scene: (0.0, 0.0) for scene in scenes}
+    objective_history = []
+    edge_factor_history = []
+    converged = False
+    rank = int(base_system["rank"])
+    condition_number = base_system["condition_number"]
+    final_edge_factors = {edge: 1.0 for edge in edges}
+    final_edge_total_weights = dict(prior)
+
+    for iteration in range(1, max_iterations + 1):
+        adjusted_transforms = apply_translation_corrections(mst_global_transforms, corrections)
+        residual_medians = _edge_residual_medians(adjusted_transforms, edge_observations)
+        factors = {
+            edge: huber_edge_factor(residual_medians[edge], huber_delta_px, min_robust_factor)
+            if use_huber else 1.0
+            for edge in edges
+        }
+        total_weights = {edge: prior[edge] * factors[edge] for edge in edges}
+        point_weights = np.zeros(len(base_system["point_weights"]), dtype=np.float64)
+        point_offset = 0
+        for edge in edges:
+            n_points = len(edge_observations[edge]["x_i"])
+            point_weights[point_offset:point_offset + n_points] = total_weights[edge] / n_points
+            point_offset += n_points
+        weighted_rows = np.repeat(point_weights, 2)
+        sqrt_weights = np.sqrt(weighted_rows)
+        weighted_matrix = base_system["A"] * sqrt_weights[:, None]
+        weighted_vector = base_system["b"] * sqrt_weights
+        rank = int(np.linalg.matrix_rank(weighted_matrix))
+        condition_number = float(np.linalg.cond(weighted_matrix)) if weighted_matrix.size else None
+        edge_factor_history.append({_edge_label(edge): float(factors[edge]) for edge in edges})
+        if rank < expected_rank:
+            return {
+                "status": "RANK_DEFICIENT",
+                "rank": rank,
+                "condition_number": condition_number,
+                "iterations": iteration,
+                "converged": False,
+                "scene_corrections_px": {scene: list(values) for scene, values in corrections.items()},
+                "objective_history": objective_history,
+                "edge_factor_history": edge_factor_history,
+                "final_edge_factors": final_edge_factors,
+                "final_edge_total_weights": final_edge_total_weights,
+            }
+        solution, _, _, _ = np.linalg.lstsq(weighted_matrix, weighted_vector, rcond=None)
+        next_corrections = {int(reference_idx): (0.0, 0.0)}
+        next_corrections.update({
+            int(scene): (float(solution[2 * idx]), float(solution[2 * idx + 1]))
+            for idx, scene in enumerate(base_system["unknown_scene_order"])
+        })
+        objective_history.append(float(np.sum((weighted_matrix @ solution - weighted_vector) ** 2)))
+        update = max(
+            float(np.hypot(next_corrections[scene][0] - corrections[scene][0],
+                           next_corrections[scene][1] - corrections[scene][1]))
+            for scene in scenes
+        )
+        corrections = next_corrections
+        final_edge_factors = factors
+        final_edge_total_weights = total_weights
+        if update < convergence_tol_px:
+            converged = True
+            break
+
+    final_transforms = apply_translation_corrections(mst_global_transforms, corrections)
+    final_residuals = _edge_residual_medians(final_transforms, edge_observations)
+    final_edge_factors = {
+        edge: huber_edge_factor(final_residuals[edge], huber_delta_px, min_robust_factor)
+        if use_huber else 1.0
+        for edge in edges
+    }
+    final_edge_total_weights = {edge: prior[edge] * final_edge_factors[edge] for edge in edges}
+    return {
+        "status": "OK",
+        "rank": rank,
+        "condition_number": condition_number,
+        "iterations": len(objective_history),
+        "converged": converged,
+        "scene_corrections_px": {scene: list(values) for scene, values in corrections.items()},
+        "objective_history": objective_history,
+        "edge_factor_history": edge_factor_history,
+        "final_edge_factors": final_edge_factors,
+        "final_edge_total_weights": final_edge_total_weights,
+    }
