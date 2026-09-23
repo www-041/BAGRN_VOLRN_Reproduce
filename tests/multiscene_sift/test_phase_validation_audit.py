@@ -11,6 +11,8 @@ from src.multiscene_sift.phase_validation_audit import (
     phase_from_inputs,
     export_phase_inputs,
     reload_phase_inputs,
+    phase_input_visual_stats,
+    write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
 
@@ -135,3 +137,23 @@ def test_export_reload_preserves_exact_phase_inputs_and_phase_result(tmp_path):
     manifest = json.loads((tmp_path / "02_phase_input_manifest.json").read_text(encoding="utf-8"))
     assert manifest["0-6"]["shape"] == [64, 64]
     assert len(manifest["0-6"]["sha256"]) == 64
+
+
+def test_visual_audit_stats_use_joint_mask_and_write_figure(tmp_path):
+    rng = np.random.default_rng(6)
+    ref = rng.normal(size=(64, 64)).astype(np.float32)
+    inputs = {
+        "ref_crop": ref,
+        "warped_target_crop": ref.copy(),
+        "ref_valid_mask": np.ones_like(ref, dtype=bool),
+        "target_valid_mask": np.ones_like(ref, dtype=bool),
+        "joint_valid_mask": np.ones_like(ref, dtype=bool),
+        "metadata": {"edge": "2-5"},
+    }
+    stats = phase_input_visual_stats(inputs)
+    assert stats["raw_ncc"] == pytest.approx(1.0)
+    assert stats["gradient_ncc"] > 0.99
+    assert stats["valid_fraction"] == pytest.approx(1.0)
+    path = write_phase_input_visual_audit({"2-5": inputs}, tmp_path / "audit.png", tmp_path / "stats.json")
+    assert path.is_file()
+    assert (tmp_path / "stats.json").is_file()

@@ -194,6 +194,85 @@ def reload_phase_inputs(output_dir: str | Path, edge_key: str) -> dict:
     return result
 
 
+def _raw_ncc(ref: np.ndarray, tgt: np.ndarray, mask: np.ndarray) -> float:
+    valid = np.asarray(mask, dtype=bool) & np.isfinite(ref) & np.isfinite(tgt)
+    if int(valid.sum()) < 2:
+        return float("nan")
+    a, b = np.asarray(ref, dtype=float)[valid], np.asarray(tgt, dtype=float)[valid]
+    a = a - a.mean()
+    b = b - b.mean()
+    denom = float(np.sqrt(np.sum(a * a) * np.sum(b * b)))
+    return float(np.sum(a * b) / denom) if denom > 1e-12 else float("nan")
+
+
+def phase_input_visual_stats(inputs: dict) -> dict:
+    from src.registration_benchmark.metrics import gradient_ncc
+
+    ref, tgt, joint = _phase_arrays(inputs)
+    valid = joint & np.isfinite(ref) & np.isfinite(tgt)
+    return {
+        "raw_ncc": _raw_ncc(ref, tgt, valid),
+        "gradient_ncc": float(gradient_ncc(ref, tgt, valid)),
+        "masked_mae": float(np.mean(np.abs(ref[valid] - tgt[valid]))) if valid.any() else None,
+        "valid_fraction": float(valid.mean()),
+    }
+
+
+def _same_stretch(images: list[np.ndarray], mask: np.ndarray) -> tuple[float, float]:
+    values = np.concatenate([np.asarray(image)[mask & np.isfinite(image)] for image in images])
+    if values.size == 0:
+        return 0.0, 1.0
+    lo, hi = np.percentile(values, [2, 98])
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo, hi = float(np.min(values)), float(np.max(values))
+    return float(lo), float(hi if hi > lo else lo + 1.0)
+
+
+def _gradient_magnitude(image: np.ndarray) -> np.ndarray:
+    gy, gx = np.gradient(np.nan_to_num(np.asarray(image, dtype=float), nan=0.0))
+    return np.hypot(gx, gy)
+
+
+def _checkerboard(ref: np.ndarray, tgt: np.ndarray, tile: int = 32) -> np.ndarray:
+    yy, xx = np.indices(ref.shape)
+    return np.where(((yy // tile + xx // tile) % 2) == 0, ref, tgt)
+
+
+def write_phase_input_visual_audit(
+    inputs_by_edge: dict[str, dict], output_path: str | Path, stats_path: str | Path
+) -> Path:
+    import matplotlib
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    stats = {edge: phase_input_visual_stats(inputs) for edge, inputs in inputs_by_edge.items()}
+    write_json(stats_path, stats)
+    edges = tuple(inputs_by_edge)
+    fig, axes = plt.subplots(len(edges), 6, figsize=(18, 5 * len(edges)), squeeze=False, constrained_layout=True)
+    titles = ("reference", "global-affine target", "joint mask", "checkerboard", "gradient edge overlay", "absolute difference")
+    for row, edge in enumerate(edges):
+        inputs = inputs_by_edge[edge]
+        ref, tgt, joint = _phase_arrays(inputs)
+        lo, hi = _same_stretch([ref, tgt], joint)
+        grad_ref, grad_tgt = _gradient_magnitude(ref), _gradient_magnitude(tgt)
+        edge_overlay = np.zeros((*ref.shape, 3), dtype=np.float32)
+        edge_overlay[..., 0] = grad_ref / max(float(np.nanpercentile(grad_ref, 99)), 1e-9)
+        edge_overlay[..., 1] = grad_tgt / max(float(np.nanpercentile(grad_tgt, 99)), 1e-9)
+        diff = np.abs(ref - tgt)
+        panels = (ref, tgt, joint.astype(float), _checkerboard(ref, tgt), np.clip(edge_overlay, 0, 1), diff)
+        for ax, image, title in zip(axes[row], panels, titles):
+            cmap = "gray" if title != "gradient edge overlay" else None
+            ax.imshow(image, cmap=cmap, vmin=None if title in ("joint mask", "gradient edge overlay") else lo,
+                      vmax=None if title in ("joint mask", "gradient edge overlay") else hi)
+            ax.set_title(f"{edge}: {title}")
+            ax.set_axis_off()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    return output_path
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)
