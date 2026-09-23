@@ -24,9 +24,11 @@ from src.multiscene_sift.phase_validation_audit import (
     classify_phase_validation_root_cause,
     build_phase_validation_conclusion,
     write_phase_validation_dashboard,
+    write_phase_audit_artifacts,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
+from scripts.audit_phase_validation import build_parser
 
 
 def _write_minimal_baseline(root):
@@ -337,3 +339,79 @@ def test_phase_validation_dashboard_has_two_rows_and_five_diagnostic_columns(tmp
     assert written == output
     assert output.exists()
     assert output.stat().st_size > 10_000
+
+
+def test_phase_audit_cli_and_artifact_writer_follow_required_contract(tmp_path):
+    args = build_parser().parse_args([
+        "--input-root", "input",
+        "--selected-pair-dir", "selected",
+        "--edge-reliability-dir", "edges",
+        "--local-affine-dir", "local",
+        "--output-dir", "audit",
+    ])
+    assert args.band == "B14"
+    assert args.output_dir == "audit"
+    rng = np.random.default_rng(14)
+    image = rng.normal(size=(64, 64)).astype(np.float32)
+    mask = np.ones_like(image, dtype=bool)
+    baseline = {
+        "edge_keys": ["0-6", "2-5"],
+        "edges": {
+            edge: {"old_phase_median_px": 0.0, "role": role}
+            for edge, role in (("0-6", "WORKING_CONTROL"), ("2-5", "SUSPECT_PHASE_FALSE_ALARM"))
+        },
+    }
+    results = {}
+    for edge in baseline["edge_keys"]:
+        results[edge] = {
+            "inputs": {
+                "ref_crop": image,
+                "warped_target_crop": image.copy(),
+                "ref_valid_mask": mask,
+                "target_valid_mask": mask,
+                "joint_valid_mask": mask,
+            },
+            "baseline_reproduction_status": "EXACT",
+            "flow": {"edge": edge},
+            "phase": {"dx_px": 0.0, "dy_px": 0.0, "magnitude_px": 0.0},
+            "sign_convention": {"status": "OK"},
+            "counterfactual": {"zero": {"raw_ncc": 1.0, "gradient_ncc": 1.0}},
+            "sweep": {"rows": [{"dx": 0, "dy": 0, "score": 1.0}], "best_dx": 0, "best_dy": 0},
+            "mask": {"V0_original": {"magnitude_px": 0.0}},
+            "representations": [{"representation": "R0_raw", "phase": {"magnitude_px": 0.0}}],
+            "injection": [{"injected_dx": 0, "injected_dy": 0, "error_mag_px": 0.0}],
+            "peak_diagnostics": {"status": "NOT_AVAILABLE_IN_CURRENT_HELPER"},
+            "comparison": {"answer": "MIXED"},
+            "root_cause": "MIXED_OR_UNDERDETERMINED",
+        }
+    manifest = write_phase_audit_artifacts(tmp_path / "audit", baseline, results)
+    expected = {
+        "00_phase_audit_baseline.json",
+        "01_phase_dataflow_trace.json",
+        "02_phase_input_manifest.json",
+        "03_phase_input_visual_audit.png",
+        "03_phase_input_visual_stats.json",
+        "04_phase_sign_convention.json",
+        "05_phase_shift_counterfactual.json",
+        "05_phase_shift_counterfactual.png",
+        "06_translation_sweep.csv",
+        "06_translation_sweep_summary.json",
+        "06_translation_sweep_surface.png",
+        "07_mask_boundary_stress_test.csv",
+        "07_mask_boundary_stress_test.json",
+        "08_representation_stability.csv",
+        "08_representation_stability.json",
+        "09_real_crop_injection_recovery.csv",
+        "09_real_crop_injection_recovery.json",
+        "10_phase_peak_diagnostics.json",
+        "11_working_vs_suspect_phase_audit.json",
+        "11_working_vs_suspect_phase_audit.txt",
+        "11_working_vs_suspect_phase_audit.png",
+        "12_phase_validation_root_cause.json",
+        "12_phase_validation_root_cause.txt",
+        "13_phase_validation_audit_dashboard.png",
+    }
+    assert manifest["artifact_count"] == len(expected) + 2
+    assert all((tmp_path / "audit" / name).exists() for name in expected)
+    assert (tmp_path / "audit" / "02_phase_inputs" / "0_6_inputs.npz").exists()
+    assert (tmp_path / "audit" / "02_phase_inputs" / "2_5_inputs.npz").exists()

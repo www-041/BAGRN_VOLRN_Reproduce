@@ -880,7 +880,7 @@ def write_phase_validation_dashboard(results: dict[str, dict], output_path) -> P
             scatter = ax.scatter(
                 [float(item["dx"]) for item in rows],
                 [float(item["dy"]) for item in rows],
-                c=[float(item["score"]) for item in rows],
+                c=[float(item.get("score", item.get("gradient_ncc", np.nan))) for item in rows],
                 cmap="viridis",
                 s=38,
             )
@@ -916,3 +916,123 @@ def write_phase_validation_dashboard(results: dict[str, dict], output_path) -> P
     fig.savefig(output_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
     return output_path
+
+
+def _write_rows_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = sorted({str(key) for row in rows for key in row})
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: _json_safe(row.get(key)) for key in fieldnames})
+
+
+def write_phase_audit_artifacts(output_dir: str | Path, baseline: dict, results: dict[str, dict]) -> dict:
+    """Write the complete artifact tree required by the phase audit plan."""
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    write_json(out / "00_phase_audit_baseline.json", baseline)
+    write_json(out / "01_phase_dataflow_trace.json", {edge: result.get("flow", {}) for edge, result in results.items()})
+    inputs_by_edge = {edge: result["inputs"] for edge, result in results.items()}
+    for edge, inputs in inputs_by_edge.items():
+        export_phase_inputs(inputs, out, edge)
+    write_phase_input_visual_audit(
+        inputs_by_edge,
+        out / "03_phase_input_visual_audit.png",
+        out / "03_phase_input_visual_stats.json",
+    )
+    write_json(out / "04_phase_sign_convention.json", {edge: result.get("sign_convention", {}) for edge, result in results.items()})
+
+    counterfactual = {edge: result.get("counterfactual", {}) for edge, result in results.items()}
+    write_json(out / "05_phase_shift_counterfactual.json", counterfactual)
+    fig, ax = plt.subplots(figsize=(7, 4))
+    labels = ["zero", "reported", "inverse"]
+    for edge, result in results.items():
+        values = [float(result.get("counterfactual", {}).get(label, {}).get("gradient_ncc", np.nan)) for label in labels]
+        ax.plot(labels, values, marker="o", label=edge)
+    ax.set_ylabel("gradient NCC")
+    ax.set_title("phase shift counterfactual")
+    ax.grid(True, alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out / "05_phase_shift_counterfactual.png", dpi=150)
+    plt.close(fig)
+
+    sweep_rows, sweep_summary = [], {}
+    for edge, result in results.items():
+        rows = [dict(row, edge=edge) for row in result.get("sweep", {}).get("rows", [])]
+        sweep_rows.extend(rows)
+        sweep_summary[edge] = {key: value for key, value in result.get("sweep", {}).items() if key != "rows"}
+    _write_rows_csv(out / "06_translation_sweep.csv", sweep_rows)
+    write_json(out / "06_translation_sweep_summary.json", sweep_summary)
+    fig, axes = plt.subplots(1, len(results), figsize=(9, 4), squeeze=False)
+    for index, (edge, result) in enumerate(results.items()):
+        rows = result.get("sweep", {}).get("rows", [])
+        ax = axes[0, index]
+        if rows:
+            image = ax.scatter(
+                [row["dx"] for row in rows],
+                [row["dy"] for row in rows],
+                c=[row.get("score", row.get("gradient_ncc", np.nan)) for row in rows],
+                cmap="viridis",
+            )
+            fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_title(edge)
+        ax.set_xlabel("dx")
+        ax.set_ylabel("dy")
+        ax.grid(True, alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(out / "06_translation_sweep_surface.png", dpi=150)
+    plt.close(fig)
+
+    mask_rows, mask_json = [], {}
+    for edge, result in results.items():
+        mask_json[edge] = result.get("mask", {})
+        mask_rows.extend([dict(value, edge=edge, variant=key) for key, value in result.get("mask", {}).items()])
+    _write_rows_csv(out / "07_mask_boundary_stress_test.csv", mask_rows)
+    write_json(out / "07_mask_boundary_stress_test.json", mask_json)
+
+    representation_rows, representation_json = [], {}
+    for edge, result in results.items():
+        representation_json[edge] = result.get("representations", [])
+        representation_rows.extend([dict(row, edge=edge) for row in result.get("representations", [])])
+    _write_rows_csv(out / "08_representation_stability.csv", representation_rows)
+    write_json(out / "08_representation_stability.json", representation_json)
+
+    injection_rows, injection_json = [], {}
+    for edge, result in results.items():
+        injection_json[edge] = result.get("injection", [])
+        injection_rows.extend([dict(row, edge=edge) for row in result.get("injection", [])])
+    _write_rows_csv(out / "09_real_crop_injection_recovery.csv", injection_rows)
+    write_json(out / "09_real_crop_injection_recovery.json", injection_json)
+    write_json(out / "10_phase_peak_diagnostics.json", {edge: result.get("peak_diagnostics", {}) for edge, result in results.items()})
+
+    comparison = {edge: {"comparison": result.get("comparison", {}), "root_cause": result.get("root_cause")} for edge, result in results.items()}
+    write_json(out / "11_working_vs_suspect_phase_audit.json", comparison)
+    (out / "11_working_vs_suspect_phase_audit.txt").write_text(
+        "\n".join(f"{edge}: {result.get('comparison', {}).get('answer')} / {result.get('root_cause')}" for edge, result in results.items()) + "\n",
+        encoding="utf-8",
+    )
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.axis("off")
+    ax.text(0.02, 0.95, "Working vs suspect phase audit", va="top", fontsize=13)
+    ax.text(0.02, 0.72, "\n".join(f"{edge}: {result.get('comparison', {}).get('answer')}" for edge, result in results.items()), va="top")
+    fig.savefig(out / "11_working_vs_suspect_phase_audit.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    conclusion = build_phase_validation_conclusion(baseline, results)
+    write_json(out / "12_phase_validation_root_cause.json", conclusion)
+    (out / "12_phase_validation_root_cause.txt").write_text(
+        "CAN conclude\n" + "\n".join(f"- {item}" for item in conclusion["can_conclude"])
+        + "\n\nCANNOT conclude\n" + "\n".join(f"- {item}" for item in conclusion["cannot_conclude"]) + "\n",
+        encoding="utf-8",
+    )
+    write_phase_validation_dashboard(results, out / "13_phase_validation_audit_dashboard.png")
+    files = sorted(path for path in out.rglob("*") if path.is_file())
+    return {"artifact_count": len(files), "files": [str(path.relative_to(out)) for path in files]}
