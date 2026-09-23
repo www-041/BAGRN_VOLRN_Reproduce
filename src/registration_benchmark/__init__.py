@@ -1,5 +1,5 @@
 """Two-image flat-terrain registration benchmark.
 
-Compares four tie-point detection methods (Phase Correlation, SIFT,
-SuperPoint+LightGlue, LoFTR) under identical RANSAC+Affine geometry.
+Compares phase correlation, SIFT, LoFTR, EfficientLoFTR, and optional
+learned local-feature matching under identical RANSAC+Affine geometry.
 """

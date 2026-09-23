@@ -25,6 +25,7 @@ from src.registration_benchmark.geometry import (
 )
 from src.registration_benchmark.matchers.phase import match_phase
 from src.registration_benchmark.matchers.sift import match_sift
+from src.registration_benchmark.matchers.efficient_loftr import match_efficient_loftr
 from src.registration_benchmark.models import MatchSet
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,9 @@ except ImportError:
 MATCHERS: dict[str, callable] = {
     "phase": match_phase,
     "sift": match_sift,
+    # Registered unconditionally so missing official code/weights produce the
+    # explicit EFFICIENT_LOFTR_UNAVAILABLE error instead of a silent fallback.
+    "efficient_loftr": match_efficient_loftr,
 }
 
 if is_lightglue_available():
@@ -182,7 +186,7 @@ def run_two_image_benchmark(
 
 def _run_matcher(method: str, matcher_fn: callable, view, device: str):
     """Invoke a matcher, forwarding ``device`` only to learned methods."""
-    if method in {"lightglue", "loftr"}:
+    if method in {"lightglue", "loftr", "efficient_loftr"}:
         return matcher_fn(view, device=device)
     return matcher_fn(view)
 

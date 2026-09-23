@@ -66,11 +66,13 @@ class TestRunMatcher:
         _run_matcher("sift", fake_phase, fake_view, "cpu")
         _run_matcher("lightglue", fake_lightglue, fake_view, "cpu")
         _run_matcher("loftr", fake_loftr, fake_view, "cuda:0")
+        _run_matcher("efficient_loftr", fake_loftr, fake_view, "cpu")
 
         assert calls[0] == ("phase", {})
         assert calls[1] == ("phase", {})  # sift uses same fn
         assert calls[2] == ("lightglue", {"device": "cpu"})
         assert calls[3] == ("loftr", {"device": "cuda:0"})
+        assert calls[4] == ("loftr", {"device": "cpu"})
 
     def test_classical_matchers_no_device_kwarg(self):
         """Phase and SIFT should NOT receive device kwarg."""
@@ -187,6 +189,8 @@ class TestRunner:
         assert "sift" in MATCHERS
         assert callable(MATCHERS["phase"])
         assert callable(MATCHERS["sift"])
+        assert "efficient_loftr" in MATCHERS
+        assert callable(MATCHERS["efficient_loftr"])
 
     def test_invalid_geometry_does_not_warp(self, tmp_dir):
         """When geometry fails, warp/mosaic outputs should NOT be created."""

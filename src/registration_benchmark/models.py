@@ -40,6 +40,13 @@ MATCHER_INFO = {
         "uses_learned_features": True,
         "confidence_semantics": CONFIDENCE_SEMANTICS,
     },
+    "efficient_loftr": {
+        "name": "efficient_loftr",
+        "family": "semi_dense_detector_free_sparse_like",
+        "detector_free": True,
+        "uses_learned_features": True,
+        "confidence_semantics": CONFIDENCE_SEMANTICS,
+    },
     "lightglue": {
         "name": "lightglue",
         "family": "sparse_learned",
