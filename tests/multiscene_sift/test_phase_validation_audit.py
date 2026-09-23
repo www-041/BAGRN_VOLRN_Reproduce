@@ -94,6 +94,17 @@ def test_baseline_loader_fails_when_required_artifact_is_missing(tmp_path):
         load_phase_audit_baseline(edge_dir, local_dir, selected_pair_dir=selected_dir)
 
 
+def test_baseline_loader_retains_pixel_matrix_when_canonical_world_matrix_is_missing(tmp_path):
+    edge_dir, local_dir, selected_dir = _write_minimal_baseline(tmp_path)
+    canonical_path = selected_dir / "06_canonical_world_edge_transforms.json"
+    canonical = json.loads(canonical_path.read_text(encoding="utf-8"))
+    del canonical["edges"]["2-5"]
+    canonical_path.write_text(json.dumps(canonical), encoding="utf-8")
+    baseline = load_phase_audit_baseline(edge_dir, local_dir, selected_pair_dir=selected_dir)
+    assert baseline["edges"]["2-5"]["world_matrix"] is None
+    assert baseline["edges"]["2-5"]["pixel_matrix"] is not None
+
+
 def test_phase_flow_trace_records_frame_crop_masks_and_phase():
     rng = np.random.default_rng(4)
     ref = rng.normal(size=(64, 64)).astype(np.float32)

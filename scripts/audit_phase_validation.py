@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from src.multiscene_sift.dataset import discover_five_scenes
+from src.multiscene_sift.frame_diagnostics import conjugate_pixel_to_world, rebuild_pair_common_grids
 from src.multiscene_sift.nine_scene_overlap_diagnostic import SCENE_NAMES_9
 from src.multiscene_sift.phase_validation_audit import (
     AUDIT_EDGES,
@@ -68,6 +69,20 @@ def _root_cause_evidence(result: dict) -> dict:
     }
 
 
+def _resolve_world_matrix(edge_baseline: dict, scenes, i: int, j: int, band: str) -> tuple[np.ndarray, str]:
+    if edge_baseline.get("world_matrix") is not None:
+        return np.asarray(edge_baseline["world_matrix"], dtype=float), "canonical_world_matrix"
+    pixel_matrix = edge_baseline.get("pixel_matrix")
+    if pixel_matrix is None:
+        raise RuntimeError(f"missing world and pixel matrix for {i}-{j}")
+    grids = rebuild_pair_common_grids(scenes, band, [(i, j)])
+    from rasterio.transform import Affine
+
+    common_transform = Affine(*grids[f"pair_{i}_{j}"]["transform"])
+    world_matrix = conjugate_pixel_to_world(np.asarray(pixel_matrix, dtype=float), common_transform)
+    return world_matrix, "selected_pair_pixel_matrix_conjugated_to_pair_common_grid"
+
+
 def run_audit(args: argparse.Namespace) -> dict:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -83,10 +98,12 @@ def run_audit(args: argparse.Namespace) -> dict:
     for (i, j), role in AUDIT_EDGES.items():
         edge = f"{i}-{j}"
         baseline_edge = baseline["edges"][edge]
+        world_matrix, world_matrix_source = _resolve_world_matrix(baseline_edge, scenes, i, j, args.band)
         inputs = build_exact_phase_inputs(
-            scenes[i], scenes[j], np.asarray(baseline_edge["world_matrix"], dtype=float),
+            scenes[i], scenes[j], world_matrix,
             baseline_edge["direct_tiles"], edge, band=args.band,
         )
+        inputs["metadata"]["world_matrix_source"] = world_matrix_source
         phase = phase_from_inputs(inputs)
         old_value = float(baseline_edge["old_phase_median_px"])
         reproduced = phase.get("magnitude_px") is not None and abs(float(phase["magnitude_px"]) - old_value) <= 1e-6

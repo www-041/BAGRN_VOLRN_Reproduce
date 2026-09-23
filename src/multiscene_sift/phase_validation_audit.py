@@ -92,6 +92,12 @@ def load_phase_audit_baseline(
     direct_summary = _edge_rows(_read_json(required[1]))
     local_summary = _edge_rows(_read_json(required[4]))
     canonical = _read_json(required[5]).get("edges", {})
+    selected_json = selected_root / "02_new_pairwise_registration_results.json"
+    selected_rows = {}
+    if selected_json.is_file():
+        for row in _read_json(selected_json).get("results", []):
+            key = _edge_key((int(row["idx_i"]), int(row["idx_j"])))
+            selected_rows[key] = row
     tiles = _load_tiles(required[2])
     edges: dict[str, dict] = {}
     for edge, role in AUDIT_EDGES.items():
@@ -99,8 +105,9 @@ def load_phase_audit_baseline(
         if key not in reliability or key not in direct_summary:
             raise ValueError(f"missing baseline edge {key}")
         matrix_row = canonical.get(key, canonical.get(f"{edge[1]}-{edge[0]}"))
-        if matrix_row is None or matrix_row.get("matrix") is None:
-            raise ValueError(f"missing canonical world matrix for {key}")
+        selected_row = selected_rows.get(key, selected_rows.get(f"{edge[1]}-{edge[0]}"))
+        if (matrix_row is None or matrix_row.get("matrix") is None) and not selected_row:
+            raise ValueError(f"missing canonical world matrix and pixel matrix for {key}")
         edges[key] = {
             "edge": [edge[0], edge[1]],
             "role": role,
@@ -109,16 +116,12 @@ def load_phase_audit_baseline(
             "old_phase_median_px": float(direct_summary[key]["median_px"]),
             "old_phase_summary": direct_summary[key],
             "direct_tiles": tiles.get(key, []),
-            "world_matrix": np.asarray(matrix_row["matrix"], dtype=float).tolist(),
-            "pixel_matrix": None,
+            "world_matrix": (
+                np.asarray(matrix_row["matrix"], dtype=float).tolist()
+                if matrix_row is not None and matrix_row.get("matrix") is not None else None
+            ),
+            "pixel_matrix": selected_row.get("pixel_matrix") if selected_row else None,
         }
-
-    selected_json = selected_root / "02_new_pairwise_registration_results.json"
-    if selected_json.is_file():
-        for row in _read_json(selected_json).get("results", []):
-            key = _edge_key((int(row["idx_i"]), int(row["idx_j"])))
-            if key in edges:
-                edges[key]["pixel_matrix"] = row.get("pixel_matrix")
 
     return {"edge_keys": [_edge_key(edge) for edge in AUDIT_EDGES], "edges": edges}
 
