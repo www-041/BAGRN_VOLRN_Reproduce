@@ -745,3 +745,111 @@ def write_cycle_sensitivity(sensitivity: dict, output_dir: str | Path) -> dict:
             for row in payload["results"]:
                 writer.writerow({"variant": variant, **{field: row[field] for field in fields[1:]}})
     return {"json": json_path, "csv": csv_path}
+
+
+def _synthetic_case_a_inputs() -> tuple[dict, dict]:
+    transforms = {}
+    for scene in range(5):
+        matrix = np.eye(3, dtype=np.float64)
+        matrix[0, 2] = float(scene)
+        transforms[scene] = matrix
+    observations = {}
+    for scene in range(4):
+        observations[(scene, scene + 1)] = {
+            "x_i": np.array([[1.0, 0.0]]), "x_j": np.array([[0.0, 0.0]])
+        }
+    for scene in range(2, 5):
+        observations[(0, scene)] = {
+            "x_i": np.array([[0.0, 0.0]]), "x_j": np.array([[0.0, 0.0]])
+        }
+    return transforms, observations
+
+
+def _synthetic_case_b_inputs() -> tuple[dict, dict]:
+    transforms = {scene: np.eye(3, dtype=np.float64) for scene in range(4)}
+    observations = {
+        edge: {"x_i": np.array([[0.0, 0.0], [10.0, 5.0]]),
+               "x_j": np.array([[0.0, 0.0], [10.0, 5.0]])}
+        for edge in ((0, 1), (1, 2), (2, 3))
+    }
+    observations[(0, 3)] = {
+        "x_i": np.array([[30.0, 0.0], [40.0, 5.0]]),
+        "x_j": np.array([[0.0, 0.0], [10.0, 5.0]]),
+    }
+    return transforms, observations
+
+
+def _synthetic_variant_result(transforms: dict, observations: dict, use_huber: bool) -> tuple[dict, dict]:
+    solution = solve_edge_weighted_translation_irls(
+        transforms,
+        observations,
+        reference_idx=0,
+        prior_edge_weights={edge: 1.0 for edge in observations},
+        use_huber=use_huber,
+        huber_delta_px=3.0,
+    )
+    inputs = {"mst_global_transforms": transforms, "edge_observations": observations}
+    summary, _ = _evaluate_solution(inputs, solution)
+    return solution, summary
+
+
+def synthetic_robust_translation_check() -> dict:
+    """Run deterministic clean-drift and one-conflicting-edge regressions."""
+    case_a_transforms, case_a_observations = _synthetic_case_a_inputs()
+    a_l2, _ = _synthetic_variant_result(case_a_transforms, case_a_observations, False)
+    a_huber, _ = _synthetic_variant_result(case_a_transforms, case_a_observations, True)
+    a_l2_adjusted = apply_translation_corrections(case_a_transforms, {
+        int(scene): tuple(values) for scene, values in a_l2["scene_corrections_px"].items()
+    })
+    a_huber_adjusted = apply_translation_corrections(case_a_transforms, {
+        int(scene): tuple(values) for scene, values in a_huber["scene_corrections_px"].items()
+    })
+    case_a = {
+        "equal_l2_endpoint_error_px": float(np.hypot(a_l2_adjusted[4][0, 2], a_l2_adjusted[4][1, 2])),
+        "equal_huber_endpoint_error_px": float(np.hypot(a_huber_adjusted[4][0, 2], a_huber_adjusted[4][1, 2])),
+        "equal_l2_solution": a_l2,
+        "equal_huber_solution": a_huber,
+    }
+
+    case_b_transforms, case_b_observations = _synthetic_case_b_inputs()
+    b_l2, b_l2_summary = _synthetic_variant_result(case_b_transforms, case_b_observations, False)
+    b_huber, b_huber_summary = _synthetic_variant_result(case_b_transforms, case_b_observations, True)
+    reliable_edges = {(0, 1), (1, 2), (2, 3)}
+    b_l2_reliable = [row["p95_px"] for row in b_l2_summary["per_edge"] if (row["edge_i"], row["edge_j"]) in reliable_edges]
+    b_huber_reliable = [row["p95_px"] for row in b_huber_summary["per_edge"] if (row["edge_i"], row["edge_j"]) in reliable_edges]
+    case_b = {
+        "equal_l2_reliable_edge_mean_p95_px": float(np.mean(b_l2_reliable)),
+        "equal_huber_reliable_edge_mean_p95_px": float(np.mean(b_huber_reliable)),
+        "equal_l2_conflicting_edge_factor": float(b_l2["final_edge_factors"][(0, 3)]),
+        "equal_huber_conflicting_edge_factor": float(b_huber["final_edge_factors"][(0, 3)]),
+        "equal_l2_solution": b_l2,
+        "equal_huber_solution": b_huber,
+    }
+    return {"case_a_path_drift": case_a, "case_b_conflicting_edge": case_b}
+
+
+def write_synthetic_robustness(result: dict, output_dir: str | Path) -> dict:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    json_path = out / "06_synthetic_robustness.json"
+    json_path.write_text(json.dumps(_json_safe(result), indent=2, ensure_ascii=False), encoding="utf-8")
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    labels = ["Case A L2", "Case A Huber", "Case B L2", "Case B Huber"]
+    values = [
+        result["case_a_path_drift"]["equal_l2_endpoint_error_px"],
+        result["case_a_path_drift"]["equal_huber_endpoint_error_px"],
+        result["case_b_conflicting_edge"]["equal_l2_reliable_edge_mean_p95_px"],
+        result["case_b_conflicting_edge"]["equal_huber_reliable_edge_mean_p95_px"],
+    ]
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(labels, values)
+    ax.set_ylabel("error (px)")
+    ax.set_title("Synthetic robust translation regressions")
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    png_path = out / "06_synthetic_robustness.png"
+    fig.savefig(png_path, dpi=150)
+    plt.close(fig)
+    return {"json": json_path, "png": png_path}

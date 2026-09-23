@@ -262,3 +262,26 @@ def test_cycle_sensitivity_only_removes_redundant_triangle_edges():
     )
     assert tuple(result["removed_edges"]) == CYCLE_EDGES
     assert all(item["removed_edge"] not in {(0, 2), (3, 4)} for item in result["results"])
+
+
+def test_synthetic_case_a_clean_path_drift_is_not_worsened_by_huber():
+    from src.multiscene_sift.robust_translation_adjustment import (
+        synthetic_robust_translation_check,
+    )
+
+    result = synthetic_robust_translation_check()
+    case = result["case_a_path_drift"]
+    assert case["equal_l2_endpoint_error_px"] < 1.0
+    assert case["equal_huber_endpoint_error_px"] <= case["equal_l2_endpoint_error_px"] + 0.1
+
+
+def test_synthetic_case_b_conflicting_edge_is_downweighted_not_deleted():
+    from src.multiscene_sift.robust_translation_adjustment import (
+        synthetic_robust_translation_check,
+    )
+
+    result = synthetic_robust_translation_check()
+    case = result["case_b_conflicting_edge"]
+    assert case["equal_huber_reliable_edge_mean_p95_px"] < case["equal_l2_reliable_edge_mean_p95_px"]
+    assert case["equal_huber_conflicting_edge_factor"] >= 0.1
+    assert case["equal_huber_conflicting_edge_factor"] < 1.0
