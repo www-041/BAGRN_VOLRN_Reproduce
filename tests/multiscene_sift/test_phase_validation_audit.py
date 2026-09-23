@@ -22,6 +22,7 @@ from src.multiscene_sift.phase_validation_audit import (
     phase_peak_diagnostics,
     compare_working_vs_suspect,
     classify_phase_validation_root_cause,
+    build_phase_validation_conclusion,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -285,3 +286,15 @@ def test_working_vs_suspect_comparison_rejects_reported_shift_when_zero_wins():
 ])
 def test_root_cause_classifier_uses_explicit_evidence_states(evidence, expected):
     assert classify_phase_validation_root_cause(evidence) == expected
+
+
+def test_final_conclusion_contains_can_and_cannot_conclude_limits():
+    conclusion = build_phase_validation_conclusion({"edges": {}}, {
+        "0-6": {"comparison": {"answer": "SUPPORTED_AS_REAL_TRANSLATION"}, "root_cause": "MIXED_OR_UNDERDETERMINED"},
+        "2-5": {"comparison": {"answer": "NOT_SUPPORTED_PHASE_ARTIFACT"}, "root_cause": "PHASE_VALIDATION_ARTIFACT_SUPPORTED"},
+    })
+    assert "answers" in conclusion
+    assert "can_conclude" in conclusion and conclusion["can_conclude"]
+    cannot = " ".join(conclusion["cannot_conclude"])
+    assert "do not directly modify production phase helper" in cannot
+    assert "do not claim SIFT/Affine is always correct" in cannot

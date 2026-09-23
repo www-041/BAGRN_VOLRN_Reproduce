@@ -615,6 +615,36 @@ def classify_phase_validation_root_cause(evidence: dict) -> str:
     return "MIXED_OR_UNDERDETERMINED"
 
 
+def build_phase_validation_conclusion(baseline: dict, results: dict[str, dict]) -> dict:
+    """Build the bounded final conclusion required by the audit plan."""
+    answers = {
+        "old_phase_values_reproduced": {
+            edge: result.get("baseline_reproduction_status")
+            for edge, result in results.items()
+        },
+        "phase_dx_dy_semantics": "phase (dx,dy) is the shift required to move moving/target toward reference",
+        "frame_or_crop_bug_found": any(result.get("frame_bug") for result in results.values()),
+        "edge_answers": {
+            edge: result.get("comparison", {}).get("answer") for edge, result in results.items()
+        },
+        "root_cause_states": {edge: result.get("root_cause") for edge, result in results.items()},
+        "re_audit_next": ["2-5", "4-6", "1-8"],
+    }
+    return {
+        "answers": answers,
+        "can_conclude": [
+            "The audit compares only the fixed 0-6 working control and 2-5 suspect edge.",
+            "Independent counterfactual, integer sweep, mask, representation, and injection evidence is diagnostic evidence only.",
+        ],
+        "cannot_conclude": [
+            "do not directly modify production phase helper in this run",
+            "do not claim SIFT/Affine is always correct",
+            "do not automatically restore all previously rejected edges",
+            "do not claim a new phase method generalizes from two edges",
+        ],
+    }
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)
