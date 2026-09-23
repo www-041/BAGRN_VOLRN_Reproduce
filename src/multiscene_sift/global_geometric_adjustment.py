@@ -604,6 +604,101 @@ def write_translation_solution(solution: dict, output_path: str | Path) -> Path:
     return path
 
 
+def build_affine_adjustment_system(
+    mst_global_transforms: dict[int, np.ndarray],
+    edge_observations: dict,
+    reference_idx: int,
+    weight_mode: str = "equal_edge",
+) -> dict:
+    """Build normalized global-frame incremental affine equations."""
+    if reference_idx not in mst_global_transforms:
+        raise ValueError(f"reference scene {reference_idx} is missing from transforms")
+    if weight_mode != "equal_edge":
+        raise ValueError(f"unsupported affine weight mode: {weight_mode}")
+    scenes = sorted(mst_global_transforms)
+    unknown = [scene for scene in scenes if scene != reference_idx]
+    adjacency = {scene: set() for scene in scenes}
+    prepared = []
+    all_points = []
+    for edge, observation in sorted(edge_observations.items()):
+        i, j = int(edge[0]), int(edge[1])
+        if i not in adjacency or j not in adjacency or i == j:
+            raise ValueError(f"invalid edge {i}-{j} for transform scene set")
+        points_i = np.asarray(observation["x_i"], dtype=np.float64)
+        points_j = np.asarray(observation["x_j"], dtype=np.float64)
+        if points_i.shape != points_j.shape or points_i.ndim != 2 or points_i.shape[1] != 2:
+            raise ValueError(f"invalid point arrays for edge {i}-{j}")
+        pair_to_world = np.asarray(observation.get("pair_common_transform", np.eye(3)), dtype=np.float64)
+        pixel_size = float(observation.get("pixel_size", 1.0))
+        qi = _transform_points(mst_global_transforms[i] @ pair_to_world, points_i) / pixel_size
+        qj = _transform_points(mst_global_transforms[j] @ pair_to_world, points_j) / pixel_size
+        prepared.append((i, j, qi, qj))
+        all_points.extend(qi.tolist())
+        all_points.extend(qj.tolist())
+        adjacency[i].add(j)
+        adjacency[j].add(i)
+    reachable = {reference_idx}
+    frontier = [reference_idx]
+    while frontier:
+        scene = frontier.pop()
+        for neighbour in adjacency[scene]:
+            if neighbour not in reachable:
+                reachable.add(neighbour)
+                frontier.append(neighbour)
+    if reachable != set(scenes):
+        raise ValueError(f"affine graph is disconnected from reference {reference_idx}")
+    points = np.asarray(all_points, dtype=np.float64)
+    centroid = np.mean(points, axis=0)
+    scale = float(np.max(np.linalg.norm(points - centroid, axis=1)))
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("affine normalization scale is not positive")
+    rows, rhs, weights = [], [], []
+    for i, j, qi, qj in prepared:
+        weight = 1.0 / len(qi) if len(qi) else 0.0
+        ni = (qi - centroid) / scale
+        nj = (qj - centroid) / scale
+        for pi, pj in zip(ni, nj):
+            for axis in (0, 1):
+                row = np.zeros(6 * len(unknown), dtype=np.float64)
+                for scene, point, sign in ((i, pi, 1.0), (j, pj, -1.0)):
+                    if scene == reference_idx:
+                        continue
+                    offset = 6 * unknown.index(scene) + (0 if axis == 0 else 3)
+                    row[offset:offset + 3] += sign * np.array([point[0], point[1], 1.0])
+                rows.append(row)
+                rhs.append(float(pj[axis] - pi[axis]))
+                weights.append(weight)
+    matrix = np.asarray(rows, dtype=np.float64).reshape((-1, 6 * len(unknown)))
+    vector = np.asarray(rhs, dtype=np.float64)
+    return {
+        "A": matrix, "b": vector, "point_weights": np.asarray(weights)[::2],
+        "unknown_scene_order": unknown, "reference_idx": int(reference_idx),
+        "weight_mode": weight_mode, "rank_expectation": 6 * len(unknown),
+        "rank": int(np.linalg.matrix_rank(matrix)),
+        "condition_number": float(np.linalg.cond(matrix)) if matrix.size else None,
+        "normalization": {"centroid": centroid.tolist(), "scale": scale},
+    }
+
+
+def write_affine_system_summary(system: dict, output_path: str | Path) -> Path:
+    summary = {
+        "unknown_scene_order": system["unknown_scene_order"],
+        "reference_idx": system["reference_idx"],
+        "n_rows": int(system["A"].shape[0]),
+        "n_columns": int(system["A"].shape[1]),
+        "rank": system["rank"],
+        "rank_expectation": system["rank_expectation"],
+        "condition_number": system["condition_number"],
+        "n_points": int(len(system["point_weights"])),
+        "normalization": system["normalization"],
+        "weight_mode": system["weight_mode"],
+    }
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def apply_translation_corrections(
     mst_global_transforms: dict[int, np.ndarray],
     corrections: dict[int, tuple[float, float]],

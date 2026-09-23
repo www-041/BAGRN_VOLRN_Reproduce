@@ -782,3 +782,21 @@ def test_translation_decision_gate_distinguishes_partial_and_invalid():
 
     assert partial["decision"] == "TRANSLATION_ADJUSTMENT_PARTIAL"
     assert invalid["decision"] == "TRANSLATION_SYSTEM_INVALID"
+
+
+def test_affine_system_normalizes_global_coordinates_and_fixes_reference_gauge():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import build_affine_adjustment_system
+
+    system = build_affine_adjustment_system(
+        {0: np.eye(3), 1: np.eye(3)},
+        {(0, 1): {"x_i": np.array([[1000.0, 2000.0], [1010.0, 2000.0]]),
+                 "x_j": np.array([[990.0, 1995.0], [1000.0, 1995.0]])}},
+        reference_idx=0,
+    )
+
+    assert system["unknown_scene_order"] == [1]
+    assert system["A"].shape == (4, 6)
+    assert system["rank_expectation"] == 6
+    assert np.isfinite(system["normalization"]["scale"])
+    assert system["reference_idx"] == 0
