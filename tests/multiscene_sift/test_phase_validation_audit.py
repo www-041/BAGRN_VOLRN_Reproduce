@@ -18,6 +18,7 @@ from src.multiscene_sift.phase_validation_audit import (
     translation_metric_surface,
     mask_boundary_stress_test,
     representation_stability,
+    real_crop_injection_recovery,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -225,3 +226,20 @@ def test_representation_stability_covers_raw_standardized_gradient_sobel_and_edg
     assert {"R0_raw", "R1_standardized", "R2_gradient_magnitude", "R3_sobel_magnitude", "R4_edge_map"} <= names
     assert {row["mask_variant"] for row in result} == {"original", "erode_32"}
     assert all("phase" in row for row in result)
+
+
+def test_real_crop_injection_recovery_recovers_zero_one_three_six_ten_pixels():
+    rng = np.random.default_rng(12)
+    ref = rng.normal(size=(192, 192)).astype(np.float32)
+    mask = np.ones_like(ref, dtype=bool)
+    inputs = {
+        "ref_crop": ref,
+        "warped_target_crop": ref.copy(),
+        "ref_valid_mask": mask,
+        "target_valid_mask": mask,
+        "joint_valid_mask": mask,
+    }
+    rows = real_crop_injection_recovery(inputs, [(0, 0), (1, 0), (0, 1), (3, 2), (6, 0), (10, 5)])
+    assert len(rows) == 6
+    assert all(row["error_mag_px"] < 0.5 for row in rows)
+    assert {row["injected_dx"] for row in rows} == {0, 1, 3, 6, 10}

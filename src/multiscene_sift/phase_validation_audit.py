@@ -487,6 +487,37 @@ def representation_stability(
     return rows
 
 
+def real_crop_injection_recovery(inputs: dict, shifts: list[tuple[int, int]]) -> list[dict]:
+    """Inject known translations into the frozen target crop and recover them."""
+    base_phase = phase_from_inputs(inputs)
+    reference = np.asarray(inputs["ref_crop"])
+    moving = np.asarray(inputs["warped_target_crop"])
+    target_mask = np.asarray(inputs["target_valid_mask"], dtype=bool)
+    ref_mask = np.asarray(inputs["ref_valid_mask"], dtype=bool)
+    rows = []
+    for dx, dy in shifts:
+        injected, injected_mask = inject_translation_nonwrapping(moving, target_mask, dx, dy)
+        phase = phase_from_inputs({
+            "ref_crop": reference, "warped_target_crop": injected,
+            "ref_valid_mask": ref_mask, "target_valid_mask": injected_mask,
+            "joint_valid_mask": ref_mask & injected_mask,
+        })
+        expected_dx = None if base_phase["dx_px"] is None else float(base_phase["dx_px"] - dx)
+        expected_dy = None if base_phase["dy_px"] is None else float(base_phase["dy_px"] - dy)
+        error = None if expected_dx is None or phase["dx_px"] is None else float(
+            np.hypot(phase["dx_px"] - expected_dx, phase["dy_px"] - expected_dy)
+        )
+        rows.append({
+            "injected_dx": int(dx), "injected_dy": int(dy),
+            "expected_phase_dx": expected_dx, "expected_phase_dy": expected_dy,
+            "recovered_dx": phase["dx_px"], "recovered_dy": phase["dy_px"],
+            "error_mag_px": error, "response": phase.get("response"),
+            "status": phase.get("status"),
+            "joint_valid_fraction": float((ref_mask & injected_mask).mean()),
+        })
+    return rows
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)
