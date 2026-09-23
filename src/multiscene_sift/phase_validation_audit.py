@@ -329,6 +329,29 @@ def run_phase_sign_convention(
     }
 
 
+def evaluate_shift_counterfactual(
+    reference: np.ndarray,
+    moving: np.ndarray,
+    moving_mask: np.ndarray,
+    dx_px: int,
+    dy_px: int,
+) -> dict:
+    """Apply a candidate correction and score it with independent metrics."""
+    shifted, shifted_mask = inject_translation_nonwrapping(moving, moving_mask, dx_px, dy_px)
+    ref_mask = np.isfinite(reference)
+    joint = ref_mask & shifted_mask & np.isfinite(shifted)
+    metrics = phase_input_visual_stats({
+        "ref_crop": reference,
+        "warped_target_crop": shifted,
+        "ref_valid_mask": ref_mask,
+        "target_valid_mask": shifted_mask,
+        "joint_valid_mask": joint,
+    })
+    metrics.update({"applied_dx": int(dx_px), "applied_dy": int(dy_px),
+                   "joint_valid_count": int(joint.sum())})
+    return metrics
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)

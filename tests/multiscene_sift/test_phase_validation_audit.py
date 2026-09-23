@@ -14,6 +14,7 @@ from src.multiscene_sift.phase_validation_audit import (
     phase_input_visual_stats,
     inject_translation_nonwrapping,
     run_phase_sign_convention,
+    evaluate_shift_counterfactual,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -170,3 +171,15 @@ def test_nonwrapping_injection_has_explicit_inverse_phase_sign(dx, dy):
     assert shifted.shape == image.shape
     assert shifted_mask.sum() < mask.sum()
     assert run_phase_sign_convention(image, mask, shifted, shifted_mask, dx, dy)["error_mag_px"] < 0.5
+
+
+def test_counterfactual_reported_shift_improves_independent_metrics_on_known_shift():
+    rng = np.random.default_rng(8)
+    ref = rng.normal(size=(128, 128)).astype(np.float32)
+    mask = np.ones_like(ref, dtype=bool)
+    moving, moving_mask = inject_translation_nonwrapping(ref, mask, 5, -3)
+    zero = evaluate_shift_counterfactual(ref, moving, moving_mask, 0, 0)
+    corrected = evaluate_shift_counterfactual(ref, moving, moving_mask, -5, 3)
+    assert corrected["gradient_ncc"] > zero["gradient_ncc"]
+    assert corrected["raw_ncc"] > zero["raw_ncc"]
+    assert corrected["masked_mae"] < zero["masked_mae"]
