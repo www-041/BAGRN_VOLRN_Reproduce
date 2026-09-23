@@ -439,3 +439,53 @@ def test_coordinate_validation_overall_fails_when_any_edge_fails(tmp_path):
     assert result["overall"] == "COORDINATE_RECOVERY_INVALID"
     assert (tmp_path / "04_inlier_coordinate_validation.csv").is_file()
     assert (tmp_path / "04_inlier_coordinate_validation.json").is_file()
+
+
+def test_frozen_global_adjustment_artifact_contains_point_and_provenance_fields(tmp_path):
+    import csv
+    from src.multiscene_sift.inlier_recovery import freeze_global_adjustment_inliers
+
+    csv_path = tmp_path / "edge.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["point_id", "x_i", "y_i", "x_j", "y_j", "coordinate_frame", "residual_px"])
+        writer.writerow([0, 1, 2, 3, 4, "pair_common_grid", 0.5])
+    replayed = [{
+        "edge": [0, 1], "inliers_csv": str(csv_path),
+        "coordinate_frame": "pair_common_grid", "transform_direction": "target_to_reference",
+    }]
+    gate = {"overall": "REPRODUCTION_ACCEPTED", "edges": [{"edge": [0, 1], "state": "EXACT"}]}
+    validation = {"overall": "COORDINATE_RECOVERY_VALID", "edges": [{"edge": [0, 1], "status": "PASS"}]}
+
+    result = freeze_global_adjustment_inliers(
+        replayed, gate, validation, {"seed": 0}, reference_idx=1, output_dir=tmp_path
+    )
+
+    assert result["status"] == "READY_FOR_GLOBAL_ADJUSTMENT"
+    row = (tmp_path / "05_global_adjustment_inliers.csv").read_text(encoding="utf-8").splitlines()[1]
+    assert row.startswith("0,1,0,1,2,3,4,pair_common_grid")
+    manifest = json.loads((tmp_path / "05_global_adjustment_inliers_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["reference_idx"] == 1
+    assert manifest["sha256"]
+
+
+def test_inlier_recovery_decision_is_ready_only_after_both_gates(tmp_path):
+    from src.multiscene_sift.inlier_recovery import write_inlier_recovery_decision
+
+    ready = write_inlier_recovery_decision(
+        {"overall": "REPRODUCTION_ACCEPTED"},
+        {"overall": "COORDINATE_RECOVERY_VALID"},
+        {"status": "READY_FOR_GLOBAL_ADJUSTMENT"},
+        {"status": "complete"},
+        tmp_path,
+    )
+    failed = write_inlier_recovery_decision(
+        {"overall": "REPRODUCTION_FAILED"},
+        {"overall": "COORDINATE_RECOVERY_VALID"},
+        {}, {"status": "complete"}, tmp_path
+    )
+
+    assert ready["decision"] == "READY_FOR_GLOBAL_ADJUSTMENT"
+    assert failed["decision"] == "REPRODUCTION_FAILED"
+    assert (tmp_path / "06_inlier_recovery_decision.json").is_file()
+    assert (tmp_path / "06_inlier_recovery_decision.txt").is_file()

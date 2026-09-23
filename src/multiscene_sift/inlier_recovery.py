@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -292,4 +293,101 @@ def evaluate_coordinate_validation(
             writer.writerow({"edge_i": edge[0], "edge_j": edge[1], **{
                 key: item.get(key) for key in fields[2:]
             }})
+    return result
+
+
+def freeze_global_adjustment_inliers(
+    replayed_summaries: list[dict],
+    gate: dict,
+    coordinate_validation: dict,
+    frozen_config: dict,
+    reference_idx: int,
+    output_dir: str | Path,
+) -> dict:
+    """Write the sole point artifact allowed as global-adjustment input."""
+    if gate.get("overall") != "REPRODUCTION_ACCEPTED":
+        raise ValueError("REPRODUCTION_FAILED")
+    if coordinate_validation.get("overall") != "COORDINATE_RECOVERY_VALID":
+        raise ValueError("COORDINATE_RECOVERY_INVALID")
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "05_global_adjustment_inliers.csv"
+    gate_by_edge = {tuple(item["edge"]): item for item in gate["edges"]}
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        fields = ["edge_i", "edge_j", "point_id", "x_i", "y_i", "x_j", "y_j",
+                  "coordinate_frame", "source_pair_artifact", "reproduction_state"]
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for summary in replayed_summaries:
+            edge = tuple(summary["edge"])
+            state = gate_by_edge[edge]["state"]
+            with Path(summary["inliers_csv"]).open("r", newline="", encoding="utf-8") as source:
+                for row in csv.DictReader(source):
+                    writer.writerow({
+                        "edge_i": edge[0], "edge_j": edge[1],
+                        "point_id": row["point_id"], "x_i": row["x_i"], "y_i": row["y_i"],
+                        "x_j": row["x_j"], "y_j": row["y_j"],
+                        "coordinate_frame": summary["coordinate_frame"],
+                        "source_pair_artifact": summary["inliers_csv"],
+                        "reproduction_state": state,
+                    })
+    digest = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+    manifest = {
+        "status": "READY_FOR_GLOBAL_ADJUSTMENT",
+        "scene_indices": sorted({int(x) for summary in replayed_summaries for x in summary["edge"]}),
+        "reference_idx": int(reference_idx),
+        "accepted_edges": [summary["edge"] for summary in replayed_summaries],
+        "point_count_per_edge": {
+            f"{summary['edge'][0]}-{summary['edge'][1]}": int(summary.get("inlier_count_exported", 0))
+            for summary in replayed_summaries
+        },
+        "coordinate_frame_semantics": "pair_common_grid pixels",
+        "transform_direction_semantics": "target_to_reference affine",
+        "frozen_config_hash": hashlib.sha256(
+            json.dumps(frozen_config, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+        "historical_artifact_references": ["00_historical_pair_baselines.json"],
+        "replay_artifact_references": [summary["inliers_csv"] for summary in replayed_summaries],
+        "overall_reproduction_status": gate["overall"],
+        "sha256": digest,
+    }
+    (out_dir / "05_global_adjustment_inliers_manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return manifest
+
+
+def write_inlier_recovery_decision(
+    gate: dict,
+    coordinate_validation: dict,
+    frozen_manifest: dict,
+    config_status: dict,
+    output_dir: str | Path,
+) -> dict:
+    """Persist the Task 0A final decision and its hard-stop reason."""
+    if config_status.get("status") == "FROZEN_CONFIG_INCOMPLETE":
+        decision = "FROZEN_CONFIG_INCOMPLETE"
+    elif gate.get("overall") != "REPRODUCTION_ACCEPTED":
+        decision = "REPRODUCTION_FAILED"
+    elif coordinate_validation.get("overall") != "COORDINATE_RECOVERY_VALID":
+        decision = "COORDINATE_RECOVERY_INVALID"
+    elif frozen_manifest.get("status") == "READY_FOR_GLOBAL_ADJUSTMENT":
+        decision = "READY_FOR_GLOBAL_ADJUSTMENT"
+    else:
+        decision = "COORDINATE_RECOVERY_INVALID"
+    result = {"decision": decision, "gate": gate, "coordinate_validation": coordinate_validation}
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "06_inlier_recovery_decision.json").write_text(
+        json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    text = {
+        "READY_FOR_GLOBAL_ADJUSTMENT": "All accepted edges reproduced and coordinate validation passed.",
+        "REPRODUCTION_FAILED": "At least one accepted edge failed historical reproduction.",
+        "COORDINATE_RECOVERY_INVALID": "Recovered coordinate frame or residual validation failed.",
+        "FROZEN_CONFIG_INCOMPLETE": "Frozen registration configuration is incomplete.",
+    }[decision]
+    (out_dir / "06_inlier_recovery_decision.txt").write_text(
+        f"{decision}\n{text}\n", encoding="utf-8"
+    )
     return result
