@@ -631,3 +631,43 @@ def write_global_transforms(transforms: dict[int, np.ndarray], output_path: str 
     ]}
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def evaluate_cycle_invariance_under_node_translation(
+    edge_relations: dict[tuple[int, int], tuple[float, float] | np.ndarray],
+    corrections: dict[int, tuple[float, float]],
+    cycle: list[int],
+) -> dict:
+    """Show that direct-observation cycle closure is unchanged by node shifts."""
+    if len(cycle) < 3 or cycle[0] == cycle[-1]:
+        raise ValueError("cycle must contain at least three distinct nodes")
+
+    def relation(i, j):
+        if (i, j) in edge_relations:
+            return np.asarray(edge_relations[(i, j)], dtype=np.float64)
+        if (j, i) in edge_relations:
+            return -np.asarray(edge_relations[(j, i)], dtype=np.float64)
+        raise ValueError(f"missing cycle edge {i}-{j}")
+
+    before = np.zeros(2, dtype=np.float64)
+    after = np.zeros(2, dtype=np.float64)
+    for i, j in zip(cycle, cycle[1:] + [cycle[0]]):
+        edge_relation = relation(i, j)
+        before += edge_relation
+        ci = np.asarray(corrections.get(i, (0.0, 0.0)), dtype=np.float64)
+        cj = np.asarray(corrections.get(j, (0.0, 0.0)), dtype=np.float64)
+        after += edge_relation + ci - cj
+    return {
+        "cycle": [int(scene) for scene in cycle],
+        "closure_before_px": before.tolist(),
+        "closure_after_px": after.tolist(),
+        "closure_delta_px": (after - before).tolist(),
+        "invariant": bool(np.allclose(before, after, atol=1e-10, rtol=0.0)),
+    }
+
+
+def write_cycle_invariance(result: dict, output_path: str | Path) -> Path:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path

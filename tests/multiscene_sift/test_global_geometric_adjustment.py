@@ -713,3 +713,22 @@ def test_translation_before_after_evaluation_uses_same_point_ids():
     assert list(before["point_id"]) == list(after["point_id"]) == [0, 1]
     assert list(before["residual_px"]) == [np.sqrt(125.0), np.sqrt(125.0)]
     assert np.allclose(after["residual_px"], [0.0, 0.0])
+
+
+def test_cycle_closure_is_invariant_under_node_translation():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import (
+        evaluate_cycle_invariance_under_node_translation,
+    )
+
+    result = evaluate_cycle_invariance_under_node_translation(
+        {(0, 1): np.array([10.0, 0.0]),
+         (1, 4): np.array([0.0, 20.0]),
+         (0, 4): np.array([7.0, 3.0])},
+        {0: (4.0, -2.0), 1: (-3.0, 6.0), 4: (0.0, 0.0)},
+        [0, 1, 4],
+    )
+
+    assert result["invariant"] is True
+    assert np.allclose(result["closure_before_px"], result["closure_after_px"])
+    assert np.allclose(result["closure_before_px"], [3.0, 17.0])
