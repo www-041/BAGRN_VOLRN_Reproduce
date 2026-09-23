@@ -833,30 +833,79 @@ def synthetic_accumulation_check(n_nodes: int = 5, bias_px: float = 1.0) -> dict
     """Synthetic chain/loop check for path drift versus simultaneous adjustment."""
     if n_nodes < 3:
         raise ValueError("synthetic chain needs at least three nodes")
+
+    # The MST transforms carry the accumulated chain drift.  Every scene is
+    # otherwise expected to have the identity global transform, so the
+    # translation in this synthetic frame is the actual node-position error.
+    transforms = {}
+    for scene in range(n_nodes):
+        transform = np.eye(3, dtype=np.float64)
+        transform[0, 2] = float(scene) * float(bias_px)
+        transforms[scene] = transform
+
     observations = {}
     for i in range(n_nodes - 1):
         observations[(i, i + 1)] = {
-            "x_i": np.array([[-bias_px, 0.0]]), "x_j": np.array([[0.0, 0.0]])
+            "x_i": np.array([[bias_px, 0.0]], dtype=np.float64),
+            "x_j": np.array([[0.0, 0.0]], dtype=np.float64),
+            "is_tree_edge": True,
         }
     for j in range(2, n_nodes):
         observations[(0, j)] = {
-            "x_i": np.array([[0.0, 0.0]]), "x_j": np.array([[0.0, 0.0]])
+            "x_i": np.array([[0.0, 0.0]], dtype=np.float64),
+            "x_j": np.array([[0.0, 0.0]], dtype=np.float64),
+            "is_tree_edge": False,
         }
-    transforms = {scene: np.eye(3) for scene in range(n_nodes)}
+
+    initial_residuals = evaluate_edge_point_residuals(transforms, observations)
+    initial_rows = initial_residuals.to_dict(orient="records")
+    tree_errors = [
+        float(row["residual_px"])
+        for row in initial_rows
+        if bool(row["is_tree_edge"])
+    ]
+    loop_errors = [
+        float(row["residual_px"])
+        for row in initial_rows
+        if not bool(row["is_tree_edge"])
+    ]
+
     system = build_translation_adjustment_system(transforms, observations, reference_idx=0)
     solution = solve_translation_adjustment(system)
-    mst_error = np.arange(n_nodes, dtype=np.float64) * bias_px
-    adjusted_error = mst_error.copy()
-    for scene, values in solution["scene_corrections_px"].items():
-        adjusted_error[int(scene)] += values[0]
+
+    corrections = {
+        int(scene): (float(values[0]), float(values[1]))
+        for scene, values in solution["scene_corrections_px"].items()
+    }
+    adjusted_transforms = apply_translation_corrections(transforms, corrections)
+
+    def node_translation_error(matrix: np.ndarray) -> float:
+        return float(np.hypot(float(matrix[0, 2]), float(matrix[1, 2])))
+
+    scene_mst_error = [node_translation_error(transforms[scene]) for scene in range(n_nodes)]
+    scene_correction_magnitude = [
+        float(np.hypot(*corrections.get(scene, (0.0, 0.0))))
+        for scene in range(n_nodes)
+    ]
+    scene_adjusted_error = [
+        node_translation_error(adjusted_transforms[scene]) for scene in range(n_nodes)
+    ]
+
     return {
-        "n_nodes": n_nodes,
-        "bias_px": bias_px,
-        "mst_endpoint_error_px": float(abs(mst_error[-1] - mst_error[0])),
-        "adjusted_endpoint_error_px": float(abs(adjusted_error[-1] - adjusted_error[0])),
-        "mst_global_rms_px": float(np.sqrt(np.mean(mst_error ** 2))),
-        "adjusted_global_rms_px": float(np.sqrt(np.mean(adjusted_error ** 2))),
-        "scene_adjusted_error_px": adjusted_error.tolist(),
+        "n_nodes": int(n_nodes),
+        "bias_px": float(bias_px),
+        "ground_truth": "identity global transform for every scene",
+        "mst_endpoint_error_px": float(scene_mst_error[-1]),
+        "endpoint_correction_magnitude_px": float(scene_correction_magnitude[-1]),
+        "adjusted_endpoint_error_px": float(scene_adjusted_error[-1]),
+        "mst_global_rms_px": float(np.sqrt(np.mean(np.square(scene_mst_error)))),
+        "adjusted_global_rms_px": float(np.sqrt(np.mean(np.square(scene_adjusted_error)))),
+        "scene_mst_error_px": scene_mst_error,
+        "scene_correction_magnitude_px": scene_correction_magnitude,
+        "scene_adjusted_error_px": scene_adjusted_error,
+        "initial_tree_edge_max_residual_px": float(max(tree_errors, default=0.0)),
+        "initial_loop_edge_max_residual_px": float(max(loop_errors, default=0.0)),
+        "solver_status": solution["status"],
     }
 
 
@@ -866,10 +915,23 @@ def write_synthetic_accumulation_check(result: dict, output_dir: str | Path) -> 
     pp = out / "14_synthetic_accumulation_check.png"
     jp.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     import matplotlib.pyplot as plt
+    plot_result = result
+    if "cases" in result:
+        plot_result = result["cases"].get("5_nodes", result)
+    path_length = np.arange(plot_result["n_nodes"], dtype=int)
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(range(result["n_nodes"]), np.arange(result["n_nodes"]), "o-", label="MST path error")
-    ax.plot(range(result["n_nodes"]), result["scene_adjusted_error_px"], "o-", label="Global adjustment")
-    ax.set_xlabel("scene index"); ax.set_ylabel("synthetic error (px)"); ax.legend(); ax.grid(alpha=0.25)
+    ax.plot(path_length, plot_result["scene_mst_error_px"], "o-", label="MST path error")
+    ax.plot(path_length, plot_result["scene_adjusted_error_px"], "o-", label="Global adjustment final error")
+    ax.plot(
+        path_length,
+        plot_result["scene_correction_magnitude_px"],
+        "o--",
+        label="Correction magnitude",
+    )
+    ax.set_xlabel("path length from reference (edges)")
+    ax.set_ylabel("node position error (px)")
+    ax.legend(); ax.grid(alpha=0.25)
+    ax.legend(); ax.grid(alpha=0.25)
     fig.tight_layout(); fig.savefig(pp, dpi=150); plt.close(fig)
     return {"json": jp, "png": pp}
 
