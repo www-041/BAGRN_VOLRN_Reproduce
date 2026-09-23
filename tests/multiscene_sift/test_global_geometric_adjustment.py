@@ -732,3 +732,31 @@ def test_cycle_closure_is_invariant_under_node_translation():
     assert result["invariant"] is True
     assert np.allclose(result["closure_before_px"], result["closure_after_px"])
     assert np.allclose(result["closure_before_px"], [3.0, 17.0])
+
+
+def test_translation_diagnostic_plots_distinguish_tree_and_non_tree_edges(tmp_path):
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import (
+        plot_mst_vs_translation_network,
+        plot_mst_vs_translation_residuals,
+    )
+
+    summary_before = {"per_edge": [
+        {"edge_i": 0, "edge_j": 1, "is_tree_edge": False, "p95_px": 10.0},
+        {"edge_i": 1, "edge_j": 2, "is_tree_edge": True, "p95_px": 2.0},
+    ]}
+    summary_after = {"per_edge": [
+        {"edge_i": 0, "edge_j": 1, "is_tree_edge": False, "p95_px": 5.0},
+        {"edge_i": 1, "edge_j": 2, "is_tree_edge": True, "p95_px": 3.0},
+    ]}
+    transforms = {0: np.eye(3), 1: np.array([[1, 0, 2], [0, 1, 1], [0, 0, 1.]]),
+                  2: np.array([[1, 0, 4], [0, 1, 1], [0, 0, 1.]])}
+
+    network = plot_mst_vs_translation_network(
+        transforms, [(1, 2)], [(0, 1), (1, 2)], {0: (0, 0), 1: (1, 2), 2: (0, 0)},
+        tmp_path / "network.png"
+    )
+    residuals = plot_mst_vs_translation_residuals(summary_before, summary_after, tmp_path / "residuals.png")
+
+    assert network.is_file()
+    assert residuals.is_file()

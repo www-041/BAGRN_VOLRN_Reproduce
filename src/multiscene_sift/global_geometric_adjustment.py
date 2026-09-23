@@ -671,3 +671,75 @@ def write_cycle_invariance(result: dict, output_path: str | Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def plot_mst_vs_translation_network(
+    mst_global_transforms: dict[int, np.ndarray],
+    tree_edges: list[tuple[int, int]],
+    accepted_edges: list[tuple[int, int]],
+    corrections: dict[int, tuple[float, float]],
+    output_path: str | Path,
+) -> Path:
+    import matplotlib.pyplot as plt
+
+    positions = {scene: np.asarray(matrix, dtype=float)[:2, 2]
+                 for scene, matrix in mst_global_transforms.items()}
+    fig, ax = plt.subplots(figsize=(8, 6))
+    tree_set = {tuple(sorted(edge)) for edge in tree_edges}
+    for edge in accepted_edges:
+        i, j = edge
+        xy_i, xy_j = positions[i], positions[j]
+        is_tree = tuple(sorted(edge)) in tree_set
+        ax.plot([xy_i[0], xy_j[0]], [xy_i[1], xy_j[1]],
+                color="tab:blue" if is_tree else "tab:orange",
+                linestyle="-" if is_tree else "--", linewidth=2,
+                label="MST tree edge" if is_tree and "MST tree edge" not in ax.get_legend_handles_labels()[1]
+                else ("non-tree edge" if not is_tree and "non-tree edge" not in ax.get_legend_handles_labels()[1] else None))
+    for scene, xy in positions.items():
+        ax.scatter(*xy, color="black", zorder=3)
+        ax.annotate(f"scene {scene}", xy, xytext=(5, 5), textcoords="offset points")
+        dx, dy = corrections.get(scene, (0.0, 0.0))
+        ax.arrow(xy[0], xy[1], dx, dy, color="tab:red", width=0.0,
+                 head_width=max(1.0, np.hypot(dx, dy) * 0.08), length_includes_head=True)
+    ax.set_title("MST and accepted edges with translation corrections")
+    ax.set_xlabel("global X")
+    ax.set_ylabel("global Y")
+    ax.legend()
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
+def plot_mst_vs_translation_residuals(
+    mst_summary: dict, translation_summary: dict, output_path: str | Path
+) -> Path:
+    import matplotlib.pyplot as plt
+
+    before = {(int(row["edge_i"]), int(row["edge_j"])): row
+              for row in mst_summary["per_edge"]}
+    after = {(int(row["edge_i"]), int(row["edge_j"])): row
+             for row in translation_summary["per_edge"]}
+    edges = sorted(before)
+    labels = [f"{i}-{j}" for i, j in edges]
+    x = np.arange(len(edges))
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.bar(x - 0.18, [before[e]["p95_px"] for e in edges], width=0.36, label="MST P95")
+    ax.bar(x + 0.18, [after[e]["p95_px"] for e in edges], width=0.36, label="Translation P95")
+    for index, edge in enumerate(edges):
+        if edge == (0, 1):
+            ax.axvspan(index - 0.5, index + 0.5, color="tab:red", alpha=0.08)
+    ax.set_xticks(x, labels)
+    ax.set_ylabel("P95 residual (px)")
+    ax.set_title("MST vs translation residuals by accepted edge")
+    ax.legend()
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
