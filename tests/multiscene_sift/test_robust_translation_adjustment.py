@@ -340,3 +340,59 @@ def test_decision_selects_lowest_max_edge_then_mean_rmse():
     )
     assert result["decision"] == "ROBUST_WEIGHTED_ADDS_VALUE"
     assert result["winner_variant"] == "QUALITY_HUBER"
+
+
+def test_dashboard_conclusion_contains_explicit_scope_limits():
+    from src.multiscene_sift.robust_translation_adjustment import (
+        build_robust_translation_conclusion,
+    )
+
+    equal = _decision_summary(19.0, 19.0, 10.0, 10.0)
+    result = {
+        "huber_delta_px": 3.0,
+        "variants": {
+            "EQUAL_L2": {"summary": equal, "solution": {"scene_corrections_px": {"0": [0.0, 0.0]}}},
+        },
+    }
+    conclusion = build_robust_translation_conclusion(
+        {"mst_summary": equal, "quality_weights": {}},
+        result,
+        {"EQUAL_L2": {"results": []}},
+        {"decision": "ROBUST_WEIGHTED_UNSTABLE", "candidate_evaluations": {}},
+    )
+    assert "CAN conclude" in conclusion
+    assert "CANNOT conclude" in conclusion
+    cannot = " ".join(conclusion["CANNOT conclude"])
+    assert "absolute geolocation correctness" in cannot
+    assert "1000-scene scalability" in cannot
+    assert "Full Affine" in conclusion["scope"]
+
+
+def test_dashboard_has_six_required_panels_and_excludes_affine_candidate():
+    from src.multiscene_sift.robust_translation_adjustment import (
+        build_robust_translation_dashboard,
+    )
+
+    equal = _decision_summary(19.0, 19.0, 10.0, 10.0)
+    result = {
+        "huber_delta_px": 3.0,
+        "variants": {
+            "EQUAL_L2": {"summary": equal, "solution": {"scene_corrections_px": {"0": [0.0, 0.0]}}},
+            "FULL_AFFINE": {"summary": equal, "solution": {}},
+        },
+    }
+    dashboard = build_robust_translation_dashboard(
+        {"mst_summary": equal, "quality_weights": {}},
+        result,
+        {"EQUAL_L2": {"results": []}},
+        {"decision": "ROBUST_WEIGHTED_UNSTABLE", "candidate_evaluations": {}},
+    )
+    assert dashboard["panel_names"] == [
+        "per_edge_p95",
+        "triangle_residuals",
+        "prior_weights",
+        "huber_factors",
+        "scene_corrections",
+        "cycle_sensitivity",
+    ]
+    assert "FULL_AFFINE" not in dashboard["methods"]

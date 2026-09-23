@@ -954,3 +954,260 @@ def write_robust_translation_decision(decision: dict, output_dir: str | Path) ->
         + "", encoding="utf-8"
     )
     return {"json": json_path, "txt": txt_path}
+
+
+_DASHBOARD_PANEL_NAMES = [
+    "per_edge_p95",
+    "triangle_residuals",
+    "prior_weights",
+    "huber_factors",
+    "scene_corrections",
+    "cycle_sensitivity",
+]
+
+
+def _dashboard_summary(method: str, inputs: dict, result: dict) -> dict:
+    if method == "MST":
+        return inputs.get("mst_summary", {})
+    variant = result.get("variants", {}).get(method, {})
+    return variant.get("summary", {})
+
+
+def _dashboard_methods(inputs: dict, result: dict) -> list[str]:
+    methods = ["MST"]
+    for name in result.get("variants", {}):
+        if "AFFINE" not in str(name).upper() and name not in methods:
+            methods.append(name)
+    return methods
+
+
+def _dashboard_edge_p95(summary: dict) -> dict[str, float]:
+    return {
+        _edge_label((int(row["edge_i"]), int(row["edge_j"]))): float(row["p95_px"])
+        for row in summary.get("per_edge", [])
+    }
+
+
+def _dashboard_corrections(solution: dict) -> dict[str, list[float]]:
+    output = {}
+    for scene, correction in solution.get("scene_corrections_px", {}).items():
+        values = np.asarray(correction, dtype=np.float64).reshape(-1)
+        output[str(scene)] = [float(values[0]), float(values[1])] if values.size >= 2 else [0.0, 0.0]
+    return output
+
+
+def build_robust_translation_conclusion(
+    inputs: dict,
+    result: dict,
+    sensitivity: dict,
+    decision: dict,
+) -> dict:
+    """Build a restrained research interpretation from frozen diagnostics."""
+    variants = result.get("variants", {})
+    equal_summary = _dashboard_summary("EQUAL_L2", inputs, result)
+    equal_zero_one = equal_summary.get("zero_one", {}).get("p95_px")
+    equal_edge = equal_summary.get("edge_balanced", {})
+    winner = decision.get("winner_variant")
+    winner_summary = variants.get(winner, {}).get("summary", {}) if winner else {}
+    winner_edge = winner_summary.get("edge_balanced", {})
+    robust_factor_floor_edges = []
+    for name, variant in variants.items():
+        if not bool(variant.get("config", {}).get("huber", False)):
+            continue
+        for edge, factor in variant.get("solution", {}).get("final_edge_factors", {}).items():
+            if float(factor) <= 0.1 + 1e-12:
+                robust_factor_floor_edges.append({"variant": name, "edge": str(edge)})
+    high_sensitivity_variants = [
+        name for name, payload in sensitivity.items()
+        if _candidate_sensitivity_is_high(payload)
+    ]
+    answers = {
+        "passed_candidate": winner,
+        "zero_one_p95_equal_l2_px": equal_zero_one,
+        "zero_one_p95_winner_px": winner_summary.get("zero_one", {}).get("p95_px") if winner else None,
+        "triangle_p95_equal_l2_px": {
+            edge: _dashboard_edge_p95(equal_summary).get(edge)
+            for edge in ("0-1", "0-4", "1-4")
+        },
+        "max_edge_p95_equal_l2_px": equal_edge.get("max_edge_p95_px"),
+        "max_edge_p95_winner_px": winner_edge.get("max_edge_p95_px") if winner else None,
+        "mean_edge_rmse_equal_l2_px": equal_edge.get("mean_edge_rmse_px"),
+        "mean_edge_rmse_winner_px": winner_edge.get("mean_edge_rmse_px") if winner else None,
+        "robust_factor_floor_edges": robust_factor_floor_edges,
+        "high_sensitivity_variants": high_sensitivity_variants,
+        "full_affine_excluded": True,
+    }
+    can_conclude = [
+        f"The frozen five-scene translation-only decision is {decision.get('decision')}.",
+        "Equal-L2 remains the comparison baseline and all candidate metrics use the same frozen point observations.",
+        "Cycle sensitivity is reported only for the redundant 0-1/0-4/1-4 triangle.",
+    ]
+    cannot_conclude = [
+        "cannot claim absolute geolocation correctness from these residuals",
+        "cannot claim 1000-scene scalability from five scenes",
+        "cannot call robust weighting a main innovation",
+        "cannot claim an edge is physically wrong solely because Huber downweighted it",
+    ]
+    return {
+        "decision": decision.get("decision"),
+        "winner_variant": winner,
+        "answers": answers,
+        "CAN conclude": can_conclude,
+        "CANNOT conclude": cannot_conclude,
+        "scope": "Full Affine is historical context only and is excluded from candidate selection; no production integration is implied.",
+    }
+
+
+def build_robust_translation_dashboard(
+    inputs: dict,
+    result: dict,
+    sensitivity: dict,
+    decision: dict,
+) -> dict:
+    """Prepare the six dashboard panels without adding new optimization criteria."""
+    methods = _dashboard_methods(inputs, result)
+    edge_labels = sorted({
+        edge
+        for method in methods
+        for edge in _dashboard_edge_p95(_dashboard_summary(method, inputs, result))
+    })
+    per_edge_p95 = {
+        method: _dashboard_edge_p95(_dashboard_summary(method, inputs, result))
+        for method in methods
+    }
+    triangle_edges = ["0-1", "0-4", "1-4"]
+    quality_weights = result.get("quality_weights", inputs.get("quality_weights", {}))
+    prior_weights = {
+        _edge_label(_edge_key(edge)): float(payload.get("weight", payload))
+        for edge, payload in quality_weights.items()
+    }
+    huber_factors = {}
+    for name, variant in result.get("variants", {}).items():
+        if bool(variant.get("config", {}).get("huber", False)):
+            huber_factors[name] = {
+                str(edge): float(factor)
+                for edge, factor in variant.get("solution", {}).get("final_edge_factors", {}).items()
+            }
+    scene_corrections = {
+        name: _dashboard_corrections(value.get("solution", {}))
+        for name, value in result.get("variants", {}).items()
+        if "AFFINE" not in str(name).upper()
+    }
+    cycle_sensitivity = {
+        name: {
+            _edge_label(_edge_key(row["removed_edge"])): float(row["max_correction_delta_px"])
+            for row in payload.get("results", [])
+        }
+        for name, payload in sensitivity.items()
+    }
+    return {
+        "panel_names": list(_DASHBOARD_PANEL_NAMES),
+        "methods": methods,
+        "edge_labels": edge_labels,
+        "per_edge_p95": per_edge_p95,
+        "triangle_residuals": {
+            method: {edge: values.get(edge) for edge in triangle_edges}
+            for method, values in per_edge_p95.items()
+        },
+        "prior_weights": prior_weights,
+        "huber_factors": huber_factors,
+        "scene_corrections": scene_corrections,
+        "cycle_sensitivity": cycle_sensitivity,
+        "conclusion": build_robust_translation_conclusion(inputs, result, sensitivity, decision),
+    }
+
+
+def write_robust_translation_dashboard(
+    inputs: dict,
+    result: dict,
+    sensitivity: dict,
+    decision: dict,
+    output_dir: str | Path,
+) -> dict:
+    """Write the Task 9 dashboard and a machine-/human-readable conclusion."""
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    dashboard = build_robust_translation_dashboard(inputs, result, sensitivity, decision)
+    json_path = out / "08_robust_translation_conclusion.json"
+    txt_path = out / "08_robust_translation_conclusion.txt"
+    png_path = out / "08_robust_translation_dashboard.png"
+    json_path.write_text(
+        json.dumps(_json_safe(dashboard["conclusion"]), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    conclusion = dashboard["conclusion"]
+    txt_lines = [f"decision={conclusion['decision']}", f"winner_variant={conclusion.get('winner_variant')}" , "", "CAN conclude"]
+    txt_lines.extend(f"- {item}" for item in conclusion["CAN conclude"])
+    txt_lines.extend(["", "CANNOT conclude"])
+    txt_lines.extend(f"- {item}" for item in conclusion["CANNOT conclude"])
+    txt_lines.extend(["", conclusion["scope"]])
+    txt_path.write_text("\n".join(txt_lines) + "\n", encoding="utf-8")
+
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 3, figsize=(16, 9))
+    ax = axes[0, 0]
+    x = np.arange(len(dashboard["edge_labels"]))
+    width = 0.8 / max(len(dashboard["methods"]), 1)
+    for index, method in enumerate(dashboard["methods"]):
+        values = [dashboard["per_edge_p95"][method].get(edge, np.nan) for edge in dashboard["edge_labels"]]
+        ax.bar(x + index * width, values, width, label=method)
+    ax.set_xticks(x + width * max(len(dashboard["methods"]) - 1, 0) / 2, dashboard["edge_labels"], rotation=45)
+    ax.set_title("A. Per-edge P95")
+    ax.set_ylabel("pixels")
+    ax.legend(fontsize=7)
+
+    ax = axes[0, 1]
+    triangle_edges = ["0-1", "0-4", "1-4"]
+    for method, values in dashboard["triangle_residuals"].items():
+        ax.plot(triangle_edges, [values.get(edge, np.nan) for edge in triangle_edges], marker="o", label=method)
+    ax.set_title("B. Triangle residuals")
+    ax.set_ylabel("P95 pixels")
+    ax.legend(fontsize=7)
+
+    ax = axes[0, 2]
+    labels = list(dashboard["prior_weights"])
+    ax.bar(labels, [dashboard["prior_weights"][label] for label in labels])
+    ax.axhline(1.0, color="black", linewidth=0.8)
+    ax.set_title("C. Final intrinsic prior weights")
+    ax.set_ylim(0, 2.2)
+    ax.tick_params(axis="x", rotation=45)
+
+    ax = axes[1, 0]
+    factor_labels = sorted({label for values in dashboard["huber_factors"].values() for label in values})
+    x = np.arange(len(factor_labels))
+    for index, (method, values) in enumerate(dashboard["huber_factors"].items()):
+        ax.bar(x + index * width, [values.get(label, np.nan) for label in factor_labels], width, label=method)
+    ax.axhline(0.1, color="red", linestyle="--", linewidth=0.8)
+    ax.set_title("D. Final Huber factors")
+    ax.set_xticks(x + width * max(len(dashboard["huber_factors"]) - 1, 0) / 2, factor_labels, rotation=45)
+    ax.set_ylim(0, 1.1)
+    ax.legend(fontsize=7)
+
+    ax = axes[1, 1]
+    correction_methods = [name for name in dashboard["scene_corrections"] if name != "EQUAL_L2"]
+    for method in correction_methods:
+        corrections = dashboard["scene_corrections"][method]
+        for scene, (dx, dy) in sorted(corrections.items()):
+            ax.arrow(0, 0, dx, dy, alpha=0.4, length_includes_head=True)
+            ax.text(dx, dy, f"{method}:{scene}", fontsize=6)
+    ax.axhline(0, color="black", linewidth=0.5)
+    ax.axvline(0, color="black", linewidth=0.5)
+    ax.set_title("E. Scene correction vectors")
+    ax.set_xlabel("dx (px)")
+    ax.set_ylabel("dy (px)")
+
+    ax = axes[1, 2]
+    labels = sorted({label for values in dashboard["cycle_sensitivity"].values() for label in values})
+    x = np.arange(len(labels))
+    for index, (method, values) in enumerate(dashboard["cycle_sensitivity"].items()):
+        ax.bar(x + index * width, [values.get(label, np.nan) for label in labels], width, label=method)
+    ax.axhline(10.0, color="red", linestyle="--", linewidth=0.8)
+    ax.set_title("F. Cycle sensitivity")
+    ax.set_ylabel("max correction delta (px)")
+    ax.set_xticks(x + width * max(len(dashboard["cycle_sensitivity"]) - 1, 0) / 2, labels, rotation=45)
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    fig.savefig(png_path, dpi=150)
+    plt.close(fig)
+    return {"json": json_path, "txt": txt_path, "png": png_path}

@@ -15,6 +15,7 @@ from src.multiscene_sift.robust_translation_adjustment import (
     synthetic_robust_translation_check,
     write_frozen_baseline,
     write_cycle_sensitivity,
+    write_robust_translation_dashboard,
     write_robust_translation_decision,
     write_synthetic_robustness,
 )
@@ -51,6 +52,12 @@ def main(argv: list[str] | None = None) -> int:
         sensitivity,
     )
     write_robust_translation_decision(decision, args.output_dir)
+    write_robust_translation_dashboard(inputs, result, sensitivity, decision, args.output_dir)
+    if decision.get("decision") != "ROBUST_WEIGHTED_ADDS_VALUE":
+        (args.output_dir / "10_production_integration.txt").write_text(
+            "SKIPPED_DECISION_GATE\n",
+            encoding="utf-8",
+        )
     summary = {
         "baseline_reproduction_status": result["baseline_reproduction_status"],
         "baseline_reproduction": result["baseline_reproduction"],
