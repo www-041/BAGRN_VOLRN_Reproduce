@@ -853,3 +853,104 @@ def write_synthetic_robustness(result: dict, output_dir: str | Path) -> dict:
     fig.savefig(png_path, dpi=150)
     plt.close(fig)
     return {"json": json_path, "png": png_path}
+
+
+def _candidate_parts(candidate: dict) -> tuple[dict, dict]:
+    if "summary" in candidate and "solution" in candidate:
+        return candidate["summary"], candidate["solution"]
+    return candidate, candidate.get("solution", {})
+
+
+def _candidate_sensitivity_is_high(payload: dict | None) -> bool:
+    if not payload:
+        return False
+    return any(item.get("classification") == "HIGHLY_SENSITIVE" for item in payload.get("results", []))
+
+
+def decide_robust_translation_candidate(
+    equal_l2_summary: dict,
+    candidate_summaries: dict[str, dict],
+    sensitivity: dict,
+) -> dict:
+    """Apply the frozen hard gates and lexicographic candidate selection."""
+    if equal_l2_summary.get("baseline_reproduction_status") == "BASELINE_REPRODUCTION_FAILED":
+        return {"decision": "BASELINE_REPRODUCTION_FAILED", "candidate_evaluations": {}}
+    baseline = equal_l2_summary
+    baseline_zero = float(baseline["zero_one"]["p95_px"])
+    baseline_max = float(baseline["edge_balanced"]["max_edge_p95_px"])
+    baseline_mean = float(baseline["edge_balanced"]["mean_edge_rmse_px"])
+    baseline_tree = float(baseline["tree_edges"]["mean_edge_p95_px"])
+    evaluations = {}
+    eligible = []
+    any_high_sensitivity = False
+    for name, candidate in candidate_summaries.items():
+        summary, solution = _candidate_parts(candidate)
+        sensitivity_payload = sensitivity.get(name)
+        high_sensitivity = _candidate_sensitivity_is_high(sensitivity_payload)
+        any_high_sensitivity = any_high_sensitivity or high_sensitivity
+        edge_p95 = [float(row["p95_px"]) for row in summary.get("per_edge", [])]
+        solver_ok = solution.get("status") == "OK"
+        converged = bool(solution.get("converged", False))
+        hard_gates = {
+            "solver_status_ok": solver_ok,
+            "converged": converged,
+            "zero_one_not_worse": float(summary["zero_one"]["p95_px"]) <= baseline_zero,
+            "max_edge_not_worse": float(summary["edge_balanced"]["max_edge_p95_px"]) <= baseline_max,
+            "mean_edge_rmse_not_worse": float(summary["edge_balanced"]["mean_edge_rmse_px"]) <= baseline_mean,
+            "no_edge_exceeds_baseline_max": bool(edge_p95) and max(edge_p95) <= baseline_max,
+            "cycle_not_highly_sensitive": not high_sensitivity,
+        }
+        max_improvement = 1.0 - float(summary["edge_balanced"]["max_edge_p95_px"]) / baseline_max
+        mean_improvement = 1.0 - float(summary["edge_balanced"]["mean_edge_rmse_px"]) / baseline_mean
+        tree_improvement = 1.0 - float(summary["tree_edges"]["mean_edge_p95_px"]) / baseline_tree
+        useful = {
+            "max_edge_p95_improves_10pct": max_improvement >= 0.10,
+            "mean_edge_rmse_improves_10pct": mean_improvement >= 0.10,
+            "tree_p95_improves_20pct_without_zero_one_worsening": (
+                tree_improvement >= 0.20 and hard_gates["zero_one_not_worse"]
+            ),
+        }
+        is_eligible = all(hard_gates.values())
+        if is_eligible and any(useful.values()):
+            eligible.append((
+                float(summary["edge_balanced"]["max_edge_p95_px"]),
+                float(summary["edge_balanced"]["mean_edge_rmse_px"]),
+                float(summary["zero_one"]["p95_px"]),
+                name,
+            ))
+        evaluations[name] = {
+            "hard_gates": hard_gates,
+            "minimum_useful_improvement": useful,
+            "eligible": bool(is_eligible and any(useful.values())),
+            "max_edge_p95_improvement": float(max_improvement),
+            "mean_edge_rmse_improvement": float(mean_improvement),
+            "tree_edge_p95_improvement": float(tree_improvement),
+        }
+    if eligible:
+        eligible.sort()
+        winner = eligible[0][3]
+        return {
+            "decision": "ROBUST_WEIGHTED_ADDS_VALUE",
+            "winner_variant": winner,
+            "candidate_evaluations": evaluations,
+            "selection_order": ["lowest max edge P95", "lowest mean edge RMSE", "lowest 0-1 P95"],
+        }
+    if any_high_sensitivity:
+        decision = "ROBUST_WEIGHTED_UNSTABLE"
+    else:
+        decision = "NO_ROBUST_WEIGHTED_IMPROVEMENT"
+    return {"decision": decision, "candidate_evaluations": evaluations}
+
+
+def write_robust_translation_decision(decision: dict, output_dir: str | Path) -> dict:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    json_path = out / "07_robust_translation_decision.json"
+    txt_path = out / "07_robust_translation_decision.txt"
+    json_path.write_text(json.dumps(_json_safe(decision), indent=2, ensure_ascii=False), encoding="utf-8")
+    txt_path.write_text(
+        f"decision={decision.get('decision')}\n"
+        + (f"winner_variant={decision.get('winner_variant')}\n" if decision.get("winner_variant") else "")
+        + "", encoding="utf-8"
+    )
+    return {"json": json_path, "txt": txt_path}

@@ -285,3 +285,58 @@ def test_synthetic_case_b_conflicting_edge_is_downweighted_not_deleted():
     assert case["equal_huber_reliable_edge_mean_p95_px"] < case["equal_l2_reliable_edge_mean_p95_px"]
     assert case["equal_huber_conflicting_edge_factor"] >= 0.1
     assert case["equal_huber_conflicting_edge_factor"] < 1.0
+
+
+def _decision_summary(zero_one_p95, max_edge_p95, mean_edge_rmse, tree_p95):
+    return {
+        "zero_one": {"p95_px": zero_one_p95},
+        "edge_balanced": {
+            "max_edge_p95_px": max_edge_p95,
+            "mean_edge_rmse_px": mean_edge_rmse,
+        },
+        "tree_edges": {"mean_edge_p95_px": tree_p95},
+        "per_edge": [
+            {"edge_i": 0, "edge_j": 1, "p95_px": zero_one_p95},
+            {"edge_i": 0, "edge_j": 4, "p95_px": max_edge_p95},
+        ],
+    }
+
+
+def _decision_candidate(summary):
+    return {"summary": summary, "solution": {"status": "OK", "converged": True}}
+
+
+def test_candidate_that_restores_tree_edges_but_worsens_zero_one_is_rejected():
+    from src.multiscene_sift.robust_translation_adjustment import (
+        decide_robust_translation_candidate,
+    )
+
+    equal = _decision_summary(19.0, 19.0, 10.0, 10.0)
+    bad = _decision_summary(30.0, 18.0, 9.0, 2.0)
+    result = decide_robust_translation_candidate(
+        equal,
+        {"EQUAL_HUBER": _decision_candidate(bad)},
+        {"EQUAL_HUBER": {"results": [{"classification": "STABLE"}]}},
+    )
+    assert result["decision"] == "NO_ROBUST_WEIGHTED_IMPROVEMENT"
+    assert result["candidate_evaluations"]["EQUAL_HUBER"]["eligible"] is False
+
+
+def test_decision_selects_lowest_max_edge_then_mean_rmse():
+    from src.multiscene_sift.robust_translation_adjustment import (
+        decide_robust_translation_candidate,
+    )
+
+    equal = _decision_summary(19.0, 20.0, 10.0, 10.0)
+    first = _decision_summary(18.0, 15.0, 9.0, 8.0)
+    second = _decision_summary(17.0, 14.0, 9.5, 8.0)
+    result = decide_robust_translation_candidate(
+        equal,
+        {"QUALITY_L2": _decision_candidate(first), "QUALITY_HUBER": _decision_candidate(second)},
+        {
+            "QUALITY_L2": {"results": [{"classification": "STABLE"}]},
+            "QUALITY_HUBER": {"results": [{"classification": "STABLE"}]},
+        },
+    )
+    assert result["decision"] == "ROBUST_WEIGHTED_ADDS_VALUE"
+    assert result["winner_variant"] == "QUALITY_HUBER"

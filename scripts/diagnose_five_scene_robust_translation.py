@@ -11,9 +11,11 @@ from src.multiscene_sift.robust_translation_adjustment import (
     load_robust_translation_inputs,
     run_cycle_sensitivity,
     run_translation_variants,
+    decide_robust_translation_candidate,
     synthetic_robust_translation_check,
     write_frozen_baseline,
     write_cycle_sensitivity,
+    write_robust_translation_decision,
     write_synthetic_robustness,
 )
 
@@ -41,12 +43,21 @@ def main(argv: list[str] | None = None) -> int:
     write_cycle_sensitivity(sensitivity, args.output_dir)
     synthetic = synthetic_robust_translation_check()
     write_synthetic_robustness(synthetic, args.output_dir)
+    equal_summary = dict(inputs["equal_l2_summary"])
+    equal_summary["baseline_reproduction_status"] = result["baseline_reproduction_status"]
+    decision = decide_robust_translation_candidate(
+        equal_summary,
+        {name: value for name, value in result["variants"].items() if name != "EQUAL_L2"},
+        sensitivity,
+    )
+    write_robust_translation_decision(decision, args.output_dir)
     summary = {
         "baseline_reproduction_status": result["baseline_reproduction_status"],
         "baseline_reproduction": result["baseline_reproduction"],
         "huber_delta_px": result["huber_delta_px"],
         "cycle_sensitivity": sensitivity,
         "synthetic_robustness": synthetic,
+        "decision": decision,
         "variants": {
             name: {
                 "config": value["config"],
