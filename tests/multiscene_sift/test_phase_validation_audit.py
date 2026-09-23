@@ -20,6 +20,7 @@ from src.multiscene_sift.phase_validation_audit import (
     representation_stability,
     real_crop_injection_recovery,
     phase_peak_diagnostics,
+    compare_working_vs_suspect,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -248,3 +249,22 @@ def test_real_crop_injection_recovery_recovers_zero_one_three_six_ten_pixels():
 
 def test_peak_diagnostics_reports_unavailable_without_existing_surface():
     assert phase_peak_diagnostics({})["status"] == "NOT_AVAILABLE_IN_CURRENT_HELPER"
+
+
+def test_working_vs_suspect_comparison_rejects_reported_shift_when_zero_wins():
+    result = compare_working_vs_suspect({
+        "edge": "2-5", "old_phase_median_px": 6.7,
+        "phase": {"magnitude_px": 6.7},
+        "counterfactual": {
+            "zero": {"gradient_ncc": 0.95, "raw_ncc": 0.96},
+            "reported": {"gradient_ncc": 0.60, "raw_ncc": 0.65},
+            "inverse": {"gradient_ncc": 0.55, "raw_ncc": 0.60},
+        },
+        "sweep": {"best_dx": 0, "best_dy": 0, "best_score": 0.95,
+                   "score_at_zero": 0.95, "phase_candidate": {"gradient_ncc": 0.60}},
+        "mask": {"V0_original": {"magnitude_px": 6.7}, "V1_erode_16": {"magnitude_px": 0.2}},
+        "representations": [{"representation": "R0_raw", "phase": {"magnitude_px": 6.7}},
+                             {"representation": "R2_gradient_magnitude", "phase": {"magnitude_px": 0.1}}],
+        "injection": [{"injected_dx": 0, "injected_dy": 0, "error_mag_px": 6.7}],
+    })
+    assert result["answer"] == "NOT_SUPPORTED_PHASE_ARTIFACT"

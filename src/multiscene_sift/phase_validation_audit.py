@@ -537,6 +537,64 @@ def phase_peak_diagnostics(existing_helper_result: dict) -> dict:
     }
 
 
+def compare_working_vs_suspect(edge_result: dict) -> dict:
+    """Compare independent evidence for one audit edge."""
+    counter = edge_result.get("counterfactual", {})
+    zero = counter.get("zero", {})
+    reported = counter.get("reported", {})
+    inverse = counter.get("inverse", {})
+    sweep = edge_result.get("sweep", {})
+    reported_improves = (
+        reported.get("gradient_ncc") is not None
+        and zero.get("gradient_ncc") is not None
+        and reported["gradient_ncc"] > zero["gradient_ncc"]
+        and reported.get("raw_ncc", -np.inf) > zero.get("raw_ncc", -np.inf)
+    )
+    sweep_near_reported = False
+    phase = edge_result.get("phase", {})
+    if sweep.get("best_dx") is not None and phase.get("dx_px") is not None:
+        sweep_near_reported = bool(np.hypot(
+            sweep["best_dx"] - phase["dx_px"], sweep["best_dy"] - phase["dy_px"]
+        ) <= 2.0)
+    zero_bias = any(
+        row.get("injected_dx") == 0 and row.get("injected_dy") == 0
+        and row.get("error_mag_px") is not None and row["error_mag_px"] > 3.0
+        for row in edge_result.get("injection", [])
+    )
+    mask = edge_result.get("mask", {})
+    mask_collapses = (
+        mask.get("V0_original", {}).get("magnitude_px") is not None
+        and mask.get("V1_erode_16", {}).get("magnitude_px") is not None
+        and mask["V0_original"]["magnitude_px"] > 5.0
+        and mask["V1_erode_16"]["magnitude_px"] < 1.0
+    )
+    repr_rows = edge_result.get("representations", [])
+    raw_mag = next((r["phase"].get("magnitude_px") for r in repr_rows if r.get("representation") == "R0_raw"), None)
+    grad_mag = next((r["phase"].get("magnitude_px") for r in repr_rows if r.get("representation") in {"R2_gradient_magnitude", "R4_edge_map"}), None)
+    representation_sensitive = raw_mag is not None and grad_mag is not None and raw_mag > 5.0 and grad_mag < 1.0
+    if reported_improves and sweep_near_reported:
+        answer = "SUPPORTED_AS_REAL_TRANSLATION"
+    elif (
+        not reported_improves
+        and sweep.get("best_dx") == 0 and sweep.get("best_dy") == 0
+        and (zero_bias or mask_collapses or representation_sensitive)
+    ):
+        answer = "NOT_SUPPORTED_PHASE_ARTIFACT"
+    else:
+        answer = "MIXED"
+    return {
+        "edge": edge_result.get("edge"),
+        "answer": answer,
+        "reported_improves_independent_metrics": reported_improves,
+        "sweep_near_reported": sweep_near_reported,
+        "zero_injection_bias": zero_bias,
+        "mask_boundary_collapse": mask_collapses,
+        "representation_sensitive": representation_sensitive,
+        "counterfactual": {"zero": zero, "reported": reported, "inverse": inverse},
+        "sweep": sweep,
+    }
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)
