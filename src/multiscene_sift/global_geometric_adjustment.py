@@ -139,3 +139,87 @@ def write_historical_pair_baselines(baselines: dict, output_dir: str | Path) -> 
     path = out_dir / "00_historical_pair_baselines.json"
     path.write_text(json.dumps(baselines, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def load_frozen_registration_config(five_scene_run_dir: str | Path) -> dict:
+    """Recover the exact historical registration configuration.
+
+    Values absent from the run manifest are read only from the production
+    call-chain constants and implementations, never from this function's
+    defaults.
+    """
+    run_dir = Path(five_scene_run_dir)
+    config_path = run_dir / "run_config.json"
+    dataset_path = run_dir / "dataset_manifest.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(config_path)
+    if not dataset_path.is_file():
+        raise ValueError("FROZEN_CONFIG_INCOMPLETE: dataset_manifest.json")
+    run_config = _read_json(config_path, {})
+    required_run_keys = {
+        "matcher", "registration_band", "match_max_side", "random_seed",
+        "ransac_threshold",
+    }
+    missing = sorted(key for key in required_run_keys if key not in run_config)
+    if missing:
+        raise ValueError(
+            "FROZEN_CONFIG_INCOMPLETE: missing historical keys " + ", ".join(missing)
+        )
+
+    from src.multiscene_sift.pairwise import (
+        LOWE_RATIO,
+        MIN_INLIER_RATIO,
+        MIN_INLIERS,
+        RANSAC_MAX_TRIALS,
+        SIFT_NFEATURES,
+    )
+
+    dataset = _read_json(dataset_path, {})
+    nodata_by_band: dict[str, list[float | None]] = {}
+    for scene in dataset.get("scenes", []):
+        for band, metadata in scene.get("bands", {}).items():
+            if "nodata" not in metadata:
+                raise ValueError(f"FROZEN_CONFIG_INCOMPLETE: nodata for {band}")
+            value = metadata["nodata"]
+            if value not in nodata_by_band.setdefault(band, []):
+                nodata_by_band[band].append(value)
+
+    return {
+        "matcher": str(run_config["matcher"]).upper(),
+        "registration_band": run_config["registration_band"],
+        "match_max_side": int(run_config["match_max_side"]),
+        "sift_nfeatures": int(SIFT_NFEATURES),
+        "lowe_ratio": float(LOWE_RATIO),
+        "mutual_check": True,
+        "ransac_model": "AffineTransform",
+        "ransac_residual_threshold": float(run_config["ransac_threshold"]),
+        "ransac_max_trials": int(RANSAC_MAX_TRIALS),
+        "minimum_inliers": int(MIN_INLIERS),
+        "minimum_inlier_ratio": float(MIN_INLIER_RATIO),
+        "seed": int(run_config["random_seed"]),
+        "nodata_policy": nodata_by_band,
+        "valid_mask_policy": "nodata exclusion plus finite-value mask",
+        "pair_common_grid_policy": {
+            "resolution": "finer input resolution",
+            "extent": "union extent",
+            "data_resampling": "bilinear",
+            "mask_resampling": "nearest",
+            "match_view": "overlap crop, percentile stretch 2-98, shared max-side resize",
+        },
+        "source_artifacts": [str(config_path), str(dataset_path)],
+        "source_code": [
+            "src/multiscene_sift/pairwise.py",
+            "src/registration_benchmark/matchers/sift.py",
+            "src/registration_benchmark/geometry.py",
+            "src/registration_benchmark/common_grid.py",
+        ],
+    }
+
+
+def write_frozen_registration_config(config: dict, output_dir: str | Path) -> Path:
+    """Persist the frozen registration configuration artifact."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "01_frozen_registration_config.json"
+    path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path

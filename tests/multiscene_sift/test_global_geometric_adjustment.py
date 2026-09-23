@@ -109,3 +109,61 @@ def test_historical_baseline_writer_uses_required_artifact_name(tmp_path):
 
     assert path.name == "00_historical_pair_baselines.json"
     assert json.loads(path.read_text(encoding="utf-8"))["accepted_edges"] == []
+
+
+def test_frozen_config_contains_registration_call_chain_values(tmp_path):
+    from src.multiscene_sift.global_geometric_adjustment import (
+        load_frozen_registration_config,
+    )
+
+    (tmp_path / "run_config.json").write_text(
+        json.dumps(
+            {
+                "matcher": "sift",
+                "registration_band": "B14",
+                "match_max_side": 1600,
+                "random_seed": 0,
+                "ransac_threshold": 2.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "dataset_manifest.json").write_text(
+        json.dumps({"scenes": [{"bands": {"B14": {"nodata": 0.0}}}]}),
+        encoding="utf-8",
+    )
+
+    config = load_frozen_registration_config(tmp_path)
+
+    assert config["matcher"] == "SIFT"
+    assert config["lowe_ratio"] == 0.75
+    assert config["mutual_check"] is True
+    assert config["ransac_model"] == "AffineTransform"
+    assert config["ransac_max_trials"] == 5000
+    assert config["minimum_inliers"] == 20
+    assert config["minimum_inlier_ratio"] == 0.30
+    assert config["nodata_policy"]["B14"] == [0.0]
+
+
+def test_frozen_config_does_not_fill_missing_required_run_config_with_default(tmp_path):
+    from src.multiscene_sift.global_geometric_adjustment import (
+        load_frozen_registration_config,
+    )
+
+    (tmp_path / "run_config.json").write_text(
+        json.dumps({"matcher": "sift", "registration_band": "B14"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="FROZEN_CONFIG_INCOMPLETE"):
+        load_frozen_registration_config(tmp_path)
+
+
+def test_frozen_config_writer_uses_required_artifact_name(tmp_path):
+    from src.multiscene_sift.global_geometric_adjustment import (
+        write_frozen_registration_config,
+    )
+
+    path = write_frozen_registration_config({"matcher": "SIFT"}, tmp_path)
+
+    assert path.name == "01_frozen_registration_config.json"
