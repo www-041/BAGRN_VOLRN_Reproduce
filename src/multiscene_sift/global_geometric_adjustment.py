@@ -743,3 +743,63 @@ def plot_mst_vs_translation_residuals(
     fig.savefig(path, dpi=150)
     plt.close(fig)
     return path
+
+
+def decide_translation_adjustment(
+    mst_summary: dict, translation_summary: dict, solution: dict,
+) -> dict:
+    """Apply the plan's diagnostic-only translation decision gate."""
+    if solution.get("status") != "OK":
+        return {"decision": "TRANSLATION_SYSTEM_INVALID", "reason": solution.get("status")}
+    corrections = solution.get("scene_corrections_px", {})
+    finite = all(np.all(np.isfinite(values)) for values in corrections.values())
+    if not finite:
+        return {"decision": "TRANSLATION_SYSTEM_INVALID", "reason": "non-finite correction"}
+    before_mean = mst_summary["edge_balanced"]["mean_edge_rmse_px"]
+    after_mean = translation_summary["edge_balanced"]["mean_edge_rmse_px"]
+    before_max = mst_summary["edge_balanced"]["max_edge_p95_px"]
+    after_max = translation_summary["edge_balanced"]["max_edge_p95_px"]
+    before_zero = mst_summary["zero_one"]["p95_px"]
+    after_zero = translation_summary["zero_one"]["p95_px"]
+    mean_reduction = 1.0 - after_mean / before_mean
+    max_reduction = 1.0 - after_max / before_max
+    no_new_disaster = all(
+        row["p95_px"] <= before_max
+        for row in translation_summary["per_edge"]
+    )
+    effective = (
+        mean_reduction >= 0.20 and max_reduction >= 0.20
+        and after_zero < before_zero and no_new_disaster
+    )
+    partial = (
+        solution.get("objective_after") is not None
+        and solution.get("objective_before") is not None
+        and solution["objective_after"] < solution["objective_before"]
+        and after_zero < before_zero and after_max < before_max
+    )
+    decision = "TRANSLATION_ADJUSTMENT_EFFECTIVE" if effective else (
+        "TRANSLATION_ADJUSTMENT_PARTIAL" if partial else "TRANSLATION_ADJUSTMENT_NOT_USEFUL"
+    )
+    return {
+        "decision": decision,
+        "threshold_edge_balanced_reduction": 0.20,
+        "mean_edge_rmse_reduction": float(mean_reduction),
+        "max_edge_p95_reduction": float(max_reduction),
+        "zero_one_p95_before_px": before_zero,
+        "zero_one_p95_after_px": after_zero,
+        "no_new_edge_p95_disaster": no_new_disaster,
+    }
+
+
+def write_translation_decision(decision: dict, output_dir: str | Path) -> dict:
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    json_path = out_dir / "08_translation_decision.json"
+    txt_path = out_dir / "08_translation_decision.txt"
+    json_path.write_text(json.dumps(decision, indent=2, ensure_ascii=False), encoding="utf-8")
+    txt_path.write_text(
+        f"decision={decision.get('decision')}\n"
+        + "\n".join(f"{key}={value}" for key, value in decision.items() if key != "decision")
+        + "\n", encoding="utf-8"
+    )
+    return {"json": json_path, "txt": txt_path}

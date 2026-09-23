@@ -760,3 +760,25 @@ def test_translation_diagnostic_plots_distinguish_tree_and_non_tree_edges(tmp_pa
 
     assert network.is_file()
     assert residuals.is_file()
+
+
+def test_translation_decision_gate_distinguishes_partial_and_invalid():
+    from src.multiscene_sift.global_geometric_adjustment import decide_translation_adjustment
+
+    before = {"edge_balanced": {"mean_edge_rmse_px": 10.0, "max_edge_p95_px": 20.0},
+              "zero_one": {"p95_px": 30.0},
+              "per_edge": [{"edge_i": 0, "edge_j": 1, "p95_px": 30.0}]}
+    after = {"edge_balanced": {"mean_edge_rmse_px": 9.0, "max_edge_p95_px": 10.0},
+             "zero_one": {"p95_px": 10.0},
+             "per_edge": [{"edge_i": 0, "edge_j": 1, "p95_px": 10.0}]}
+    partial = decide_translation_adjustment(before, after, {
+        "status": "OK", "rank": 4, "objective_before": 100.0, "objective_after": 50.0,
+        "scene_corrections_px": {0: [0.0, 0.0]},
+    })
+    invalid = decide_translation_adjustment(before, after, {
+        "status": "RANK_DEFICIENT", "rank": 2, "objective_before": None, "objective_after": None,
+        "scene_corrections_px": {0: [0.0, 0.0]},
+    })
+
+    assert partial["decision"] == "TRANSLATION_ADJUSTMENT_PARTIAL"
+    assert invalid["decision"] == "TRANSLATION_SYSTEM_INVALID"
