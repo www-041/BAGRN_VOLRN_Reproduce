@@ -158,7 +158,11 @@ def run_audit(args: argparse.Namespace) -> dict:
         mask = mask_boundary_stress_test(ref, tgt, ref_mask, tgt_mask)
         representations = representation_stability(ref, tgt, inputs["joint_valid_mask"], include_eroded=True)
         injection = real_crop_injection_recovery(
-            inputs, [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (3, 2), (-3, -2), (6, 0), (0, -6), (10, 5)]
+            inputs,
+            [
+                (0, 0), (1, 0), (-1, 0), (0, 1), (0, -1),
+                (3, 0), (-3, 0), (6, 0), (0, -6), (10, 0), (0, -10),
+            ],
         )
         result = {
             "edge": edge,

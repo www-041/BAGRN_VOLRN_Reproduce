@@ -291,6 +291,22 @@ def test_real_crop_injection_recovery_recovers_zero_one_three_six_ten_pixels():
     assert {row["injected_dx"] for row in rows} == {0, 1, 3, 6, 10}
 
 
+def test_real_crop_injection_recovery_includes_exact_three_and_ten_pixel_axis_cases():
+    rng = np.random.default_rng(16)
+    ref = rng.normal(size=(192, 192)).astype(np.float32)
+    mask = np.ones_like(ref, dtype=bool)
+    inputs = {
+        "ref_crop": ref,
+        "warped_target_crop": ref.copy(),
+        "ref_valid_mask": mask,
+        "target_valid_mask": mask,
+        "joint_valid_mask": mask,
+    }
+    rows = real_crop_injection_recovery(inputs, [(0, 0), (3, 0), (10, 0)])
+    assert [row["injected_dx"] for row in rows] == [0, 3, 10]
+    assert all(row["error_mag_px"] < 0.5 for row in rows)
+
+
 def test_peak_diagnostics_reports_unavailable_without_existing_surface():
     assert phase_peak_diagnostics({})["status"] == "NOT_AVAILABLE_IN_CURRENT_HELPER"
 
