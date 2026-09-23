@@ -6,14 +6,17 @@ from src.multiscene_sift.local_affine_consistency_diagnostics import (
     LOCAL_AFFINE_EDGES,
     assign_points_to_overlap_regions,
     build_region_validation_crops,
+    build_diagnostic_evidence,
     compare_global_vs_local_pixel_alignment,
     compare_local_to_global_at_points,
     compare_partition_stability,
     cross_validate_local_affine,
+    classify_local_geometry_consistency,
     fit_region_local_affines,
     fit_affine_least_squares,
     load_local_affine_baseline,
     summarize_local_affine_variation,
+    write_diagnostic_artifacts,
 )
 
 
@@ -180,3 +183,72 @@ def test_partition_stability_classifies_matching_summary_contracts():
         "median_phase_improvement_px": 0.1,
     }
     assert compare_partition_stability(global_summary, global_summary)["state"] == "STABLE_GLOBAL_CONSISTENCY"
+
+
+def test_classifier_requires_independent_phase_evidence_for_local_geometry():
+    evidence = {
+        "edge": "2-5", "low_support": False,
+        "partition_stability": "STABLE_LOCAL_VARIATION",
+        "local_models_differ": True,
+        "multiple_region_phase_improvement": True,
+        "phase_validation_status": "OK",
+    }
+    assert classify_local_geometry_consistency(evidence) == "SPATIALLY_VARYING_LOCAL_GEOMETRY_SUPPORTED"
+
+
+def test_classifier_marks_low_support_without_lowering_point_threshold():
+    assert classify_local_geometry_consistency({"edge": "0-5", "low_support": True}) == "LOW_SUPPORT_EDGE"
+
+
+def test_classifier_distinguishes_global_consistency_from_unexplained_residual():
+    global_case = {
+        "low_support": False, "partition_stability": "STABLE_GLOBAL_CONSISTENCY",
+        "local_models_differ": False, "multiple_region_phase_improvement": False,
+        "phase_validation_status": "OK",
+    }
+    unexplained = dict(global_case, local_models_differ=True)
+    assert classify_local_geometry_consistency(global_case) == "GLOBAL_AFFINE_CONSISTENT"
+    assert classify_local_geometry_consistency(unexplained) == "LOCAL_MODEL_DOES_NOT_EXPLAIN_RESIDUAL"
+
+
+def test_build_evidence_preserves_edge_roles_and_cannot_conclude_limits():
+    evidence = build_diagnostic_evidence(
+        "2-5", "HIGH_INLIER_FALSE_GOOD", {"n_regions_fittable": 4},
+        {"n_regions_fittable": 8}, {"state": "MIXED_OR_UNSTABLE"},
+        {"summary": {"improvement_px": 0.0}}, {"n_regions_pixel_validated": 0},
+    )
+    assert evidence["edge_role"] == "HIGH_INLIER_FALSE_GOOD"
+    assert "production algorithm" in " ".join(evidence["cannot_conclude"])
+
+
+def _synthetic_artifact_result():
+    src, dst = _piecewise_points()
+    global_fit = fit_affine_least_squares(src, dst)
+    models2 = fit_region_local_affines(dst, src, global_fit["matrix_3x3"], (0, 0, 100, 50), 2)
+    models3 = fit_region_local_affines(dst, src, global_fit["matrix_3x3"], (0, 0, 100, 50), 3)
+    variation2 = summarize_local_affine_variation(models2, 2)
+    variation3 = summarize_local_affine_variation(models3, 3)
+    cv = cross_validate_local_affine(src, dst, n_splits=5, seed=17)
+    stability = compare_partition_stability(variation2, variation3)
+    evidence = build_diagnostic_evidence(
+        "2-5", "HIGH_INLIER_FALSE_GOOD", variation2, variation3, stability, cv, {},
+    )
+    return {"2-5": {
+        "models": models2 + models3, "variation": {"2": variation2, "3": variation3},
+        "cross_validation": cv, "phase": {"summary": {"n_regions_pixel_validated": 0}},
+        "stability": stability, "evidence": evidence,
+    }}
+
+
+def test_diagnostic_artifacts_write_required_machine_readable_outputs(tmp_path):
+    write_diagnostic_artifacts(tmp_path, _synthetic_artifact_result())
+    for name in (
+        "01_region_support.csv", "02_local_affine_models.csv", "02_local_affine_models.json",
+        "03_local_vs_global_displacement.csv", "03_local_vs_global_summary.json",
+        "04_local_affine_variation_summary.json", "05_local_affine_cross_validation.csv",
+        "05_local_affine_cross_validation_summary.json", "06_global_vs_local_phase.csv",
+        "06_global_vs_local_phase_summary.json", "09_partition_stability.json",
+        "10_good_vs_false_good_local_geometry.json", "11_low_support_control.json",
+        "12_local_affine_consistency_conclusion.json", "12_local_affine_consistency_conclusion.txt",
+    ):
+        assert (tmp_path / name).is_file(), name

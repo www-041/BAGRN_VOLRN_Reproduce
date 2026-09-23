@@ -571,3 +571,237 @@ def compare_partition_stability(grid2_summary: dict, grid3_summary: dict) -> dic
         else:
             state = "MIXED_OR_UNSTABLE"
     return {"state": state, "grid2": grid2_summary, "grid3": grid3_summary}
+
+
+def classify_local_geometry_consistency(evidence: dict) -> str:
+    """Apply the plan's evidence-gated final classifier."""
+    if evidence.get("low_support"):
+        return "LOW_SUPPORT_EDGE"
+    if evidence.get("phase_validation_status") not in (None, "OK"):
+        return "PHASE_VALIDATION_UNCERTAIN"
+    state = evidence.get("partition_stability")
+    differs = bool(evidence.get("local_models_differ"))
+    improves = bool(evidence.get("multiple_region_phase_improvement"))
+    if state == "STABLE_LOCAL_VARIATION" and differs and improves:
+        return "SPATIALLY_VARYING_LOCAL_GEOMETRY_SUPPORTED"
+    if state == "STABLE_GLOBAL_CONSISTENCY" and not differs and not improves:
+        return "GLOBAL_AFFINE_CONSISTENT"
+    if differs and not improves:
+        return "LOCAL_MODEL_DOES_NOT_EXPLAIN_RESIDUAL"
+    return "MIXED_OR_UNDERDETERMINED"
+
+
+def build_diagnostic_evidence(
+    edge: str,
+    edge_role: str,
+    grid2_summary: dict,
+    grid3_summary: dict,
+    stability: dict,
+    cross_validation: dict,
+    phase_summary: dict,
+) -> dict:
+    """Build explicit evidence and limits for one fixed edge."""
+    phase = phase_summary.get("summary", phase_summary)
+    fittable = [
+        int(grid2_summary.get("n_regions_fittable", 0)),
+        int(grid3_summary.get("n_regions_fittable", 0)),
+    ]
+    delta = [
+        float(grid2_summary.get("p95_center_delta_mag_px") or 0.0),
+        float(grid3_summary.get("p95_center_delta_mag_px") or 0.0),
+    ]
+    improvement = float(phase.get("median_phase_improvement_px") or 0.0)
+    validated = int(phase.get("n_regions_pixel_validated", 0) or 0)
+    phase_ok = validated > 0 or not phase_summary
+    local_models_differ = max(delta) >= 1.0
+    multiple_region_improvement = bool(
+        validated >= 2 and (
+            improvement >= 1.0 or float(phase.get("fraction_regions_improved_gt_1px") or 0.0) >= 0.5
+        )
+    )
+    evidence = {
+        "edge": edge, "edge_role": edge_role,
+        "n_regions_fittable_2x2": fittable[0], "n_regions_fittable_3x3": fittable[1],
+        "local_models_differ": local_models_differ,
+        "multiple_region_phase_improvement": multiple_region_improvement,
+        "partition_stability": stability.get("state", "MIXED_OR_UNSTABLE"),
+        "phase_validation_status": "OK" if phase_ok else "UNCERTAIN",
+        "cross_validation": cross_validation.get("summary", cross_validation),
+        "phase_summary": phase,
+        "low_support": edge_role == "LOW_SUPPORT_CONTROL" or max(fittable) == 0,
+    }
+    evidence["diagnosis"] = classify_local_geometry_consistency(evidence)
+    evidence["can_conclude"] = [
+        "Local-vs-global affine variation was tested in both 2x2 and 3x3 overlap partitions.",
+        "Independent pixel validation is required before interpreting local model variation as geometry.",
+    ]
+    evidence["cannot_conclude"] = [
+        "Cannot generalize one edge to universal remote-sensing affine failure.",
+        "Cannot promote this diagnostic local affine model into the production algorithm.",
+        "Cannot use this run alone to prove Homography/TPS is superior or absolute geolocation is correct.",
+    ]
+    return evidence
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    if isinstance(value, (np.floating, float)):
+        return None if not np.isfinite(value) else float(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    return value
+
+
+def _write_json(path: Path, value: Any) -> None:
+    path.write_text(json.dumps(_json_safe(value), indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_csv(path: Path, rows: list[dict], fieldnames: list[str] | None = None) -> None:
+    if fieldnames is None:
+        fieldnames = sorted({key for row in rows for key in row})
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(_json_safe(rows))
+
+
+def _phase_rows_for_result(result: dict, edge: str) -> list[dict]:
+    phase = result.get("phase", {})
+    rows = phase.get("rows", phase.get("regions", [])) if isinstance(phase, dict) else []
+    return [dict(row, edge=edge) for row in rows]
+
+
+def write_diagnostic_artifacts(output_dir: str | Path, results: dict[str, dict]) -> None:
+    """Write the plan's machine-readable summaries and figure entry points."""
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "07_region_validation").mkdir(exist_ok=True)
+    support_rows, model_rows, displacement_rows, cv_rows, phase_rows = [], [], [], [], []
+    variations, cv_summaries, phase_summaries, stability = {}, {}, {}, {}
+    evidence = {}
+    for edge, result in results.items():
+        models = result.get("models", [])
+        for model in models:
+            model_rows.append(dict(model, edge=edge))
+            support_rows.append({
+                "edge": edge, "grid_n": model.get("grid_n"),
+                "region_row": model.get("region_row"), "region_col": model.get("region_col"),
+                "n_inliers": model.get("n_points"),
+                "fraction_of_edge_inliers": model.get("n_points", 0) / max(
+                    sum(m.get("n_points", 0) for m in models if m.get("grid_n") == model.get("grid_n")), 1
+                ), "status": model.get("status"),
+            })
+            if model.get("status") == "OK":
+                displacement_rows.append({
+                    "edge": edge, "grid_n": model.get("grid_n"), "region_id": model.get("region_id"),
+                    "center_delta_dx_px": model.get("center_delta_dx_px"),
+                    "center_delta_dy_px": model.get("center_delta_dy_px"),
+                    "center_delta_mag_px": model.get("center_delta_mag_px"),
+                    "inlier_centroid_delta_mag_px": model.get("inlier_centroid_delta_mag_px"),
+                    "rotation_delta_deg": model.get("rotation_delta_deg"),
+                    "scale_delta_x": model.get("scale_delta_x"), "scale_delta_y": model.get("scale_delta_y"),
+                    "shear_delta_deg": model.get("shear_delta_deg"),
+                })
+        variations[edge] = result.get("variation", {})
+        cv_summaries[edge] = result.get("cross_validation", {}).get("summary", result.get("cross_validation", {}))
+        cv_rows.extend([dict(row, edge=edge) for row in result.get("cross_validation", {}).get("folds", [])])
+        phase_rows.extend(_phase_rows_for_result(result, edge))
+        phase_summaries[edge] = result.get("phase", {}).get("summary", result.get("phase", {}))
+        stability[edge] = result.get("stability", {})
+        evidence[edge] = result.get("evidence", {})
+
+    _write_csv(out / "01_region_support.csv", support_rows,
+               ["edge", "grid_n", "region_row", "region_col", "n_inliers", "fraction_of_edge_inliers", "status"])
+    _write_csv(out / "02_local_affine_models.csv", model_rows)
+    _write_json(out / "02_local_affine_models.json", model_rows)
+    _write_csv(out / "03_local_vs_global_displacement.csv", displacement_rows)
+    _write_json(out / "03_local_vs_global_summary.json", {k: v for k, v in variations.items()})
+    _write_json(out / "04_local_affine_variation_summary.json", variations)
+    _write_csv(out / "05_local_affine_cross_validation.csv", cv_rows)
+    _write_json(out / "05_local_affine_cross_validation_summary.json", cv_summaries)
+    _write_csv(out / "06_global_vs_local_phase.csv", phase_rows)
+    _write_json(out / "06_global_vs_local_phase_summary.json", phase_summaries)
+    _write_json(out / "09_partition_stability.json", stability)
+    comparison = {edge: value for edge, value in evidence.items() if edge in ("0-6", "2-5")}
+    _write_json(out / "10_good_vs_false_good_local_geometry.json", comparison)
+    (out / "10_good_vs_false_good_local_geometry.txt").write_text(
+        _format_evidence_text(comparison), encoding="utf-8"
+    )
+    low_support = {edge: value for edge, value in evidence.items() if edge == "0-5"}
+    _write_json(out / "11_low_support_control.json", low_support)
+    (out / "11_low_support_control.txt").write_text(_format_evidence_text(low_support), encoding="utf-8")
+    conclusion = {
+        "edges": evidence,
+        "can_conclude": ["The result is a fixed-edge diagnostic, not a production registration decision."],
+        "cannot_conclude": [
+            "Cannot generalize one edge to universal failure.",
+            "Cannot promote diagnostic local affine into production.",
+            "Cannot prove Homography/TPS superiority from this run.",
+            "Cannot infer absolute geolocation correctness from local improvement.",
+        ],
+    }
+    _write_json(out / "12_local_affine_consistency_conclusion.json", conclusion)
+    (out / "12_local_affine_consistency_conclusion.txt").write_text(_format_evidence_text(conclusion), encoding="utf-8")
+    plot_local_affine_field_map(results, out / "08_local_affine_field_map.png")
+    plot_local_affine_dashboard(results, out / "13_local_affine_consistency_dashboard.png")
+
+
+def _format_evidence_text(value: dict) -> str:
+    lines = ["Local affine consistency diagnostic evidence", ""]
+    for key, item in value.items():
+        lines.append(f"{key}: {json.dumps(_json_safe(item), ensure_ascii=False, sort_keys=True)}")
+    return "\n".join(lines) + "\n"
+
+
+def plot_local_affine_field_map(results: dict[str, dict], output_path: str | Path) -> None:
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+    for ax, edge in zip(axes, ("0-6", "2-5")):
+        result = results.get(edge, {})
+        models = [m for m in result.get("models", []) if m.get("status") == "OK"]
+        for model in models:
+            center = np.asarray(model.get("center_xy", [0, 0]), dtype=float)
+            ax.quiver(center[0], center[1], model.get("center_delta_dx_px", 0),
+                      model.get("center_delta_dy_px", 0), angles="xy", scale_units="xy",
+                      scale=1, color="tab:red")
+        ax.set_title(f"{edge}: local - global prediction")
+        ax.set_xlabel("reference pixel x")
+        ax.set_ylabel("reference pixel y")
+        ax.invert_yaxis()
+        ax.grid(alpha=0.25)
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+
+def plot_local_affine_dashboard(results: dict[str, dict], output_path: str | Path) -> None:
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(3, 4, figsize=(16, 10), constrained_layout=True)
+    for row, edge in enumerate(("0-6", "2-5", "0-5")):
+        models = [m for m in results.get(edge, {}).get("models", []) if m.get("status") == "OK"]
+        x = [m.get("center_xy", [0, 0])[0] for m in models]
+        y = [m.get("center_xy", [0, 0])[1] for m in models]
+        mags = [m.get("center_delta_mag_px", 0) for m in models]
+        if models:
+            axes[row, 0].scatter(x, y, c=mags, cmap="viridis")
+        else:
+            axes[row, 0].text(0.5, 0.5, "no fittable regions", ha="center", va="center")
+        axes[row, 0].set_title(f"{edge} inlier/local support")
+        axes[row, 1].quiver(x, y, [m.get("center_delta_dx_px", 0) for m in models],
+                            [m.get("center_delta_dy_px", 0) for m in models], angles="xy", scale_units="xy", scale=1)
+        axes[row, 1].set_title("local - global vectors")
+        axes[row, 2].bar(range(len(mags)), mags)
+        axes[row, 2].set_title("center delta magnitude")
+        axes[row, 3].text(0.02, 0.98, json.dumps(_json_safe(results.get(edge, {}).get("evidence", {})), indent=2),
+                          va="top", ha="left", fontsize=7, transform=axes[row, 3].transAxes)
+        axes[row, 3].set_axis_off()
+        for ax in axes[row, :3]:
+            ax.grid(alpha=0.25)
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
