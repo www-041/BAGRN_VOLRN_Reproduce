@@ -551,3 +551,59 @@ def test_mst_network_summary_reports_point_and_edge_balanced_metrics():
     assert summary["edge_balanced"]["mean_edge_rmse_px"] == 2.5
     assert summary["tree_edges"]["edge_count"] == 1
     assert summary["non_tree_edges"]["edge_count"] == 1
+
+
+def test_translation_system_dimensions_and_equal_edge_weights():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import build_translation_adjustment_system
+
+    observations = {
+        (0, 1): {"x_i": np.array([[10.0, 5.0], [20.0, 5.0]]),
+                 "x_j": np.array([[0.0, 0.0], [10.0, 0.0]])},
+        (1, 2): {"x_i": np.array([[4.0, 8.0]]),
+                 "x_j": np.array([[0.0, 0.0]])},
+    }
+
+    system = build_translation_adjustment_system(
+        {0: np.eye(3), 1: np.eye(3), 2: np.eye(3)}, observations, reference_idx=0
+    )
+
+    assert system["unknown_scene_order"] == [1, 2]
+    assert system["A"].shape == (6, 4)
+    assert system["b"].shape == (6,)
+    assert np.allclose(system["point_weights"], [0.5, 0.5, 1.0])
+    assert system["rank_expectation"] == 4
+    assert np.allclose(system["b"][:2], [-10.0, -5.0])
+
+
+def test_translation_system_reversed_edge_has_same_relation():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import build_translation_adjustment_system
+
+    forward = build_translation_adjustment_system(
+        {0: np.eye(3), 1: np.eye(3)},
+        {(0, 1): {"x_i": np.array([[10.0, 5.0]]), "x_j": np.array([[0.0, 0.0]])}},
+        reference_idx=0,
+    )
+    reverse = build_translation_adjustment_system(
+        {0: np.eye(3), 1: np.eye(3)},
+        {(1, 0): {"x_i": np.array([[0.0, 0.0]]), "x_j": np.array([[10.0, 5.0]])}},
+        reference_idx=0,
+    )
+
+    assert np.allclose(forward["A"].T @ forward["A"], reverse["A"].T @ reverse["A"])
+    assert np.allclose(forward["A"].T @ forward["b"], reverse["A"].T @ reverse["b"])
+
+
+def test_translation_system_rejects_missing_reference_and_disconnected_graph():
+    import numpy as np
+    import pytest
+    from src.multiscene_sift.global_geometric_adjustment import build_translation_adjustment_system
+
+    edge = {(1, 2): {"x_i": np.array([[1.0, 1.0]]), "x_j": np.array([[0.0, 0.0]])}}
+    with pytest.raises(ValueError, match="reference"):
+        build_translation_adjustment_system({1: np.eye(3), 2: np.eye(3)}, edge, reference_idx=0)
+    with pytest.raises(ValueError, match="disconnected"):
+        build_translation_adjustment_system(
+            {0: np.eye(3), 1: np.eye(3), 2: np.eye(3)}, edge, reference_idx=0
+        )

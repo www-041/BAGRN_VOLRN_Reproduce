@@ -440,3 +440,100 @@ def load_frozen_edge_observations(
             observation["pair_common_transform"] = pair_transforms[tuple(sorted(edge))]
             observation["pixel_size"] = resolution
     return grouped
+
+
+def build_translation_adjustment_system(
+    mst_global_transforms: dict[int, np.ndarray],
+    edge_observations: dict,
+    reference_idx: int,
+    weight_mode: str = "equal_edge",
+) -> dict:
+    """Build the unweighted linear system for global-frame node translations."""
+    if reference_idx not in mst_global_transforms:
+        raise ValueError(f"reference scene {reference_idx} is missing from transforms")
+    if weight_mode != "equal_edge":
+        raise ValueError(f"unsupported translation weight mode: {weight_mode}")
+
+    scenes = sorted(int(scene) for scene in mst_global_transforms)
+    unknown_scene_order = [scene for scene in scenes if scene != reference_idx]
+    scene_set = set(scenes)
+    adjacency = {scene: set() for scene in scenes}
+    rows = []
+    rhs = []
+    point_weights = []
+    edge_weight_definition = "each point in edge e has weight 1 / N_e"
+
+    def add_coefficients(row, scene_i, scene_j, sign):
+        if scene_i != reference_idx:
+            row[2 * unknown_scene_order.index(scene_i) + sign] += 1.0
+        if scene_j != reference_idx:
+            row[2 * unknown_scene_order.index(scene_j) + sign] -= 1.0
+
+    for edge, observation in sorted(edge_observations.items()):
+        i, j = int(edge[0]), int(edge[1])
+        if i not in scene_set or j not in scene_set or i == j:
+            raise ValueError(f"invalid edge {i}-{j} for transform scene set")
+        points_i = np.asarray(observation["x_i"], dtype=np.float64)
+        points_j = np.asarray(observation["x_j"], dtype=np.float64)
+        if points_i.shape != points_j.shape or points_i.ndim != 2 or points_i.shape[1] != 2:
+            raise ValueError(f"invalid point arrays for edge {i}-{j}")
+        adjacency[i].add(j)
+        adjacency[j].add(i)
+        pair_to_world = np.asarray(
+            observation.get("pair_common_transform", np.eye(3)), dtype=np.float64
+        )
+        qi = _transform_points(mst_global_transforms[i] @ pair_to_world, points_i)
+        qj = _transform_points(mst_global_transforms[j] @ pair_to_world, points_j)
+        weight = 1.0 / len(points_i) if len(points_i) else 0.0
+        for point_i, point_j in zip(qi, qj):
+            for axis in (0, 1):
+                row = np.zeros(2 * len(unknown_scene_order), dtype=np.float64)
+                add_coefficients(row, i, j, axis)
+                rows.append(row)
+                rhs.append(float(-(point_i[axis] - point_j[axis])))
+                point_weights.append(weight)
+
+    reachable = {reference_idx}
+    frontier = [reference_idx]
+    while frontier:
+        scene = frontier.pop()
+        for neighbour in adjacency[scene]:
+            if neighbour not in reachable:
+                reachable.add(neighbour)
+                frontier.append(neighbour)
+    if reachable != scene_set:
+        raise ValueError(f"translation graph is disconnected from reference {reference_idx}")
+
+    matrix = np.asarray(rows, dtype=np.float64).reshape((-1, 2 * len(unknown_scene_order)))
+    vector = np.asarray(rhs, dtype=np.float64)
+    return {
+        "A": matrix,
+        "b": vector,
+        "point_weights": np.asarray(point_weights, dtype=np.float64)[::2],
+        "unknown_scene_order": unknown_scene_order,
+        "reference_idx": int(reference_idx),
+        "edge_weight_definition": edge_weight_definition,
+        "rank_expectation": 2 * len(unknown_scene_order),
+        "rank": int(np.linalg.matrix_rank(matrix)),
+        "condition_number": float(np.linalg.cond(matrix)) if matrix.size else None,
+    }
+
+
+def write_translation_system_summary(system: dict, output_path: str | Path) -> Path:
+    """Write matrix metadata without embedding the potentially large matrix."""
+    summary = {
+        "unknown_scene_order": system["unknown_scene_order"],
+        "reference_idx": system["reference_idx"],
+        "n_rows": int(system["A"].shape[0]),
+        "n_columns": int(system["A"].shape[1]),
+        "rank": system["rank"],
+        "rank_expectation": system["rank_expectation"],
+        "condition_number": system["condition_number"],
+        "n_points": int(len(system["point_weights"])),
+        "point_weight_sum": float(np.sum(system["point_weights"])),
+        "edge_weight_definition": system["edge_weight_definition"],
+    }
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
