@@ -260,3 +260,59 @@ def test_replay_wrapper_captures_raw_matches_through_existing_entrypoint(tmp_pat
 
     assert result["raw_coordinates_available"] is True
     assert result["raw_match_count"] == 1
+
+
+def test_recovery_cli_replays_only_historical_accepted_edges(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from src.multiscene_sift import inlier_recovery
+
+    monkeypatch.setattr(
+        inlier_recovery,
+        "load_historical_pair_baselines",
+        lambda _: {
+            "accepted_edges": [{"edge": [0, 1]}],
+            "rejected_edges": [{"edge": [0, 2]}],
+        },
+    )
+    monkeypatch.setattr(
+        inlier_recovery,
+        "load_frozen_registration_config",
+        lambda _: {"matcher": "SIFT", "registration_band": "B14"},
+    )
+    monkeypatch.setattr(
+        inlier_recovery,
+        "load_scene_names",
+        lambda _: ["s0", "s1", "s2"],
+    )
+    monkeypatch.setattr(
+        inlier_recovery,
+        "discover_five_scenes",
+        lambda *_args, **_kwargs: ([SimpleNamespace(index=i) for i in range(3)], {}),
+    )
+    replayed = []
+    monkeypatch.setattr(
+        inlier_recovery,
+        "replay_pair_and_capture_inliers",
+        lambda i, j, config, output: replayed.append((i, j)) or {"edge": [0, 1]},
+    )
+
+    result = inlier_recovery.recover_accepted_pairs(tmp_path, tmp_path, tmp_path)
+
+    assert [(i.index, j.index) for i, j in replayed] == [(0, 1)]
+    assert result["replayed_edges"] == [[0, 1]]
+
+
+def test_recovery_script_forwards_explicit_paths(tmp_path, monkeypatch):
+    from scripts import recover_five_scene_inliers
+
+    calls = []
+    monkeypatch.setattr(
+        recover_five_scene_inliers,
+        "recover_accepted_pairs",
+        lambda run, root, output: calls.append((run, root, output)) or {"accepted_count": 1},
+    )
+
+    assert recover_five_scene_inliers.main(
+        ["--five-scene-run-dir", "run", "--input-root", "root", "--output-dir", "out"]
+    ) == 0
+    assert calls == [("run", "root", "out")]

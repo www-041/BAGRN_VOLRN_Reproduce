@@ -8,6 +8,13 @@ from pathlib import Path
 
 import numpy as np
 
+from src.multiscene_sift.dataset import discover_five_scenes
+from src.multiscene_sift.global_geometric_adjustment import (
+    load_frozen_registration_config,
+    load_historical_pair_baselines,
+    write_frozen_registration_config,
+    write_historical_pair_baselines,
+)
 from src.multiscene_sift.pairwise import register_pair
 
 
@@ -91,3 +98,42 @@ def replay_pair_and_capture_inliers(
         json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return summary
+
+
+def load_scene_names(five_scene_run_dir: str | Path) -> list[str]:
+    path = Path(five_scene_run_dir) / "dataset_manifest.json"
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return [str(scene["name"]) for scene in payload.get("scenes", [])]
+
+
+def recover_accepted_pairs(
+    five_scene_run_dir: str | Path,
+    input_root: str | Path,
+    output_dir: str | Path,
+) -> dict:
+    """Replay exactly the frozen historical accepted edge list."""
+    baselines = load_historical_pair_baselines(five_scene_run_dir)
+    config = load_frozen_registration_config(five_scene_run_dir)
+    scenes, _ = discover_five_scenes(
+        str(input_root), load_scene_names(five_scene_run_dir), bands=(config["registration_band"],)
+    )
+    scene_by_index = {scene.index: scene for scene in scenes}
+    out_dir = Path(output_dir)
+    write_historical_pair_baselines(baselines, out_dir)
+    write_frozen_registration_config(config, out_dir)
+    replayed = []
+    accepted = baselines["accepted_edges"]
+    for ordinal, edge_record in enumerate(accepted, start=1):
+        i, j = edge_record["edge"]
+        print(f"Replaying {ordinal}/{len(accepted)}: {i}-{j}")
+        replayed.append(
+            replay_pair_and_capture_inliers(
+                scene_by_index[i], scene_by_index[j], config, out_dir
+            )
+        )
+    return {
+        "accepted_count": len(accepted),
+        "replayed_edges": [item["edge"] for item in replayed],
+    }
