@@ -594,3 +594,32 @@ def write_translation_solution(solution: dict, output_path: str | Path) -> Path:
     payload.pop("scene_corrections_px", None)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def apply_translation_corrections(
+    mst_global_transforms: dict[int, np.ndarray],
+    corrections: dict[int, tuple[float, float]],
+    pixel_size: float = 1.0,
+) -> dict[int, np.ndarray]:
+    """Compose pixel-unit node corrections on the left in the global frame."""
+    adjusted = {}
+    for scene, matrix in mst_global_transforms.items():
+        dx, dy = corrections.get(int(scene), (0.0, 0.0))
+        translation = np.array([
+            [1.0, 0.0, float(dx) * pixel_size],
+            [0.0, 1.0, float(dy) * pixel_size],
+            [0.0, 0.0, 1.0],
+        ], dtype=np.float64)
+        adjusted[int(scene)] = translation @ np.asarray(matrix, dtype=np.float64)
+    return adjusted
+
+
+def write_global_transforms(transforms: dict[int, np.ndarray], output_path: str | Path) -> Path:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"transforms": [
+        {"scene": int(scene), "matrix": np.asarray(matrix, dtype=float).tolist()}
+        for scene, matrix in sorted(transforms.items())
+    ]}
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path

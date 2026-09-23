@@ -671,3 +671,17 @@ def test_translation_solver_reports_rank_deficiency_without_fabricating_solution
 
     assert result["status"] == "RANK_DEFICIENT"
     assert result["scene_corrections_px"] == {0: [0.0, 0.0]}
+
+
+def test_translation_correction_composes_in_global_frame_and_keeps_reference():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import apply_translation_corrections
+
+    transforms = {
+        0: np.eye(3),
+        1: np.array([[1.0, 0.0, 10.0], [0.0, 1.0, 20.0], [0.0, 0.0, 1.0]]),
+    }
+    adjusted = apply_translation_corrections(transforms, {0: (0.0, 0.0), 1: (2.0, -3.0)})
+
+    assert np.allclose(adjusted[0], transforms[0])
+    assert np.allclose(adjusted[1], [[1.0, 0.0, 12.0], [0.0, 1.0, 17.0], [0.0, 0.0, 1.0]])
