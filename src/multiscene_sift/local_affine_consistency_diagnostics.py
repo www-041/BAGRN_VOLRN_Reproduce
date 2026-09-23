@@ -230,3 +230,344 @@ def assign_points_to_overlap_regions(
     col = np.minimum(np.floor(u * grid_n).astype(int), grid_n - 1)
     row = np.minimum(np.floor(v * grid_n).astype(int), grid_n - 1)
     return row * grid_n + col
+
+
+def _region_bounds(bounds, grid_n: int, row: int, col: int) -> tuple[float, float, float, float]:
+    x0, y0, x1, y1 = map(float, bounds)
+    dx = (x1 - x0) / grid_n
+    dy = (y1 - y0) / grid_n
+    return (x0 + col * dx, y0 + row * dy,
+            x1 if col == grid_n - 1 else x0 + (col + 1) * dx,
+            y1 if row == grid_n - 1 else y0 + (row + 1) * dy)
+
+
+def _decompose_affine(matrix: np.ndarray) -> dict:
+    m = np.asarray(matrix, dtype=np.float64)
+    linear = m[:2, :2]
+    try:
+        u, singular, vt = np.linalg.svd(linear)
+        rotation = u @ vt
+        if np.linalg.det(rotation) < 0:
+            u[:, -1] *= -1
+            singular[-1] *= -1
+            rotation = u @ vt
+        stretch = rotation.T @ linear
+        rotation_deg = float(np.degrees(np.arctan2(rotation[1, 0], rotation[0, 0])))
+        scale_x = float(stretch[0, 0])
+        scale_y = float(stretch[1, 1])
+        shear_deg = float(np.degrees(np.arctan2(stretch[0, 1], max(abs(scale_y), 1e-12))))
+    except np.linalg.LinAlgError:
+        rotation_deg = scale_x = scale_y = shear_deg = float("nan")
+    return {
+        "translation_x": float(m[0, 2]),
+        "translation_y": float(m[1, 2]),
+        "rotation_deg": rotation_deg,
+        "scale_x": scale_x,
+        "scale_y": scale_y,
+        "shear_deg": shear_deg,
+    }
+
+
+def compare_local_to_global_at_points(
+    local_matrix: np.ndarray,
+    global_matrix: np.ndarray,
+    eval_xy: np.ndarray,
+) -> dict:
+    """Compare predictions in the same pixel frame, not raw translations."""
+    points = _as_points(eval_xy)
+    local = _apply_matrix(local_matrix, points)
+    global_ = _apply_matrix(global_matrix, points)
+    delta = local - global_
+    magnitudes = np.linalg.norm(delta, axis=1)
+    center_delta = delta[0]
+    centroid_delta = np.mean(delta, axis=0)
+    local_parts = _decompose_affine(local_matrix)
+    global_parts = _decompose_affine(global_matrix)
+    return {
+        "center_delta_dx_px": float(center_delta[0]),
+        "center_delta_dy_px": float(center_delta[1]),
+        "center_delta_mag_px": float(magnitudes[0]),
+        "inlier_centroid_delta_dx_px": float(centroid_delta[0]),
+        "inlier_centroid_delta_dy_px": float(centroid_delta[1]),
+        "inlier_centroid_delta_mag_px": float(np.linalg.norm(centroid_delta)),
+        "rotation_delta_deg": float(local_parts["rotation_deg"] - global_parts["rotation_deg"]),
+        "scale_delta_x": float(local_parts["scale_x"] - global_parts["scale_x"]),
+        "scale_delta_y": float(local_parts["scale_y"] - global_parts["scale_y"]),
+        "shear_delta_deg": float(local_parts["shear_deg"] - global_parts["shear_deg"]),
+        "delta_vectors": delta,
+        "delta_magnitudes": magnitudes,
+    }
+
+
+def fit_region_local_affines(
+    ref_xy: np.ndarray,
+    tgt_xy: np.ndarray,
+    global_matrix: np.ndarray,
+    overlap_bounds,
+    grid_n: int,
+) -> list[dict]:
+    """Fit deterministic local models using only the supplied global inliers."""
+    ref = _as_points(ref_xy)
+    tgt = _as_points(tgt_xy)
+    if len(ref) != len(tgt):
+        raise ValueError("ref_xy and tgt_xy must contain the same number of points")
+    labels = assign_points_to_overlap_regions(ref, overlap_bounds, grid_n)
+    models: list[dict] = []
+    for region_id in range(grid_n * grid_n):
+        row, col = divmod(region_id, grid_n)
+        mask = labels == region_id
+        region_ref = ref[mask]
+        region_tgt = tgt[mask]
+        bounds = _region_bounds(overlap_bounds, grid_n, row, col)
+        center = np.array([[(bounds[0] + bounds[2]) / 2.0, (bounds[1] + bounds[3]) / 2.0]])
+        base = {
+            "grid_n": grid_n, "region_id": region_id, "region_row": row,
+            "region_col": col, "bounds_px": bounds, "center_xy": center[0],
+            "n_points": int(len(region_ref)), "status": "INSUFFICIENT_POINTS",
+            "local_matrix": None, "global_matrix": np.asarray(global_matrix, dtype=float),
+            "condition_number": float("inf"), "local_rmse": None, "local_p95": None,
+        }
+        fit = fit_affine_least_squares(region_tgt, region_ref)
+        base.update({
+            "status": fit["status"], "local_matrix": fit["matrix_3x3"],
+            "condition_number": fit["condition_number"],
+            "local_rmse": fit["rmse_px"], "local_p95": fit["p95_px"],
+        })
+        if fit["status"] == "OK":
+            base.update(_decompose_affine(fit["matrix_3x3"]))
+            comparison = compare_local_to_global_at_points(
+                fit["matrix_3x3"], global_matrix, np.vstack((center, np.mean(region_ref, axis=0)))
+            )
+            base.update(comparison)
+            base["inlier_centroid_xy"] = np.mean(region_ref, axis=0)
+        else:
+            base.update({
+                "translation_x": None, "translation_y": None,
+                "rotation_deg": None, "scale_x": None, "scale_y": None,
+                "shear_deg": None,
+            })
+        models.append(base)
+    return models
+
+
+def summarize_local_affine_variation(region_models, grid_n: int) -> dict:
+    """Summarize spatial variation without treating it as absolute geolocation error."""
+    models = list(region_models)
+    fitted = [m for m in models if m.get("status") == "OK"]
+    center_deltas = np.asarray([m["center_delta_mag_px"] for m in fitted], dtype=float)
+    translations = np.asarray([
+        [m["center_delta_dx_px"], m["center_delta_dy_px"]] for m in fitted
+    ], dtype=float)
+    rotations = np.asarray([m["rotation_delta_deg"] for m in fitted], dtype=float)
+    scales = np.asarray([[m["scale_delta_x"], m["scale_delta_y"]] for m in fitted], dtype=float)
+    shears = np.asarray([m["shear_delta_deg"] for m in fitted], dtype=float)
+
+    def _range(values):
+        if np.asarray(values).size == 0:
+            return [None, None]
+        a = np.asarray(values, dtype=float)
+        return [float(np.nanmin(a)), float(np.nanmax(a))]
+
+    result = {
+        "grid_n": int(grid_n), "n_regions_total": int(len(models)),
+        "n_regions_fittable": int(len(fitted)),
+        "median_center_delta_mag_px": float(np.median(center_deltas)) if len(center_deltas) else None,
+        "p95_center_delta_mag_px": float(np.percentile(center_deltas, 95)) if len(center_deltas) else None,
+        "max_center_delta_mag_px": float(np.max(center_deltas)) if len(center_deltas) else None,
+        "translation_delta_range_px": _range(np.linalg.norm(translations, axis=1) if len(translations) else []),
+        "rotation_delta_range_deg": _range(rotations),
+        "scale_delta_range": _range(scales),
+        "shear_delta_range_deg": _range(shears),
+        "dx_r2": None, "dy_r2": None, "predicted_delta_range_px": [None, None],
+    }
+    if len(fitted) >= 3:
+        centers = np.asarray([m["center_xy"] for m in fitted], dtype=float)
+        bounds_min = centers.min(axis=0)
+        bounds_max = centers.max(axis=0)
+        span = np.where(bounds_max > bounds_min, bounds_max - bounds_min, 1.0)
+        uv = (centers - bounds_min) / span
+        design = np.column_stack((np.ones(len(uv)), uv))
+        predictions = []
+        r2s = []
+        for axis in (0, 1):
+            target = translations[:, axis]
+            coef, _, _, _ = np.linalg.lstsq(design, target, rcond=None)
+            pred = design @ coef
+            ss_tot = float(np.sum((target - target.mean()) ** 2))
+            r2s.append(1.0 - float(np.sum((target - pred) ** 2)) / ss_tot if ss_tot > 1e-12 else 1.0)
+            predictions.append(pred)
+        pred_mag = np.linalg.norm(np.column_stack(predictions), axis=1)
+        result["dx_r2"], result["dy_r2"] = map(float, r2s)
+        result["predicted_delta_range_px"] = [float(pred_mag.min()), float(pred_mag.max())]
+    return result
+
+
+def cross_validate_local_affine(
+    src_xy: np.ndarray,
+    dst_xy: np.ndarray,
+    n_splits: int = 5,
+    seed: int = 0,
+) -> dict:
+    """Deterministic held-out comparison of global LS vs spatial-neighbour LS."""
+    src = _as_points(src_xy)
+    dst = _as_points(dst_xy)
+    if len(src) < max(n_splits * 3, MIN_POINTS_FOR_LOCAL_AFFINE + 1):
+        return {"status": "INSUFFICIENT_POINTS", "folds": [], "summary": {"n_folds": 0}}
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(len(src))
+    folds = np.array_split(order, n_splits)
+    rows = []
+    for fold_id, heldout in enumerate(folds):
+        train = np.setdiff1d(order, heldout, assume_unique=False)
+        global_fit = fit_affine_least_squares(src[train], dst[train])
+        if global_fit["status"] != "OK":
+            continue
+        global_pred = _apply_matrix(global_fit["matrix_3x3"], src[heldout])
+        global_error = np.linalg.norm(global_pred - dst[heldout], axis=1)
+        local_pred = np.empty_like(global_pred)
+        local_ok = 0
+        for idx, point in enumerate(src[heldout]):
+            distances = np.linalg.norm(src[train] - point, axis=1)
+            neighbours = train[np.argsort(distances)[:min(32, len(train))]]
+            local_fit = fit_affine_least_squares(src[neighbours], dst[neighbours])
+            if local_fit["status"] == "OK":
+                local_pred[idx] = _apply_matrix(local_fit["matrix_3x3"], point.reshape(1, 2))[0]
+                local_ok += 1
+            else:
+                local_pred[idx] = global_pred[idx]
+        local_error = np.linalg.norm(local_pred - dst[heldout], axis=1)
+        global_rmse = float(np.sqrt(np.mean(global_error ** 2)))
+        local_rmse = float(np.sqrt(np.mean(local_error ** 2)))
+        rows.append({
+            "fold": fold_id, "n_train": int(len(train)), "n_test": int(len(heldout)),
+            "n_local_predictions": int(local_ok), "global_affine_rmse": global_rmse,
+            "local_affine_rmse": local_rmse, "improvement_px": global_rmse - local_rmse,
+            "improvement_ratio": (global_rmse - local_rmse) / global_rmse if global_rmse else 0.0,
+        })
+    improvements = np.asarray([r["improvement_px"] for r in rows], dtype=float)
+    return {
+        "status": "OK" if rows else "UNAVAILABLE", "folds": rows,
+        "summary": {
+            "n_folds": len(rows),
+            "global_affine_rmse": float(np.mean([r["global_affine_rmse"] for r in rows])) if rows else None,
+            "local_affine_rmse": float(np.mean([r["local_affine_rmse"] for r in rows])) if rows else None,
+            "improvement_px": float(np.mean(improvements)) if len(improvements) else None,
+            "improvement_ratio": float(np.mean([r["improvement_ratio"] for r in rows])) if rows else None,
+        },
+    }
+
+
+def _scene_array(scene) -> tuple[np.ndarray, np.ndarray]:
+    if isinstance(scene, dict):
+        array = scene.get("array", scene.get("data"))
+        valid = scene.get("valid_mask")
+    else:
+        array = getattr(scene, "array", getattr(scene, "data", None))
+        valid = getattr(scene, "valid_mask", None)
+    if array is None:
+        raise ValueError("scene must provide array/data")
+    arr = np.asarray(array)
+    mask = np.ones(arr.shape, dtype=bool) if valid is None else np.asarray(valid, dtype=bool)
+    if arr.shape != mask.shape:
+        raise ValueError("scene array and valid_mask must have the same shape")
+    return arr.astype(np.float32, copy=False), mask
+
+
+def build_region_validation_crops(
+    scene_ref,
+    scene_tgt,
+    global_matrix: np.ndarray,
+    local_matrix: np.ndarray,
+    region: dict,
+) -> dict:
+    """Create global/local target crops in one reference-pixel frame."""
+    import cv2
+
+    reference, reference_valid = _scene_array(scene_ref)
+    target, target_valid = _scene_array(scene_tgt)
+    x0, y0, x1, y1 = (int(round(v)) for v in region["bounds_px"])
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(reference.shape[1], x1), min(reference.shape[0], y1)
+    if x1 <= x0 or y1 <= y0:
+        return {"status": "PIXEL_VALIDATION_UNAVAILABLE", "reason": "empty_region"}
+    width, height = x1 - x0, y1 - y0
+    shift = np.array([[1, 0, -x0], [0, 1, -y0], [0, 0, 1]], dtype=float)
+
+    def warp(matrix):
+        crop_matrix = shift @ np.asarray(matrix, dtype=float)
+        image = cv2.warpAffine(target, crop_matrix[:2], (width, height), flags=cv2.INTER_LINEAR)
+        mask = cv2.warpAffine(target_valid.astype(np.uint8), crop_matrix[:2], (width, height), flags=cv2.INTER_NEAREST) > 0
+        return image, mask
+
+    global_warp, global_valid = warp(global_matrix)
+    local_warp, local_valid = warp(local_matrix)
+    reference_crop = reference[y0:y1, x0:x1]
+    reference_mask = reference_valid[y0:y1, x0:x1]
+    joint = reference_mask & global_valid & local_valid
+    if int(joint.sum()) < 20 or float(np.std(reference_crop[joint])) < 1e-6:
+        status = "PIXEL_VALIDATION_UNAVAILABLE"
+    else:
+        status = "OK"
+    return {
+        "status": status, "reason": None if status == "OK" else "insufficient_valid_or_texture",
+        "reference": reference_crop, "global_warp": global_warp, "local_warp": local_warp,
+        "reference_valid": reference_mask, "global_valid": global_valid, "local_valid": local_valid,
+        "joint_valid": joint, "bounds_px": (x0, y0, x1, y1),
+    }
+
+
+def compare_global_vs_local_pixel_alignment(
+    ref_crop: np.ndarray,
+    global_warp_crop: np.ndarray,
+    local_warp_crop: np.ndarray,
+    masks,
+) -> dict:
+    """Measure independent phase/NCC evidence on identical pixels."""
+    from src.multiscene_sift.loop_diagnostics import (
+        _ncc_between_overlays,
+        _phase_cross_correlation_shift,
+    )
+    if isinstance(masks, dict):
+        ref_valid = np.asarray(masks["reference_valid"], dtype=bool)
+        global_valid = np.asarray(masks["global_valid"], dtype=bool)
+        local_valid = np.asarray(masks["local_valid"], dtype=bool)
+    else:
+        ref_valid, global_valid, local_valid = masks
+    joint_global = ref_valid & global_valid
+    joint_local = ref_valid & local_valid
+    if int(joint_global.sum()) < 20 or int(joint_local.sum()) < 20:
+        return {"status": "PIXEL_VALIDATION_UNAVAILABLE", "reason": "insufficient_joint_valid"}
+
+    def measure(moving, valid):
+        a = np.where(valid, ref_crop, float(np.mean(ref_crop[valid])))
+        b = np.where(valid, moving, float(np.mean(moving[valid])))
+        dx, dy, score = _phase_cross_correlation_shift(a, b, upsample=5)
+        return float(dx), float(dy), float(np.hypot(dx, dy)), float(score), float(_ncc_between_overlays(a, b, valid, valid))
+
+    g = measure(global_warp_crop, joint_global)
+    l = measure(local_warp_crop, joint_local)
+    return {
+        "status": "OK", "global_phase_dx": g[0], "global_phase_dy": g[1], "global_phase_mag": g[2],
+        "local_phase_dx": l[0], "local_phase_dy": l[1], "local_phase_mag": l[2],
+        "phase_improvement_px": g[2] - l[2],
+        "phase_improvement_ratio": (g[2] - l[2]) / g[2] if g[2] else 0.0,
+        "global_ncc": g[4], "local_ncc": l[4], "ncc_improvement": l[4] - g[4],
+    }
+
+
+def compare_partition_stability(grid2_summary: dict, grid3_summary: dict) -> dict:
+    """Classify whether 2×2 and 3×3 evidence tells the same story."""
+    summaries = (grid2_summary, grid3_summary)
+    if any(s.get("n_regions_fittable", 0) < 2 for s in summaries):
+        state = "LOW_SUPPORT"
+    else:
+        deltas = [float(s.get("p95_center_delta_mag_px") or 0.0) for s in summaries]
+        phases = [float(s.get("global_phase_median") or 0.0) for s in summaries]
+        improvements = [float(s.get("median_phase_improvement_px") or 0.0) for s in summaries]
+        if max(deltas) < 1.0 and max(improvements) < 1.0 and max(phases) < 1.0:
+            state = "STABLE_GLOBAL_CONSISTENCY"
+        elif min(deltas) >= 1.0 and min(improvements) >= 1.0:
+            state = "STABLE_LOCAL_VARIATION"
+        else:
+            state = "MIXED_OR_UNSTABLE"
+    return {"state": state, "grid2": grid2_summary, "grid3": grid3_summary}

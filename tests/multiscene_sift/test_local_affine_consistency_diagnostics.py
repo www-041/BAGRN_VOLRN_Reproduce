@@ -5,8 +5,15 @@ import json
 from src.multiscene_sift.local_affine_consistency_diagnostics import (
     LOCAL_AFFINE_EDGES,
     assign_points_to_overlap_regions,
+    build_region_validation_crops,
+    compare_global_vs_local_pixel_alignment,
+    compare_local_to_global_at_points,
+    compare_partition_stability,
+    cross_validate_local_affine,
+    fit_region_local_affines,
     fit_affine_least_squares,
     load_local_affine_baseline,
+    summarize_local_affine_variation,
 )
 
 
@@ -82,3 +89,94 @@ def test_baseline_loader_freezes_required_edges_and_context(tmp_path):
         assert record["tgt_xy"].shape == (1, 2)
         assert "direct_overlap" in record
     assert result["missing_critical_artifacts"] == []
+
+
+def _piecewise_points():
+    src = np.array([[x, y] for y in np.linspace(4, 20, 12) for x in np.linspace(4, 96, 12)], dtype=float)
+    dst = src.copy()
+    dst[src[:, 0] >= 50] += np.array([8.0, 4.0])
+    return src, dst
+
+
+def test_region_local_affines_recover_piecewise_translation_without_new_ransac():
+    src, dst = _piecewise_points()
+    global_fit = fit_affine_least_squares(src, dst)
+    models = fit_region_local_affines(
+        ref_xy=dst,
+        tgt_xy=src,
+        global_matrix=global_fit["matrix_3x3"],
+        overlap_bounds=(0, 0, 100, 50),
+        grid_n=2,
+    )
+    fitted = [m for m in models if m["status"] == "OK"]
+    assert len(fitted) == 2
+    translations = sorted((m["translation_x"], m["translation_y"]) for m in fitted)
+    np.testing.assert_allclose(translations, [(0.0, 0.0), (8.0, 4.0)], atol=1e-8)
+
+
+def test_compare_local_global_uses_prediction_delta_at_region_points():
+    global_matrix = np.eye(3)
+    local_matrix = np.array([[1, 0, 8], [0, 1, 4], [0, 0, 1]], dtype=float)
+    result = compare_local_to_global_at_points(local_matrix, global_matrix, np.array([[10.0, 20.0]]))
+    assert result["center_delta_dx_px"] == 8.0
+    assert result["center_delta_dy_px"] == 4.0
+    assert result["center_delta_mag_px"] == np.hypot(8, 4)
+
+
+def test_local_affine_variation_reports_ranges_and_spatial_trend():
+    src, dst = _piecewise_points()
+    global_fit = fit_affine_least_squares(src, dst)
+    models = fit_region_local_affines(dst, src, global_fit["matrix_3x3"], (0, 0, 100, 50), 2)
+    summary = summarize_local_affine_variation(models, 2)
+    assert summary["n_regions_total"] == 4
+    assert summary["n_regions_fittable"] == 2
+    assert summary["translation_delta_range_px"][1] > 0
+    assert "dx_r2" in summary and "dy_r2" in summary
+
+
+def test_cross_validate_local_affine_is_deterministic_and_reports_holdout_metrics():
+    src, dst = _piecewise_points()
+    first = cross_validate_local_affine(src, dst, n_splits=5, seed=17)
+    second = cross_validate_local_affine(src, dst, n_splits=5, seed=17)
+    assert first["folds"] == second["folds"]
+    assert first["summary"]["n_folds"] == 5
+    assert {"global_affine_rmse", "local_affine_rmse", "improvement_px"} <= set(first["folds"][0])
+
+
+def test_validation_crops_share_frame_shape_and_masks():
+    yy, xx = np.mgrid[:64, :64]
+    ref = (xx + 2 * yy).astype(np.float32)
+    scene_ref = {"array": ref, "valid_mask": np.ones_like(ref, dtype=bool)}
+    scene_tgt = {"array": ref.copy(), "valid_mask": np.ones_like(ref, dtype=bool)}
+    crop = build_region_validation_crops(
+        scene_ref, scene_tgt, np.eye(3), np.array([[1, 0, 2], [0, 1, 1], [0, 0, 1]], dtype=float),
+        {"row": 0, "col": 0, "grid_n": 2, "bounds_px": (0, 0, 32, 32)},
+    )
+    assert crop["status"] == "OK"
+    assert crop["reference"].shape == crop["global_warp"].shape == crop["local_warp"].shape
+    assert crop["reference_valid"].shape == crop["local_valid"].shape
+    assert crop["bounds_px"] == (0, 0, 32, 32)
+
+
+def test_global_local_phase_alignment_reports_local_improvement_on_known_shift():
+    rng = np.random.default_rng(123)
+    ref = rng.normal(size=(64, 64)).astype(np.float32)
+    global_warp = np.roll(ref, (3, 4), axis=(0, 1))
+    local_warp = ref.copy()
+    valid = np.ones_like(ref, dtype=bool)
+    result = compare_global_vs_local_pixel_alignment(
+        ref, global_warp, local_warp,
+        {"reference_valid": valid, "global_valid": valid, "local_valid": valid},
+    )
+    assert result["status"] == "OK"
+    assert result["local_phase_mag"] <= result["global_phase_mag"]
+    assert result["phase_improvement_px"] >= 0
+
+
+def test_partition_stability_classifies_matching_summary_contracts():
+    global_summary = {
+        "n_regions_fittable": 4, "median_center_delta_mag_px": 0.1,
+        "p95_center_delta_mag_px": 0.2, "global_phase_median": 0.3,
+        "median_phase_improvement_px": 0.1,
+    }
+    assert compare_partition_stability(global_summary, global_summary)["state"] == "STABLE_GLOBAL_CONSISTENCY"
