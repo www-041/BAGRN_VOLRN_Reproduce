@@ -800,3 +800,39 @@ def test_affine_system_normalizes_global_coordinates_and_fixes_reference_gauge()
     assert system["rank_expectation"] == 6
     assert np.isfinite(system["normalization"]["scale"])
     assert system["reference_idx"] == 0
+
+
+def test_affine_solver_returns_finite_global_corrections_and_reference_identity():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import (
+        build_affine_adjustment_system,
+        solve_affine_adjustment,
+    )
+
+    observations = {(0, 1): {
+        "x_i": np.array([[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [10.0, 10.0], [5.0, 2.0]]),
+        "x_j": np.array([[1.0, 2.0], [11.0, 2.0], [1.0, 12.0], [11.0, 12.0], [6.0, 4.0]]),
+    }}
+    system = build_affine_adjustment_system({0: np.eye(3), 1: np.eye(3)}, observations, 0)
+
+    result = solve_affine_adjustment(system)
+
+    assert result["status"] == "OK"
+    assert np.allclose(result["scene_corrections"][0]["matrix"], np.eye(3))
+    matrix = np.asarray(result["scene_corrections"][1]["matrix"])
+    assert np.all(np.isfinite(matrix))
+    assert result["scene_corrections"][1]["determinant"] > 0.0
+
+
+def test_affine_solver_reports_rank_deficiency():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import solve_affine_adjustment
+
+    result = solve_affine_adjustment({
+        "A": np.zeros((2, 6)), "b": np.zeros(2), "point_weights": np.ones(1),
+        "unknown_scene_order": [1], "reference_idx": 0, "rank_expectation": 6,
+        "normalization": {"centroid": [0.0, 0.0], "scale": 1.0},
+    })
+
+    assert result["status"] == "RANK_DEFICIENT"
+    assert np.allclose(result["scene_corrections"][0]["matrix"], np.eye(3))

@@ -699,6 +699,67 @@ def write_affine_system_summary(system: dict, output_path: str | Path) -> Path:
     return path
 
 
+def solve_affine_adjustment(system: dict) -> dict:
+    """Solve normalized affine corrections and denormalize to global pixels."""
+    matrix = np.asarray(system["A"], dtype=np.float64)
+    vector = np.asarray(system["b"], dtype=np.float64)
+    weights = np.repeat(np.asarray(system["point_weights"], dtype=np.float64), 2)
+    if len(weights) != len(vector):
+        raise ValueError("point_weights must contain one weight per point")
+    weighted_matrix = matrix * np.sqrt(weights)[:, None]
+    weighted_vector = vector * np.sqrt(weights)
+    rank = int(np.linalg.matrix_rank(weighted_matrix))
+    expected = int(system["rank_expectation"])
+    centroid = np.asarray(system["normalization"]["centroid"], dtype=np.float64)
+    scale = float(system["normalization"]["scale"])
+    identity = np.eye(3, dtype=np.float64)
+    corrections = {int(system["reference_idx"]): {
+        "matrix": identity.tolist(), "translation": [0.0, 0.0],
+        "rotation_deg": 0.0, "scale_x": 1.0, "scale_y": 1.0,
+        "shear": 0.0, "determinant": 1.0,
+    }}
+    if rank < expected:
+        return {"status": "RANK_DEFICIENT", "rank": rank,
+                "condition_number": float(np.linalg.cond(weighted_matrix)),
+                "scene_corrections": corrections}
+    solution, _, _, _ = np.linalg.lstsq(weighted_matrix, weighted_vector, rcond=None)
+    for index, scene in enumerate(system["unknown_scene_order"]):
+        values = solution[6 * index:6 * index + 6]
+        delta = np.array([[values[0], values[1], values[2]],
+                          [values[3], values[4], values[5]],
+                          [0.0, 0.0, 0.0]])
+        linear = identity[:2, :2] + delta[:2, :2]
+        translation = centroid - linear @ centroid + scale * delta[:2, 2]
+        correction = np.array([[linear[0, 0], linear[0, 1], translation[0]],
+                               [linear[1, 0], linear[1, 1], translation[1]],
+                               [0.0, 0.0, 1.0]])
+        determinant = float(np.linalg.det(linear))
+        if not np.all(np.isfinite(correction)) or determinant <= 0.0:
+            return {"status": "INVALID_CORRECTION", "rank": rank,
+                    "condition_number": float(np.linalg.cond(weighted_matrix)),
+                    "scene_corrections": corrections}
+        rotation = float(np.degrees(np.arctan2(linear[1, 0], linear[0, 0])))
+        corrections[int(scene)] = {
+            "matrix": correction.tolist(),
+            "translation": [float(translation[0]), float(translation[1])],
+            "rotation_deg": rotation,
+            "scale_x": float(np.hypot(linear[0, 0], linear[1, 0])),
+            "scale_y": float(np.hypot(linear[0, 1], linear[1, 1])),
+            "shear": float(linear[0, 0] * linear[0, 1] + linear[1, 0] * linear[1, 1]),
+            "determinant": determinant,
+        }
+    return {"status": "OK", "rank": rank,
+            "condition_number": float(np.linalg.cond(weighted_matrix)),
+            "scene_corrections": corrections}
+
+
+def write_affine_solution(solution: dict, output_path: str | Path) -> Path:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(solution, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def apply_translation_corrections(
     mst_global_transforms: dict[int, np.ndarray],
     corrections: dict[int, tuple[float, float]],
