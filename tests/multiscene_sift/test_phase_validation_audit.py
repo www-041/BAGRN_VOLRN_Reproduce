@@ -21,6 +21,7 @@ from src.multiscene_sift.phase_validation_audit import (
     real_crop_injection_recovery,
     phase_peak_diagnostics,
     compare_working_vs_suspect,
+    classify_phase_validation_root_cause,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -268,3 +269,19 @@ def test_working_vs_suspect_comparison_rejects_reported_shift_when_zero_wins():
         "injection": [{"injected_dx": 0, "injected_dy": 0, "error_mag_px": 6.7}],
     })
     assert result["answer"] == "NOT_SUPPORTED_PHASE_ARTIFACT"
+
+
+@pytest.mark.parametrize("evidence, expected", [
+    ({"frame_bug": True}, "FRAME_OR_DIRECTION_BUG_SUPPORTED"),
+    ({"reported_improves": True, "sweep_near_reported": True, "mask_stable": True,
+      "representation_agrees": True, "injection_correct": True}, "REAL_TRANSLATION_RESIDUAL_SUPPORTED"),
+    ({"mask_boundary_collapse": True, "sweep_prefers_zero": True,
+      "reported_improves": False}, "MASK_BOUNDARY_DOMINATED"),
+    ({"representation_sensitive": True}, "RADIOMETRIC_REPRESENTATION_SENSITIVE"),
+    ({"multipeak": True}, "TEXTURE_AMBIGUITY_OR_MULTIPEAK"),
+    ({"zero_injection_bias": True}, "PHASE_HELPER_REAL_CROP_BIAS"),
+    ({"reported_improves": False, "sweep_prefers_zero": True}, "PHASE_VALIDATION_ARTIFACT_SUPPORTED"),
+    ({}, "MIXED_OR_UNDERDETERMINED"),
+])
+def test_root_cause_classifier_uses_explicit_evidence_states(evidence, expected):
+    assert classify_phase_validation_root_cause(evidence) == expected

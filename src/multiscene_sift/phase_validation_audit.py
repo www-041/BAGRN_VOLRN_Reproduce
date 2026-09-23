@@ -595,6 +595,26 @@ def compare_working_vs_suspect(edge_result: dict) -> dict:
     }
 
 
+def classify_phase_validation_root_cause(evidence: dict) -> str:
+    """Classify the audit evidence without changing any production gate."""
+    yes = lambda *keys: all(bool(evidence.get(key)) for key in keys)
+    if evidence.get("frame_bug"):
+        return "FRAME_OR_DIRECTION_BUG_SUPPORTED"
+    if yes("reported_improves", "sweep_near_reported", "mask_stable", "representation_agrees", "injection_correct"):
+        return "REAL_TRANSLATION_RESIDUAL_SUPPORTED"
+    if yes("mask_boundary_collapse", "sweep_prefers_zero") and not evidence.get("reported_improves"):
+        return "MASK_BOUNDARY_DOMINATED"
+    if evidence.get("representation_sensitive"):
+        return "RADIOMETRIC_REPRESENTATION_SENSITIVE"
+    if evidence.get("multipeak"):
+        return "TEXTURE_AMBIGUITY_OR_MULTIPEAK"
+    if evidence.get("zero_injection_bias"):
+        return "PHASE_HELPER_REAL_CROP_BIAS"
+    if evidence.get("reported_improves") is False and evidence.get("sweep_prefers_zero"):
+        return "PHASE_VALIDATION_ARTIFACT_SUPPORTED"
+    return "MIXED_OR_UNDERDETERMINED"
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)
