@@ -273,6 +273,62 @@ def write_phase_input_visual_audit(
     return output_path
 
 
+def inject_translation_nonwrapping(
+    image: np.ndarray, mask: np.ndarray, dx_px: int, dy_px: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Translate an image/mask into a fresh frame without circular wrapping."""
+    dx, dy = int(dx_px), int(dy_px)
+    if dx != dx_px or dy != dy_px:
+        raise ValueError("non-wrapping injection accepts integer pixel shifts")
+    source = np.asarray(image)
+    source_mask = np.asarray(mask, dtype=bool)
+    if source.shape != source_mask.shape:
+        raise ValueError("image and mask must have the same shape")
+    height, width = source.shape
+    out = np.full(source.shape, np.nan, dtype=np.float64)
+    out_mask = np.zeros(source.shape, dtype=bool)
+    src_y0, src_y1 = max(0, -dy), min(height, height - dy)
+    src_x0, src_x1 = max(0, -dx), min(width, width - dx)
+    if src_y1 <= src_y0 or src_x1 <= src_x0:
+        return out, out_mask
+    dst_y0, dst_y1 = src_y0 + dy, src_y1 + dy
+    dst_x0, dst_x1 = src_x0 + dx, src_x1 + dx
+    out[dst_y0:dst_y1, dst_x0:dst_x1] = source[src_y0:src_y1, src_x0:src_x1]
+    out_mask[dst_y0:dst_y1, dst_x0:dst_x1] = source_mask[src_y0:src_y1, src_x0:src_x1]
+    out[~out_mask] = np.nan
+    return out, out_mask
+
+
+def run_phase_sign_convention(
+    reference: np.ndarray,
+    reference_mask: np.ndarray,
+    moving: np.ndarray,
+    moving_mask: np.ndarray,
+    injected_dx: int,
+    injected_dy: int,
+) -> dict:
+    inputs = {
+        "ref_crop": reference,
+        "warped_target_crop": moving,
+        "ref_valid_mask": reference_mask,
+        "target_valid_mask": moving_mask,
+        "joint_valid_mask": np.asarray(reference_mask, dtype=bool) & np.asarray(moving_mask, dtype=bool),
+    }
+    phase = phase_from_inputs(inputs)
+    expected_dx, expected_dy = -float(injected_dx), -float(injected_dy)
+    if phase["dx_px"] is None:
+        error = float("inf")
+    else:
+        error = float(np.hypot(phase["dx_px"] - expected_dx, phase["dy_px"] - expected_dy))
+    return {
+        "injected_dx": int(injected_dx), "injected_dy": int(injected_dy),
+        "expected_phase_dx": expected_dx, "expected_phase_dy": expected_dy,
+        "recovered_dx": phase["dx_px"], "recovered_dy": phase["dy_px"],
+        "error_mag_px": error, "phase": phase,
+        "semantics": "phase (dx,dy) is the shift required to move moving/target toward reference",
+    }
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)

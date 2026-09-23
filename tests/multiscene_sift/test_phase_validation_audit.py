@@ -12,6 +12,8 @@ from src.multiscene_sift.phase_validation_audit import (
     export_phase_inputs,
     reload_phase_inputs,
     phase_input_visual_stats,
+    inject_translation_nonwrapping,
+    run_phase_sign_convention,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -157,3 +159,14 @@ def test_visual_audit_stats_use_joint_mask_and_write_figure(tmp_path):
     path = write_phase_input_visual_audit({"2-5": inputs}, tmp_path / "audit.png", tmp_path / "stats.json")
     assert path.is_file()
     assert (tmp_path / "stats.json").is_file()
+
+
+@pytest.mark.parametrize("dx,dy", [(5, 0), (-5, 0), (0, 5), (0, -5), (4, -7)])
+def test_nonwrapping_injection_has_explicit_inverse_phase_sign(dx, dy):
+    rng = np.random.default_rng(7)
+    image = rng.normal(size=(128, 128)).astype(np.float32)
+    mask = np.ones_like(image, dtype=bool)
+    shifted, shifted_mask = inject_translation_nonwrapping(image, mask, dx, dy)
+    assert shifted.shape == image.shape
+    assert shifted_mask.sum() < mask.sum()
+    assert run_phase_sign_convention(image, mask, shifted, shifted_mask, dx, dy)["error_mag_px"] < 0.5
