@@ -316,3 +316,66 @@ def test_recovery_script_forwards_explicit_paths(tmp_path, monkeypatch):
         ["--five-scene-run-dir", "run", "--input-root", "root", "--output-dir", "out"]
     ) == 0
     assert calls == [("run", "root", "out")]
+
+
+def test_reproduction_gate_exact_close_and_mismatch_states():
+    from src.multiscene_sift.inlier_recovery import compare_replayed_pair_to_historical
+
+    historical = {
+        "raw_matches": 100, "inliers": 80, "inlier_ratio": 0.8,
+        "rmse_px": 1.0, "p95_px": 2.0,
+        "affine_matrix": [[1, 0, 3], [0, 1, 4], [0, 0, 1]],
+    }
+    exact = {**historical, "raw_coordinates": {"tgt_xy": [[0, 0], [1, 1]]}}
+    close = {**historical, "inliers": 81, "rmse_px": 1.04, "p95_px": 2.09,
+             "raw_coordinates": {"tgt_xy": [[0, 0], [1, 1]]}}
+    mismatch = {**close, "rmse_px": 1.2}
+
+    assert compare_replayed_pair_to_historical(historical, exact)["state"] == "EXACT"
+    assert compare_replayed_pair_to_historical(historical, close)["state"] == "CLOSE"
+    assert compare_replayed_pair_to_historical(historical, mismatch)["state"] == "MISMATCH"
+
+
+def test_reproduction_gate_compares_affine_pointwise_not_only_translation():
+    from src.multiscene_sift.inlier_recovery import compare_replayed_pair_to_historical
+
+    historical = {
+        "raw_matches": 2, "inliers": 2, "inlier_ratio": 1.0,
+        "rmse_px": 0.0, "p95_px": 0.0,
+        "affine_matrix": [[1, 0, 10], [0, 1, 10], [0, 0, 1]],
+    }
+    replayed = {
+        **historical,
+        "raw_coordinates": {"tgt_xy": [[0, 0], [100, 100]]},
+        "affine_matrix": [[1, 0, 10.2], [0, 1, 10], [0, 0, 1]],
+    }
+
+    result = compare_replayed_pair_to_historical(historical, replayed)
+
+    assert result["affine_prediction_max_diff_px"] == pytest.approx(0.2)
+    assert result["state"] == "CLOSE"
+
+
+def test_any_required_edge_mismatch_blocks_overall_reproduction_acceptance(tmp_path):
+    from src.multiscene_sift.inlier_recovery import evaluate_reproduction_gate
+
+    historical = {
+        "accepted_edges": [{
+            "edge": [0, 1], "raw_matches": 1, "inliers": 1,
+            "inlier_ratio": 1.0, "rmse_px": 0.0, "p95_px": 0.0,
+            "affine_matrix": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        }]
+    }
+    replayed = [{
+        "edge": [0, 1], "raw_matches": 2, "inliers": 1,
+        "inlier_ratio": 0.5, "rmse_px": 0.0, "p95_px": 0.0,
+        "affine_matrix": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        "raw_coordinates": {"tgt_xy": [[0, 0]]},
+    }]
+
+    result = evaluate_reproduction_gate(historical, replayed, tmp_path)
+
+    assert result["overall"] == "REPRODUCTION_FAILED"
+    assert result["edges"][0]["state"] == "MISMATCH"
+    assert (tmp_path / "03_reproduction_gate.csv").is_file()
+    assert (tmp_path / "03_reproduction_gate.json").is_file()

@@ -137,3 +137,88 @@ def recover_accepted_pairs(
         "accepted_count": len(accepted),
         "replayed_edges": [item["edge"] for item in replayed],
     }
+
+
+def compare_replayed_pair_to_historical(historical: dict, replayed: dict) -> dict:
+    """Classify one replay against frozen discrete and continuous metrics."""
+    raw_delta = int(replayed["raw_matches"]) - int(historical["raw_matches"])
+    inlier_delta = int(replayed["inliers"]) - int(historical["inliers"])
+    ratio_delta = float(replayed["inlier_ratio"]) - float(historical["inlier_ratio"])
+    rmse_delta = float(replayed["rmse_px"]) - float(historical["rmse_px"])
+    p95_delta = float(replayed["p95_px"]) - float(historical["p95_px"])
+
+    points = (replayed.get("raw_coordinates") or {}).get("tgt_xy")
+    if points:
+        pts = np.asarray(points, dtype=np.float64)
+        hist_pred = _apply_affine(historical["affine_matrix"], pts)
+        replay_pred = _apply_affine(replayed["affine_matrix"], pts)
+        affine_max = float(np.max(np.linalg.norm(hist_pred - replay_pred, axis=1)))
+    else:
+        affine_max = 0.0 if np.allclose(
+            historical["affine_matrix"], replayed["affine_matrix"], atol=1e-9
+        ) else float("inf")
+
+    exact = (
+        raw_delta == 0 and inlier_delta == 0
+        and abs(ratio_delta) <= 1e-9 and abs(rmse_delta) <= 1e-9
+        and abs(p95_delta) <= 1e-9 and affine_max <= 1e-9
+    )
+    close = (
+        raw_delta == 0
+        and abs(inlier_delta) <= max(1, int(np.ceil(0.005 * historical["inliers"])))
+        and abs(ratio_delta) <= 0.005
+        and abs(rmse_delta) <= 0.05
+        and abs(p95_delta) <= 0.10
+        and affine_max <= 0.25
+    )
+    state = "EXACT" if exact else "CLOSE" if close else "MISMATCH"
+    return {
+        "state": state,
+        "raw_matches_delta": raw_delta,
+        "inliers_delta": inlier_delta,
+        "inlier_ratio_delta": ratio_delta,
+        "rmse_delta_px": rmse_delta,
+        "p95_delta_px": p95_delta,
+        "affine_prediction_max_diff_px": affine_max,
+    }
+
+
+def evaluate_reproduction_gate(
+    historical_baselines: dict,
+    replayed_summaries: list[dict],
+    output_dir: str | Path,
+) -> dict:
+    """Evaluate every required accepted edge and persist the gate artifacts."""
+    replayed_by_edge = {tuple(item["edge"]): item for item in replayed_summaries}
+    records = []
+    for historical in historical_baselines["accepted_edges"]:
+        edge = tuple(historical["edge"])
+        replayed = replayed_by_edge.get(edge)
+        if replayed is None:
+            comparison = {"state": "MISMATCH", "reason": "missing replay"}
+        else:
+            comparison = compare_replayed_pair_to_historical(historical, replayed)
+        records.append({"edge": list(edge), **comparison})
+    overall = (
+        "REPRODUCTION_ACCEPTED"
+        if records and all(row["state"] in {"EXACT", "CLOSE"} for row in records)
+        else "REPRODUCTION_FAILED"
+    )
+    result = {"overall": overall, "edges": records}
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "03_reproduction_gate.json").write_text(
+        json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    with (out_dir / "03_reproduction_gate.csv").open("w", newline="", encoding="utf-8") as handle:
+        fields = ["edge_i", "edge_j", "state", "raw_matches_delta", "inliers_delta",
+                  "inlier_ratio_delta", "rmse_delta_px", "p95_delta_px",
+                  "affine_prediction_max_diff_px", "reason"]
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in records:
+            writer.writerow({
+                "edge_i": row["edge"][0], "edge_j": row["edge"][1],
+                **{key: row.get(key) for key in fields[2:]},
+            })
+    return result
