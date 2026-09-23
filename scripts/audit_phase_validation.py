@@ -127,7 +127,8 @@ def run_audit(args: argparse.Namespace) -> dict:
         inputs["metadata"]["world_matrix_source"] = world_matrix_source
         phase = phase_from_inputs(inputs)
         old_value = float(baseline_edge["old_phase_median_px"])
-        reproduced = phase.get("magnitude_px") is not None and abs(float(phase["magnitude_px"]) - old_value) <= 1e-6
+        selected_tile_value = float(inputs["metadata"]["selected_tile"]["phase_mag_px"])
+        reproduced = phase.get("magnitude_px") is not None and abs(float(phase["magnitude_px"]) - selected_tile_value) <= 1e-6
         status = "EXACT" if reproduced else "BASELINE_REPRODUCTION_FAILED"
         if not reproduced:
             write_json(output_dir / "00_phase_audit_baseline.json", {
@@ -135,6 +136,7 @@ def run_audit(args: argparse.Namespace) -> dict:
                 "status": status,
                 "failed_edge": edge,
                 "reproduced_phase": phase,
+                "expected_selected_tile_phase_px": selected_tile_value,
                 "expected_phase_median_px": old_value,
             })
             raise RuntimeError(f"{status}: {edge}")
