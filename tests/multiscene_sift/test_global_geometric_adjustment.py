@@ -685,3 +685,31 @@ def test_translation_correction_composes_in_global_frame_and_keeps_reference():
 
     assert np.allclose(adjusted[0], transforms[0])
     assert np.allclose(adjusted[1], [[1.0, 0.0, 12.0], [0.0, 1.0, 17.0], [0.0, 0.0, 1.0]])
+
+
+def test_translation_before_after_evaluation_uses_same_point_ids():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import (
+        apply_translation_corrections,
+        build_translation_adjustment_system,
+        evaluate_edge_point_residuals,
+        solve_translation_adjustment,
+    )
+
+    observations = {(0, 1): {
+        "x_i": np.array([[10.0, 5.0], [20.0, 5.0]]),
+        "x_j": np.array([[0.0, 0.0], [10.0, 0.0]]),
+        "is_tree_edge": False,
+    }}
+    mst = {0: np.eye(3), 1: np.eye(3)}
+    before = evaluate_edge_point_residuals(mst, observations)
+    solution = solve_translation_adjustment(
+        build_translation_adjustment_system(mst, observations, reference_idx=0)
+    )
+    after = evaluate_edge_point_residuals(
+        apply_translation_corrections(mst, solution["scene_corrections_px"]), observations
+    )
+
+    assert list(before["point_id"]) == list(after["point_id"]) == [0, 1]
+    assert list(before["residual_px"]) == [np.sqrt(125.0), np.sqrt(125.0)]
+    assert np.allclose(after["residual_px"], [0.0, 0.0])

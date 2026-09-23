@@ -381,11 +381,19 @@ def summarize_network_residuals(point_residuals) -> dict:
 
 
 def write_mst_residual_artifacts(point_residuals, summary: dict, output_dir: str | Path) -> dict:
+    return _write_residual_artifacts(point_residuals, summary, output_dir, "01_mst")
+
+
+def write_translation_residual_artifacts(point_residuals, summary: dict, output_dir: str | Path) -> dict:
+    return _write_residual_artifacts(point_residuals, summary, output_dir, "05_translation")
+
+
+def _write_residual_artifacts(point_residuals, summary: dict, output_dir: str | Path, prefix: str) -> dict:
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    point_path = out_dir / "01_mst_point_residuals.csv"
+    point_path = out_dir / f"{prefix}_point_residuals.csv"
     point_residuals.to_csv(point_path, index=False)
-    edge_path = out_dir / "01_mst_edge_summary.csv"
+    edge_path = out_dir / f"{prefix}_edge_summary.csv"
     with edge_path.open("w", newline="", encoding="utf-8") as handle:
         rows = summary["per_edge"]
         fields = ["edge_i", "edge_j", "is_tree_edge", "n_points", "median_px",
@@ -393,7 +401,7 @@ def write_mst_residual_artifacts(point_residuals, summary: dict, output_dir: str
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
-    network_path = out_dir / "01_mst_network_summary.json"
+    network_path = out_dir / f"{prefix}_network_summary.json"
     network_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     return {"point_residuals": point_path, "edge_summary": edge_path, "network_summary": network_path}
 
