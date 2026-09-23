@@ -135,6 +135,7 @@ def load_robust_translation_inputs(
         "mst_global_transforms": load_mst_global_transforms(paths["global_transforms"]),
         "edge_observations": observations,
         "historical_pair_metrics": pairwise_metrics,
+        "mst_summary": _read_json(paths["mst_summary"]),
         "equal_l2_summary": equal_l2_summary,
         "equal_l2_solution": equal_l2_solution,
         "accepted_edges": sorted(accepted_edges),
@@ -488,6 +489,79 @@ def _baseline_reproduction_status(inputs: dict, summary: dict) -> dict:
     }
 
 
+def _comparison_row(method: str, summary: dict) -> dict:
+    edge_rows = {
+        (int(row["edge_i"]), int(row["edge_j"])): row
+        for row in summary["per_edge"]
+    }
+    edge_p95 = {edge: float(row["p95_px"]) for edge, row in edge_rows.items()}
+    worst_edge = max(edge_p95, key=edge_p95.get)
+    return {
+        "method": method,
+        "zero_one_rmse_px": summary["zero_one"]["rmse_px"],
+        "zero_one_p95_px": summary["zero_one"]["p95_px"],
+        "zero_one_max_px": summary["zero_one"]["max_px"],
+        "mean_edge_rmse_px": summary["edge_balanced"]["mean_edge_rmse_px"],
+        "mean_edge_p95_px": summary["edge_balanced"]["mean_edge_p95_px"],
+        "max_edge_p95_px": summary["edge_balanced"]["max_edge_p95_px"],
+        "tree_edge_mean_p95_px": summary["tree_edges"]["mean_edge_p95_px"],
+        "non_tree_edge_mean_p95_px": summary["non_tree_edges"]["mean_edge_p95_px"],
+        "0-4_p95_px": edge_p95.get((0, 4)),
+        "1-4_p95_px": edge_p95.get((1, 4)),
+        "0-2_p95_px": edge_p95.get((0, 2)),
+        "3-4_p95_px": edge_p95.get((3, 4)),
+        "worst_edge": _edge_label(worst_edge),
+        "worst_edge_p95_px": edge_p95[worst_edge],
+        "edge_p95_spread_px": max(edge_p95.values()) - min(edge_p95.values()),
+    }
+
+
+def build_robust_translation_comparison(
+    mst_summary: dict,
+    equal_l2_summary: dict,
+    candidate_summaries: dict[str, dict],
+) -> list[dict]:
+    """Compare all methods on the same frozen point residuals."""
+    rows = [_comparison_row("MST", mst_summary), _comparison_row("EQUAL_L2", equal_l2_summary)]
+    for name in ("EQUAL_HUBER", "QUALITY_L2", "QUALITY_HUBER"):
+        rows.append(_comparison_row(name, candidate_summaries[name]))
+    return rows
+
+
+def write_robust_translation_comparison(comparison: list[dict], output_dir: str | Path) -> dict:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    csv_path = out / "04_method_comparison.csv"
+    fields = list(comparison[0]) if comparison else ["method"]
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(comparison)
+    json_path = out / "04_method_comparison.json"
+    json_path.write_text(json.dumps(_json_safe(comparison), indent=2, ensure_ascii=False), encoding="utf-8")
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    labels = ["0-1", "0-4", "1-4", "0-2", "3-4"]
+    edges = [(0, 1), (0, 4), (1, 4), (0, 2), (3, 4)]
+    x = np.arange(len(labels))
+    fig, ax = plt.subplots(figsize=(10, 5))
+    width = 0.16
+    for index, row in enumerate(comparison):
+        values = [row["zero_one_p95_px"] if edge == (0, 1) else row[f"{_edge_label(edge)}_p95_px"] for edge in edges]
+        ax.bar(x + (index - (len(comparison) - 1) / 2) * width, values, width=width, label=row["method"])
+    ax.set_xticks(x, labels)
+    ax.set_ylabel("P95 residual (px)")
+    ax.set_title("Same-point translation residual comparison")
+    ax.legend()
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    png_path = out / "04_method_comparison.png"
+    fig.savefig(png_path, dpi=150)
+    plt.close(fig)
+    return {"csv": csv_path, "json": json_path, "png": png_path}
+
+
 def _write_variant_artifacts(variant: str, result: dict, output_dir: Path) -> None:
     variant_dir = output_dir / "03_variants"
     variant_dir.mkdir(parents=True, exist_ok=True)
@@ -557,4 +631,10 @@ def run_translation_variants(inputs: dict, output_dir: str | Path | None = None)
         write_huber_configuration(inputs["historical_pair_metrics"], delta_px, out)
         for name, variant in variants.items():
             _write_variant_artifacts(name, variant, out)
+        comparison = build_robust_translation_comparison(
+            inputs["mst_summary"],
+            inputs["equal_l2_summary"],
+            {name: value["summary"] for name, value in variants.items()},
+        )
+        write_robust_translation_comparison(comparison, out)
     return result

@@ -198,3 +198,38 @@ def test_equal_l2_variant_reproduces_frozen_baseline(tmp_path):
     assert result["variants"]["EQUAL_L2"]["summary"]["zero_one"]["p95_px"] == pytest.approx(
         inputs["equal_l2_summary"]["zero_one"]["p95_px"], abs=1e-8
     )
+
+
+def test_variant_comparison_preserves_same_point_ids(tmp_path):
+    from src.multiscene_sift.robust_translation_adjustment import (
+        build_robust_translation_comparison,
+        load_robust_translation_inputs,
+        run_translation_variants,
+    )
+
+    root = Path("data/output")
+    inputs = load_robust_translation_inputs(
+        root / "five_scene_sift_B14",
+        root / "five_scene_inlier_recovery",
+        root / "five_scene_global_adjustment",
+    )
+    result = run_translation_variants(inputs, tmp_path)
+    expected_ids = {
+        edge: list(range(len(observation["x_i"])))
+        for edge, observation in inputs["edge_observations"].items()
+    }
+    for variant in result["variants"].values():
+        rows = variant["point_residuals"].to_dict(orient="records")
+        actual_ids = {}
+        for row in rows:
+            edge = (int(row["edge_i"]), int(row["edge_j"]))
+            actual_ids.setdefault(edge, []).append(int(row["point_id"]))
+        assert actual_ids == expected_ids
+    comparison = build_robust_translation_comparison(
+        inputs["equal_l2_summary"],
+        inputs["equal_l2_summary"],
+        {name: value["summary"] for name, value in result["variants"].items()},
+    )
+    assert {row["method"] for row in comparison} == {
+        "MST", "EQUAL_L2", "EQUAL_HUBER", "QUALITY_L2", "QUALITY_HUBER"
+    }
