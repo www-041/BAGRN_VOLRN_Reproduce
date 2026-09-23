@@ -147,6 +147,53 @@ def sha256_array(array: np.ndarray) -> str:
     return hashlib.sha256(np.ascontiguousarray(array).tobytes()).hexdigest()
 
 
+def export_phase_inputs(inputs: dict, output_dir: str | Path, edge_key: str) -> Path:
+    """Persist exact arrays and a machine-readable checksum manifest."""
+    out = Path(output_dir)
+    input_dir = out / "02_phase_inputs"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    npz_path = input_dir / f"{edge_key.replace('-', '_')}_inputs.npz"
+    np.savez_compressed(
+        npz_path,
+        ref_crop=np.asarray(inputs["ref_crop"]),
+        warped_target_crop=np.asarray(inputs["warped_target_crop"]),
+        ref_valid_mask=np.asarray(inputs["ref_valid_mask"], dtype=bool),
+        target_valid_mask=np.asarray(inputs["target_valid_mask"], dtype=bool),
+        joint_valid_mask=np.asarray(inputs["joint_valid_mask"], dtype=bool),
+    )
+    ref = np.asarray(inputs["ref_crop"])
+    joint = np.asarray(inputs["joint_valid_mask"], dtype=bool)
+    manifest_path = out / "02_phase_input_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    manifest[edge_key] = {
+        "shape": list(ref.shape),
+        "dtype": str(ref.dtype),
+        "min": float(np.nanmin(ref)) if np.isfinite(ref).any() else None,
+        "max": float(np.nanmax(ref)) if np.isfinite(ref).any() else None,
+        "mean": float(np.nanmean(ref)) if np.isfinite(ref).any() else None,
+        "std": float(np.nanstd(ref)) if np.isfinite(ref).any() else None,
+        "joint_valid_fraction": float(joint.mean()),
+        "sha256": sha256_array(ref),
+        "npz": str(npz_path.name),
+        "metadata": _json_safe(inputs.get("metadata", {})),
+    }
+    write_json(manifest_path, manifest)
+    return npz_path
+
+
+def reload_phase_inputs(output_dir: str | Path, edge_key: str) -> dict:
+    input_dir = Path(output_dir) / "02_phase_inputs"
+    path = input_dir / f"{edge_key.replace('-', '_')}_inputs.npz"
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with np.load(path, allow_pickle=False) as data:
+        result = {key: data[key] for key in data.files}
+    manifest_path = Path(output_dir) / "02_phase_input_manifest.json"
+    if manifest_path.is_file():
+        result["metadata"] = json.loads(manifest_path.read_text(encoding="utf-8")).get(edge_key, {}).get("metadata", {})
+    return result
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)

@@ -9,6 +9,8 @@ from src.multiscene_sift.phase_validation_audit import (
     coordinate_invariance_check,
     load_phase_audit_baseline,
     phase_from_inputs,
+    export_phase_inputs,
+    reload_phase_inputs,
     trace_phase_validation_flow,
 )
 
@@ -113,3 +115,23 @@ def test_coordinate_roundtrip_is_invariant_to_crop_origin():
     assert result["status"] == "OK"
     assert result["ref_world_roundtrip_error"] < 1e-9
     assert result["tgt_world_roundtrip_error"] < 1e-9
+
+
+def test_export_reload_preserves_exact_phase_inputs_and_phase_result(tmp_path):
+    rng = np.random.default_rng(5)
+    ref = rng.normal(size=(64, 64)).astype(np.float32)
+    inputs = {
+        "ref_crop": ref,
+        "warped_target_crop": ref.copy(),
+        "ref_valid_mask": np.ones_like(ref, dtype=bool),
+        "target_valid_mask": np.ones_like(ref, dtype=bool),
+        "joint_valid_mask": np.ones_like(ref, dtype=bool),
+        "metadata": {"edge": "0-6", "crop_origin_row": 2, "crop_origin_col": 3},
+    }
+    export_phase_inputs(inputs, tmp_path, "0-6")
+    restored = reload_phase_inputs(tmp_path, "0-6")
+    assert phase_from_inputs(inputs) == phase_from_inputs(restored)
+    np.testing.assert_array_equal(inputs["ref_crop"], restored["ref_crop"])
+    manifest = json.loads((tmp_path / "02_phase_input_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["0-6"]["shape"] == [64, 64]
+    assert len(manifest["0-6"]["sha256"]) == 64
