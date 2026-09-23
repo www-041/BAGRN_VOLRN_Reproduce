@@ -168,3 +168,33 @@ def test_edge_balanced_irls_is_invariant_to_point_duplication():
         assert repeated["scene_corrections_px"][scene] == pytest.approx(
             original["scene_corrections_px"][scene], abs=1e-8
         )
+
+
+def test_variant_set_is_frozen():
+    from src.multiscene_sift.robust_translation_adjustment import VARIANTS
+
+    assert list(VARIANTS) == [
+        "EQUAL_L2",
+        "EQUAL_HUBER",
+        "QUALITY_L2",
+        "QUALITY_HUBER",
+    ]
+
+
+def test_equal_l2_variant_reproduces_frozen_baseline(tmp_path):
+    from src.multiscene_sift.robust_translation_adjustment import (
+        load_robust_translation_inputs,
+        run_translation_variants,
+    )
+
+    root = Path("data/output")
+    inputs = load_robust_translation_inputs(
+        root / "five_scene_sift_B14",
+        root / "five_scene_inlier_recovery",
+        root / "five_scene_global_adjustment",
+    )
+    result = run_translation_variants(inputs, tmp_path)
+    assert result["baseline_reproduction_status"] == "PASS"
+    assert result["variants"]["EQUAL_L2"]["summary"]["zero_one"]["p95_px"] == pytest.approx(
+        inputs["equal_l2_summary"]["zero_one"]["p95_px"], abs=1e-8
+    )

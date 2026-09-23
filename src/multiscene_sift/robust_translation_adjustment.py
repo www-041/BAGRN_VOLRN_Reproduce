@@ -297,6 +297,18 @@ def _edge_residual_medians(global_transforms: dict[int, np.ndarray], edge_observ
     return {edge: float(np.median(values)) for edge, values in grouped.items()}
 
 
+def _observation_pixel_size(edge_observations: dict) -> float:
+    sizes = {
+        float(observation.get("pixel_size", 1.0))
+        for observation in edge_observations.values()
+    }
+    if not sizes or not all(np.isfinite(size) and size > 0.0 for size in sizes):
+        raise ValueError("edge observations must have a finite positive pixel_size")
+    if len(sizes) != 1:
+        raise ValueError(f"inconsistent pixel sizes in edge observations: {sorted(sizes)}")
+    return sizes.pop()
+
+
 def solve_edge_weighted_translation_irls(
     mst_global_transforms: dict[int, np.ndarray],
     edge_observations: dict[tuple[int, int], dict],
@@ -337,9 +349,12 @@ def solve_edge_weighted_translation_irls(
     condition_number = base_system["condition_number"]
     final_edge_factors = {edge: 1.0 for edge in edges}
     final_edge_total_weights = dict(prior)
+    pixel_size = _observation_pixel_size(edge_observations)
 
     for iteration in range(1, max_iterations + 1):
-        adjusted_transforms = apply_translation_corrections(mst_global_transforms, corrections)
+        adjusted_transforms = apply_translation_corrections(
+            mst_global_transforms, corrections, pixel_size=pixel_size
+        )
         residual_medians = _edge_residual_medians(adjusted_transforms, edge_observations)
         factors = {
             edge: huber_edge_factor(residual_medians[edge], huber_delta_px, min_robust_factor)
@@ -392,7 +407,9 @@ def solve_edge_weighted_translation_irls(
             converged = True
             break
 
-    final_transforms = apply_translation_corrections(mst_global_transforms, corrections)
+    final_transforms = apply_translation_corrections(
+        mst_global_transforms, corrections, pixel_size=pixel_size
+    )
     final_residuals = _edge_residual_medians(final_transforms, edge_observations)
     final_edge_factors = {
         edge: huber_edge_factor(final_residuals[edge], huber_delta_px, min_robust_factor)
@@ -412,3 +429,132 @@ def solve_edge_weighted_translation_irls(
         "final_edge_factors": final_edge_factors,
         "final_edge_total_weights": final_edge_total_weights,
     }
+
+
+VARIANTS = {
+    "EQUAL_L2": {"prior": "equal", "huber": False},
+    "EQUAL_HUBER": {"prior": "equal", "huber": True},
+    "QUALITY_L2": {"prior": "intrinsic_quality", "huber": False},
+    "QUALITY_HUBER": {"prior": "intrinsic_quality", "huber": True},
+}
+
+
+def _evaluate_solution(inputs: dict, solution: dict) -> tuple[dict, Any]:
+    corrections = {
+        int(scene): (float(values[0]), float(values[1]))
+        for scene, values in solution["scene_corrections_px"].items()
+    }
+    adjusted = apply_translation_corrections(
+        inputs["mst_global_transforms"], corrections,
+        pixel_size=_observation_pixel_size(inputs["edge_observations"]),
+    )
+    point_residuals = evaluate_edge_point_residuals(adjusted, inputs["edge_observations"])
+    return summarize_network_residuals(point_residuals), point_residuals
+
+
+def _baseline_reproduction_status(inputs: dict, summary: dict) -> dict:
+    baseline = inputs["equal_l2_summary"]
+    checks = {
+        "zero_one_p95_px": (summary["zero_one"]["p95_px"], baseline["zero_one"]["p95_px"]),
+        "mean_edge_rmse_px": (
+            summary["edge_balanced"]["mean_edge_rmse_px"],
+            baseline["edge_balanced"]["mean_edge_rmse_px"],
+        ),
+        "max_edge_p95_px": (
+            summary["edge_balanced"]["max_edge_p95_px"],
+            baseline["edge_balanced"]["max_edge_p95_px"],
+        ),
+    }
+    baseline_edges = {
+        (int(row["edge_i"]), int(row["edge_j"])): row["p95_px"]
+        for row in baseline["per_edge"]
+    }
+    candidate_edges = {
+        (int(row["edge_i"]), int(row["edge_j"])): row["p95_px"]
+        for row in summary["per_edge"]
+    }
+    checks.update({
+        f"edge_{_edge_label(edge)}_p95_px": (candidate_edges[edge], baseline_edges[edge])
+        for edge in baseline_edges
+    })
+    passed = all(abs(float(actual) - float(expected)) <= 1e-8 for actual, expected in checks.values())
+    return {
+        "status": "PASS" if passed else "BASELINE_REPRODUCTION_FAILED",
+        "checks": {
+            key: {"candidate": float(actual), "baseline": float(expected),
+                  "absolute_difference": float(abs(actual - expected))}
+            for key, (actual, expected) in checks.items()
+        },
+    }
+
+
+def _write_variant_artifacts(variant: str, result: dict, output_dir: Path) -> None:
+    variant_dir = output_dir / "03_variants"
+    variant_dir.mkdir(parents=True, exist_ok=True)
+    solution_path = variant_dir / f"{variant}_solution.json"
+    solution_path.write_text(json.dumps(_json_safe(result["solution"]), indent=2, ensure_ascii=False), encoding="utf-8")
+    summary_path = variant_dir / f"{variant}_network_summary.json"
+    summary_path.write_text(json.dumps(_json_safe(result["summary"]), indent=2, ensure_ascii=False), encoding="utf-8")
+    edge_path = variant_dir / f"{variant}_edge_summary.csv"
+    fields = ["edge_i", "edge_j", "is_tree_edge", "n_points", "median_px", "rmse_px", "p95_px", "max_px", "dx_mean", "dy_mean"]
+    with edge_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(result["summary"]["per_edge"])
+    history_path = variant_dir / f"{variant}_weight_history.csv"
+    with history_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["iteration", "edge", "prior_weight", "robust_factor", "total_weight"])
+        writer.writeheader()
+        for iteration, factors in enumerate(result["solution"].get("edge_factor_history", []), start=1):
+            for label, factor in factors.items():
+                edge = tuple(int(item) for item in label.split("-"))
+                writer.writerow({
+                    "iteration": iteration,
+                    "edge": label,
+                    "prior_weight": result["prior_edge_weights"][edge],
+                    "robust_factor": factor,
+                    "total_weight": result["prior_edge_weights"][edge] * factor,
+                })
+
+
+def run_translation_variants(inputs: dict, output_dir: str | Path | None = None) -> dict:
+    """Run all four translation-only candidates over the same frozen points."""
+    quality_weights = compute_intrinsic_edge_quality_weights(inputs["historical_pair_metrics"])
+    quality_priors = {edge: value["weight"] for edge, value in quality_weights.items()}
+    equal_priors = {edge: 1.0 for edge in inputs["edge_observations"]}
+    delta_px = derive_huber_delta_px(inputs["historical_pair_metrics"])
+    variants = {}
+    for name, config in VARIANTS.items():
+        prior = equal_priors if config["prior"] == "equal" else quality_priors
+        solution = solve_edge_weighted_translation_irls(
+            inputs["mst_global_transforms"],
+            inputs["edge_observations"],
+            inputs["reference_idx"],
+            prior,
+            use_huber=bool(config["huber"]),
+            huber_delta_px=delta_px,
+        )
+        summary, point_residuals = _evaluate_solution(inputs, solution)
+        variants[name] = {
+            "config": config,
+            "prior_edge_weights": prior,
+            "solution": solution,
+            "summary": summary,
+            "point_residuals": point_residuals,
+        }
+    baseline_check = _baseline_reproduction_status(inputs, variants["EQUAL_L2"]["summary"])
+    result = {
+        "variants": variants,
+        "quality_weights": quality_weights,
+        "huber_delta_px": delta_px,
+        "baseline_reproduction_status": baseline_check["status"],
+        "baseline_reproduction": baseline_check,
+    }
+    if output_dir is not None:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        write_intrinsic_quality_weights(quality_weights, out)
+        write_huber_configuration(inputs["historical_pair_metrics"], delta_px, out)
+        for name, variant in variants.items():
+            _write_variant_artifacts(name, variant, out)
+    return result
