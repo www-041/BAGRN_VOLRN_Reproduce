@@ -764,6 +764,36 @@ def write_affine_solution(solution: dict, output_path: str | Path) -> Path:
     return path
 
 
+def decide_affine_adjustment(translation_summary: dict, affine_summary: dict, solution: dict) -> dict:
+    if solution.get("status") != "OK":
+        return {"decision": "AFFINE_SYSTEM_INVALID", "reason": solution.get("status")}
+    t_mean = translation_summary["edge_balanced"]["mean_edge_rmse_px"]
+    a_mean = affine_summary["edge_balanced"]["mean_edge_rmse_px"]
+    t_max = translation_summary["edge_balanced"]["max_edge_p95_px"]
+    a_max = affine_summary["edge_balanced"]["max_edge_p95_px"]
+    if a_mean < t_mean and a_max < t_max:
+        decision = "AFFINE_ADJUSTMENT_ADDS_VALUE"
+    elif a_mean >= t_mean and a_max >= t_max:
+        decision = "TRANSLATION_ALREADY_SUFFICIENT"
+    else:
+        decision = "AFFINE_OVERFITS_OR_UNSTABLE"
+    return {"decision": decision, "mean_edge_rmse_before_px": t_mean,
+            "mean_edge_rmse_after_px": a_mean, "max_edge_p95_before_px": t_max,
+            "max_edge_p95_after_px": a_max,
+            "mean_rmse_reduction": float(1.0 - a_mean / t_mean),
+            "max_p95_reduction": float(1.0 - a_max / t_max)}
+
+
+def write_affine_decision(decision: dict, output_dir: str | Path) -> dict:
+    out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
+    jp = out / "12_affine_decision.json"; tp = out / "12_affine_decision.txt"
+    jp.write_text(json.dumps(decision, indent=2, ensure_ascii=False), encoding="utf-8")
+    tp.write_text("decision=" + str(decision.get("decision")) + "\n" +
+                  "\n".join(f"{k}={v}" for k, v in decision.items() if k != "decision") + "\n",
+                  encoding="utf-8")
+    return {"json": jp, "txt": tp}
+
+
 def apply_translation_corrections(
     mst_global_transforms: dict[int, np.ndarray],
     corrections: dict[int, tuple[float, float]],

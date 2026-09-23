@@ -851,3 +851,12 @@ def test_affine_correction_composes_on_left_and_preserves_reference():
 
     assert np.allclose(adjusted[0], np.eye(3))
     assert np.allclose(adjusted[1], [[1, 0, 12], [0, 1, 17], [0, 0, 1]])
+
+
+def test_affine_decision_rejects_worse_max_edge_even_when_mean_improves():
+    from src.multiscene_sift.global_geometric_adjustment import decide_affine_adjustment
+
+    translation = {"edge_balanced": {"mean_edge_rmse_px": 10.0, "max_edge_p95_px": 20.0}}
+    affine = {"edge_balanced": {"mean_edge_rmse_px": 5.0, "max_edge_p95_px": 21.0}}
+    decision = decide_affine_adjustment(translation, affine, {"status": "OK"})
+    assert decision["decision"] == "AFFINE_OVERFITS_OR_UNSTABLE"
