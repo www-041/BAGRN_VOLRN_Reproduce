@@ -54,3 +54,26 @@ def test_quality_weights_are_bounded():
     }
     weights = compute_intrinsic_edge_quality_weights(metrics)
     assert all(0.5 <= item["weight"] <= 2.0 for item in weights.values())
+
+
+def test_huber_factor_is_one_inside_delta():
+    from src.multiscene_sift.robust_translation_adjustment import huber_edge_factor
+
+    assert huber_edge_factor(1.0, 3.0) == pytest.approx(1.0)
+
+
+def test_huber_factor_downweights_but_never_deletes_edge():
+    from src.multiscene_sift.robust_translation_adjustment import huber_edge_factor
+
+    assert huber_edge_factor(30.0, 3.0, min_factor=0.1) == pytest.approx(0.1)
+
+
+def test_huber_delta_uses_pairwise_p95_not_global_residual():
+    from src.multiscene_sift.robust_translation_adjustment import derive_huber_delta_px
+
+    metrics = {
+        (0, 1): {"p95_px": 1.5},
+        (0, 4): {"p95_px": 2.0},
+        (1, 4): {"p95_px": 1.0},
+    }
+    assert derive_huber_delta_px(metrics) == pytest.approx(3.0)

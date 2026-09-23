@@ -238,3 +238,52 @@ def write_intrinsic_quality_weights(weights: dict[tuple[int, int], dict], output
                 "weight": value["weight"],
             })
     return {"json": json_path, "csv": csv_path}
+
+
+def derive_huber_delta_px(pairwise_metrics: dict[tuple[int, int], dict]) -> float:
+    """Freeze Huber delta from pairwise P95 values before global optimization."""
+    p95_values = [float(metrics["p95_px"]) for metrics in pairwise_metrics.values()]
+    if not p95_values or not all(np.isfinite(p95_values)):
+        raise ValueError("pairwise metrics must provide finite p95_px values")
+    return float(max(2.0, 2.0 * float(np.median(p95_values))))
+
+
+def huber_edge_factor(
+    residual_norm_px: float,
+    delta_px: float,
+    min_factor: float = 0.1,
+) -> float:
+    """Return a bounded edge-level Huber IRLS factor."""
+    residual = float(residual_norm_px)
+    delta = float(delta_px)
+    floor = float(min_factor)
+    if not np.isfinite(residual) or not np.isfinite(delta) or delta <= 0.0:
+        raise ValueError("Huber residual and delta must be finite and delta positive")
+    if floor <= 0.0 or floor > 1.0:
+        raise ValueError("min_factor must be in (0, 1]")
+    factor = 1.0 if residual <= delta else delta / max(residual, 1e-12)
+    return float(max(floor, min(1.0, factor)))
+
+
+def write_huber_configuration(
+    pairwise_metrics: dict[tuple[int, int], dict],
+    delta_px: float,
+    output_dir: str | Path,
+    min_factor: float = 0.1,
+) -> Path:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    p95_values = [float(pairwise_metrics[edge]["p95_px"]) for edge in sorted(pairwise_metrics)]
+    payload = {
+        "pairwise_p95_px": {
+            _edge_label(edge): float(pairwise_metrics[edge]["p95_px"])
+            for edge in sorted(pairwise_metrics)
+        },
+        "pairwise_p95_median_px": float(np.median(p95_values)),
+        "delta_px": float(delta_px),
+        "min_factor": float(min_factor),
+        "global_residual_used": False,
+    }
+    path = out / "02_huber_configuration.json"
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
