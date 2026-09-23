@@ -825,3 +825,94 @@ def build_exact_phase_inputs(
         "joint_valid_mask": joint,
         "metadata": metadata,
     }
+
+
+def write_phase_validation_dashboard(results: dict[str, dict], output_path) -> Path:
+    """Write the plan's two-edge, five-column diagnostic dashboard."""
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    edges = [("0-6", "WORKING_CONTROL"), ("2-5", "SUSPECT_PHASE_FALSE_ALARM")]
+    fig, axes = plt.subplots(2, 5, figsize=(19, 7.5), squeeze=False)
+    column_titles = [
+        "direct-warp checkerboard",
+        "original phase vector",
+        "translation-sweep surface",
+        "mask-erosion stability",
+        "real-crop injection recovery",
+    ]
+    for col, title in enumerate(column_titles):
+        axes[0, col].set_title(title, fontsize=10)
+    for row, (edge, role) in enumerate(edges):
+        result = results.get(edge, {})
+        inputs = result.get("inputs", {})
+        ref = np.asarray(inputs.get("ref_crop", np.zeros((2, 2))), dtype=float)
+        tgt = np.asarray(inputs.get("warped_target_crop", ref), dtype=float)
+        joint = np.asarray(inputs.get("joint_valid_mask", np.ones_like(ref, dtype=bool)), dtype=bool)
+        finite = np.isfinite(ref) & np.isfinite(tgt) & joint
+        checker = np.where(finite, np.where((np.indices(ref.shape).sum(axis=0) % 2) == 0, ref, tgt), np.nan)
+        ax = axes[row, 0]
+        ax.imshow(checker, cmap="gray")
+        ax.set_axis_off()
+
+        phase = result.get("phase", {})
+        dx = float(phase.get("dx_px") or 0.0)
+        dy = float(phase.get("dy_px") or 0.0)
+        ax = axes[row, 1]
+        ax.axhline(0, color="0.75", linewidth=0.8)
+        ax.axvline(0, color="0.75", linewidth=0.8)
+        ax.arrow(0, 0, dx, dy, width=0.03, length_includes_head=True, color="tab:red")
+        extent = max(1.0, abs(dx), abs(dy)) * 1.25
+        ax.set_xlim(-extent, extent)
+        ax.set_ylim(extent, -extent)
+        ax.set_aspect("equal")
+        ax.set_xlabel(f"dx={dx:.2f}")
+        ax.set_ylabel(f"dy={dy:.2f}")
+        ax.grid(True, alpha=0.25)
+
+        ax = axes[row, 2]
+        rows = result.get("sweep", {}).get("rows", [])
+        if rows:
+            scatter = ax.scatter(
+                [float(item["dx"]) for item in rows],
+                [float(item["dy"]) for item in rows],
+                c=[float(item["score"]) for item in rows],
+                cmap="viridis",
+                s=38,
+            )
+            fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+            ax.scatter([0], [0], marker="x", color="red", s=45)
+        ax.set_xlabel("dx")
+        ax.set_ylabel("dy")
+        ax.set_title(f"best=({result.get('sweep', {}).get('best_dx')}, {result.get('sweep', {}).get('best_dy')})", fontsize=8)
+        ax.grid(True, alpha=0.2)
+
+        ax = axes[row, 3]
+        mask_rows = result.get("mask", {})
+        labels = list(mask_rows)
+        values = [float(mask_rows[label].get("magnitude_px", np.nan)) for label in labels]
+        if labels:
+            ax.plot(range(len(labels)), values, marker="o")
+            ax.set_xticks(range(len(labels)), labels, rotation=35, ha="right", fontsize=7)
+        ax.set_ylabel("phase px")
+        ax.grid(True, alpha=0.2)
+
+        ax = axes[row, 4]
+        injections = result.get("injection", [])
+        if injections:
+            x = [float(np.hypot(item.get("injected_dx", 0), item.get("injected_dy", 0))) for item in injections]
+            y = [float(item.get("error_mag_px", np.nan)) for item in injections]
+            ax.plot(x, y, marker="o")
+        ax.set_xlabel("injected magnitude px")
+        ax.set_ylabel("recovery error px")
+        ax.grid(True, alpha=0.2)
+        axes[row, 0].set_ylabel(f"{edge}\n{role}", fontsize=9)
+    fig.suptitle("Phase validation root-cause audit", fontsize=14)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return output_path

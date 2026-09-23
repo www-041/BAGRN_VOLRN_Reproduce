@@ -23,6 +23,7 @@ from src.multiscene_sift.phase_validation_audit import (
     compare_working_vs_suspect,
     classify_phase_validation_root_cause,
     build_phase_validation_conclusion,
+    write_phase_validation_dashboard,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -298,3 +299,41 @@ def test_final_conclusion_contains_can_and_cannot_conclude_limits():
     cannot = " ".join(conclusion["cannot_conclude"])
     assert "do not directly modify production phase helper" in cannot
     assert "do not claim SIFT/Affine is always correct" in cannot
+
+
+def test_phase_validation_dashboard_has_two_rows_and_five_diagnostic_columns(tmp_path):
+    rng = np.random.default_rng(13)
+    image = rng.normal(size=(64, 64)).astype(np.float32)
+    mask = np.ones_like(image, dtype=bool)
+    results = {}
+    for edge, dx, dy in (("0-6", 1.0, -0.5), ("2-5", 6.0, 3.0)):
+        results[edge] = {
+            "inputs": {
+                "ref_crop": image,
+                "warped_target_crop": image.copy(),
+                "joint_valid_mask": mask,
+            },
+            "phase": {"dx_px": dx, "dy_px": dy, "magnitude_px": float(np.hypot(dx, dy))},
+            "sweep": {
+                "rows": [
+                    {"dx": -1, "dy": -1, "score": 0.2},
+                    {"dx": 0, "dy": 0, "score": 0.9},
+                    {"dx": 1, "dy": 1, "score": 0.4},
+                ],
+                "best_dx": 0,
+                "best_dy": 0,
+            },
+            "mask": {
+                "V0_original": {"magnitude_px": np.hypot(dx, dy)},
+                "V1_erode_16": {"magnitude_px": np.hypot(dx, dy) * 0.8},
+            },
+            "injection": [
+                {"injected_dx": 0, "injected_dy": 0, "error_mag_px": 0.0},
+                {"injected_dx": 3, "injected_dy": 2, "error_mag_px": 0.1},
+            ],
+        }
+    output = tmp_path / "13_phase_validation_audit_dashboard.png"
+    written = write_phase_validation_dashboard(results, output)
+    assert written == output
+    assert output.exists()
+    assert output.stat().st_size > 10_000
