@@ -69,6 +69,7 @@ def register_pair(
     ransac_threshold: float = 2.0,
     random_seed: int = 0,
     matcher: str = "sift",
+    diagnostic_capture=None,
 ) -> PairwiseRegistration:
     """Register scene_j onto scene_i using the requested matcher + shared RANSAC."""
     matcher = _normalize_matcher_name(matcher)
@@ -121,6 +122,14 @@ def register_pair(
         random_seed=random_seed,
     )
     geometry_runtime = time.perf_counter() - t_geom
+    if diagnostic_capture is not None:
+        diagnostic_capture({
+            "raw_ref_xy": np.asarray(matches.ref_xy, dtype=np.float64),
+            "raw_tgt_xy": np.asarray(matches.tgt_xy, dtype=np.float64),
+            "inlier_mask": np.asarray(geom.inlier_mask, dtype=bool),
+            "coordinate_frame": "pair_common_grid",
+            "match_view": view,
+        })
 
     # Quality checks
     if geom.status != STATUS_OK:

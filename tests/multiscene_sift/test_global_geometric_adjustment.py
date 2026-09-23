@@ -167,3 +167,96 @@ def test_frozen_config_writer_uses_required_artifact_name(tmp_path):
     path = write_frozen_registration_config({"matcher": "SIFT"}, tmp_path)
 
     assert path.name == "01_frozen_registration_config.json"
+
+
+def test_replay_wrapper_calls_existing_registration_once_and_exports_inliers(tmp_path, monkeypatch):
+    import numpy as np
+    from src.multiscene_sift.models import PairwiseRegistration
+    from src.multiscene_sift import inlier_recovery
+
+    calls = []
+    config = {
+        "matcher": "SIFT",
+        "registration_band": "B14",
+        "match_max_side": 1600,
+        "ransac_residual_threshold": 2.0,
+        "seed": 0,
+    }
+
+    def fake_register(scene_i, scene_j, **kwargs):
+        calls.append((scene_i, scene_j, kwargs))
+        return PairwiseRegistration(
+            idx_i=0,
+            idx_j=1,
+            status="OK",
+            raw_matches=3,
+            inliers=2,
+            inlier_ratio=2 / 3,
+            coverage=0.5,
+            residual_median=0.1,
+            residual_rmse=0.2,
+            residual_p95=0.3,
+            pair_pixel_matrix=[[1, 0, 2], [0, 1, 3], [0, 0, 1]],
+            pair_common_transform=None,
+            runtime_sec=0.1,
+            inlier_ref_xy=np.array([[2.0, 3.0], [5.0, 6.0]]),
+            inlier_tgt_xy=np.array([[0.0, 0.0], [3.0, 3.0]]),
+        )
+
+    monkeypatch.setattr(inlier_recovery, "register_pair", fake_register)
+    result = inlier_recovery.replay_pair_and_capture_inliers(
+        "scene-i", "scene-j", config, tmp_path
+    )
+
+    assert len(calls) == 1
+    assert {key: value for key, value in calls[0][2].items() if key != "diagnostic_capture"} == {
+        "band": "B14",
+        "match_max_side": 1600,
+        "ransac_threshold": 2.0,
+        "random_seed": 0,
+        "matcher": "sift",
+    }
+    assert callable(calls[0][2]["diagnostic_capture"])
+    assert config["matcher"] == "SIFT"
+    assert result["coordinate_frame"] == "pair_common_grid"
+    assert result["transform_direction"] == "target_to_reference"
+    rows = (tmp_path / "02_replayed_pairs" / "0_1_inliers.csv").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert rows[0].startswith("point_id,x_i,y_i,x_j,y_j,coordinate_frame,residual_px")
+    assert len(rows) == 3
+
+
+def test_replay_wrapper_captures_raw_matches_through_existing_entrypoint(tmp_path, monkeypatch):
+    import numpy as np
+    from src.multiscene_sift.models import PairwiseRegistration
+    from src.multiscene_sift import inlier_recovery
+
+    def fake_register(scene_i, scene_j, **kwargs):
+        callback = kwargs.pop("diagnostic_capture")
+        callback({
+            "raw_ref_xy": np.array([[1.0, 2.0]]),
+            "raw_tgt_xy": np.array([[0.0, 0.0]]),
+            "inlier_mask": np.array([True]),
+            "coordinate_frame": "pair_common_grid",
+        })
+        return PairwiseRegistration(
+            idx_i=0, idx_j=1, status="OK", raw_matches=1, inliers=1,
+            inlier_ratio=1.0, coverage=0.5, residual_median=0.0,
+            residual_rmse=0.0, residual_p95=0.0,
+            pair_pixel_matrix=[[1, 0, 1], [0, 1, 2], [0, 0, 1]],
+            pair_common_transform=None, runtime_sec=0.0,
+            inlier_ref_xy=np.array([[1.0, 2.0]]),
+            inlier_tgt_xy=np.array([[0.0, 0.0]]),
+        )
+
+    monkeypatch.setattr(inlier_recovery, "register_pair", fake_register)
+    result = inlier_recovery.replay_pair_and_capture_inliers(
+        "scene-i", "scene-j",
+        {"matcher": "SIFT", "registration_band": "B14", "match_max_side": 1600,
+         "ransac_residual_threshold": 2.0, "seed": 0},
+        tmp_path,
+    )
+
+    assert result["raw_coordinates_available"] is True
+    assert result["raw_match_count"] == 1
