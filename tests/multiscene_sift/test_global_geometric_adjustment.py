@@ -921,3 +921,46 @@ def test_synthetic_tree_edges_are_satisfied_by_initial_mst_but_loops_expose_drif
     result = synthetic_accumulation_check(5, bias_px=1.0)
     assert result["initial_tree_edge_max_residual_px"] == pytest.approx(0.0, abs=1e-12)
     assert result["initial_loop_edge_max_residual_px"] == pytest.approx(4.0, abs=1e-12)
+
+
+def test_synthetic_artifact_separates_mst_correction_and_final_error(tmp_path, monkeypatch):
+    import json
+    import pytest
+    import matplotlib.pyplot as plt
+    from src.multiscene_sift.global_geometric_adjustment import (
+        synthetic_accumulation_check,
+        write_synthetic_accumulation_check,
+    )
+
+    plotted = []
+    original_plot = plt.Axes.plot
+
+    def capture_plot(axis, x_values, y_values, *args, **kwargs):
+        plotted.append((list(x_values), list(y_values), kwargs.get("label")))
+        return original_plot(axis, x_values, y_values, *args, **kwargs)
+
+    monkeypatch.setattr(plt.Axes, "plot", capture_plot)
+    result = synthetic_accumulation_check(5, bias_px=1.0)
+    paths = write_synthetic_accumulation_check(result, tmp_path)
+    payload = json.loads(paths["json"].read_text(encoding="utf-8"))
+
+    assert paths["json"].exists()
+    assert paths["png"].exists()
+    assert payload["scene_mst_error_px"] == pytest.approx([0.0, 1.0, 2.0, 3.0, 4.0])
+    assert payload["scene_correction_magnitude_px"][-1] == pytest.approx(
+        3.380952380952381, abs=1e-9
+    )
+    assert payload["scene_adjusted_error_px"][-1] == pytest.approx(
+        0.6190476190476195, abs=1e-9
+    )
+    assert payload["scene_correction_magnitude_px"][-1] != pytest.approx(
+        payload["scene_adjusted_error_px"][-1], abs=1e-6
+    )
+    assert [item[2] for item in plotted] == [
+        "MST path error",
+        "Global adjustment final error",
+        "Correction magnitude",
+    ]
+    assert plotted[0][1] == pytest.approx(payload["scene_mst_error_px"])
+    assert plotted[1][1] == pytest.approx(payload["scene_adjusted_error_px"])
+    assert plotted[2][1] == pytest.approx(payload["scene_correction_magnitude_px"])
