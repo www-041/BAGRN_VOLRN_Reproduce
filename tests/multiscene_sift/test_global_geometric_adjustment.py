@@ -607,3 +607,67 @@ def test_translation_system_rejects_missing_reference_and_disconnected_graph():
         build_translation_adjustment_system(
             {0: np.eye(3), 1: np.eye(3), 2: np.eye(3)}, edge, reference_idx=0
         )
+
+
+def test_translation_solver_recovers_exact_two_node_correction_and_gauge():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import (
+        build_translation_adjustment_system,
+        solve_translation_adjustment,
+    )
+
+    system = build_translation_adjustment_system(
+        {0: np.eye(3), 1: np.eye(3)},
+        {(0, 1): {"x_i": np.array([[10.0, 5.0], [20.0, 5.0]]),
+                 "x_j": np.array([[0.0, 0.0], [10.0, 0.0]])}},
+        reference_idx=0,
+    )
+
+    result = solve_translation_adjustment(system)
+
+    assert result["status"] == "OK"
+    assert np.allclose(result["scene_corrections_px"][0], [0.0, 0.0])
+    assert np.allclose(result["scene_corrections_px"][1], [10.0, 5.0])
+    assert result["objective_before"] > 0.0
+    assert np.isclose(result["objective_after"], 0.0)
+
+
+def test_translation_solver_redistributes_inconsistent_triangle_residuals():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import solve_translation_adjustment
+
+    system = {
+        "A": np.array([[1.0, 0.0, 0.0, 0.0],
+                       [0.0, 1.0, 0.0, 0.0],
+                       [-1.0, 0.0, 1.0, 0.0],
+                       [0.0, -1.0, 0.0, 1.0],
+                       [0.0, 0.0, -1.0, 0.0],
+                       [0.0, 0.0, 0.0, -1.0]]),
+        "b": np.array([10.0, 0.0, 0.0, 0.0, 10.0, 0.0]),
+        "point_weights": np.ones(3),
+        "unknown_scene_order": [1, 2],
+        "reference_idx": 0,
+        "rank": 4,
+        "condition_number": 1.0,
+    }
+
+    result = solve_translation_adjustment(system)
+
+    assert result["status"] == "OK"
+    assert result["objective_after"] < result["objective_before"]
+    assert result["objective_after"] > 0.0
+    assert np.allclose(result["scene_corrections_px"][0], [0.0, 0.0])
+
+
+def test_translation_solver_reports_rank_deficiency_without_fabricating_solution():
+    import numpy as np
+    from src.multiscene_sift.global_geometric_adjustment import solve_translation_adjustment
+
+    result = solve_translation_adjustment({
+        "A": np.zeros((2, 2)), "b": np.array([1.0, 2.0]),
+        "point_weights": np.ones(1), "unknown_scene_order": [1],
+        "reference_idx": 0, "rank": 0, "condition_number": float("inf"),
+    })
+
+    assert result["status"] == "RANK_DEFICIENT"
+    assert result["scene_corrections_px"] == {0: [0.0, 0.0]}

@@ -482,8 +482,9 @@ def build_translation_adjustment_system(
         pair_to_world = np.asarray(
             observation.get("pair_common_transform", np.eye(3)), dtype=np.float64
         )
-        qi = _transform_points(mst_global_transforms[i] @ pair_to_world, points_i)
-        qj = _transform_points(mst_global_transforms[j] @ pair_to_world, points_j)
+        pixel_size = float(observation.get("pixel_size", 1.0))
+        qi = _transform_points(mst_global_transforms[i] @ pair_to_world, points_i) / pixel_size
+        qj = _transform_points(mst_global_transforms[j] @ pair_to_world, points_j) / pixel_size
         weight = 1.0 / len(points_i) if len(points_i) else 0.0
         for point_i, point_j in zip(qi, qj):
             for axis in (0, 1):
@@ -536,4 +537,60 @@ def write_translation_system_summary(system: dict, output_path: str | Path) -> P
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def solve_translation_adjustment(system: dict) -> dict:
+    """Solve the equal-edge weighted translation correction with least squares."""
+    matrix = np.asarray(system["A"], dtype=np.float64)
+    vector = np.asarray(system["b"], dtype=np.float64)
+    point_weights = np.asarray(system["point_weights"], dtype=np.float64)
+    expected_rank = int(system.get("rank_expectation", 2 * len(system["unknown_scene_order"])) )
+    weighted_rows = np.repeat(point_weights, 2)
+    if len(weighted_rows) != len(vector):
+        raise ValueError("point_weights must contain one weight per point")
+    sqrt_weights = np.sqrt(weighted_rows)
+    weighted_matrix = matrix * sqrt_weights[:, None]
+    weighted_vector = vector * sqrt_weights
+    rank = int(np.linalg.matrix_rank(weighted_matrix))
+    condition_number = float(np.linalg.cond(weighted_matrix)) if weighted_matrix.size else None
+    corrections = {int(system["reference_idx"]): [0.0, 0.0]}
+    if rank < expected_rank:
+        return {
+            "status": "RANK_DEFICIENT",
+            "rank": rank,
+            "condition_number": condition_number,
+            "objective_before": None,
+            "objective_after": None,
+            "scene_corrections_px": corrections,
+        }
+
+    solution, _, _, _ = np.linalg.lstsq(weighted_matrix, weighted_vector, rcond=None)
+    residual_before = -weighted_vector
+    residual_after = weighted_matrix @ solution - weighted_vector
+    corrections.update({
+        int(scene): [float(solution[2 * idx]), float(solution[2 * idx + 1])]
+        for idx, scene in enumerate(system["unknown_scene_order"])
+    })
+    return {
+        "status": "OK",
+        "rank": rank,
+        "condition_number": condition_number,
+        "objective_before": float(np.sum(residual_before ** 2)),
+        "objective_after": float(np.sum(residual_after ** 2)),
+        "scene_corrections_px": corrections,
+    }
+
+
+def write_translation_solution(solution: dict, output_path: str | Path) -> Path:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(solution)
+    payload["scene_corrections"] = {
+        str(scene): {"dx_px": values[0], "dy_px": values[1],
+                     "magnitude_px": float(np.hypot(values[0], values[1]))}
+        for scene, values in solution["scene_corrections_px"].items()
+    }
+    payload.pop("scene_corrections_px", None)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
