@@ -518,6 +518,25 @@ def real_crop_injection_recovery(inputs: dict, shifts: list[tuple[int, int]]) ->
     return rows
 
 
+def phase_peak_diagnostics(existing_helper_result: dict) -> dict:
+    """Summarize an exposed correlation surface, without implementing FFT again."""
+    surface = existing_helper_result.get("correlation_surface")
+    if surface is None:
+        return {"status": "NOT_AVAILABLE_IN_CURRENT_HELPER"}
+    values = np.asarray(surface, dtype=float)
+    if values.ndim != 2 or values.size < 2:
+        return {"status": "NOT_AVAILABLE_IN_CURRENT_HELPER"}
+    flat = np.sort(values[np.isfinite(values)].ravel())[::-1]
+    if flat.size < 2:
+        return {"status": "NOT_AVAILABLE_IN_CURRENT_HELPER"}
+    return {
+        "status": "OK",
+        "top1_peak": float(flat[0]), "top2_peak": float(flat[1]),
+        "peak_ratio": float(flat[0] / max(abs(flat[1]), 1e-12)),
+        "peak_separation": existing_helper_result.get("peak_separation"),
+    }
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)

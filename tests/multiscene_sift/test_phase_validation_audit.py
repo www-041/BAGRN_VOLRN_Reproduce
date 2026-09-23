@@ -19,6 +19,7 @@ from src.multiscene_sift.phase_validation_audit import (
     mask_boundary_stress_test,
     representation_stability,
     real_crop_injection_recovery,
+    phase_peak_diagnostics,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -243,3 +244,7 @@ def test_real_crop_injection_recovery_recovers_zero_one_three_six_ten_pixels():
     assert len(rows) == 6
     assert all(row["error_mag_px"] < 0.5 for row in rows)
     assert {row["injected_dx"] for row in rows} == {0, 1, 3, 6, 10}
+
+
+def test_peak_diagnostics_reports_unavailable_without_existing_surface():
+    assert phase_peak_diagnostics({})["status"] == "NOT_AVAILABLE_IN_CURRENT_HELPER"
