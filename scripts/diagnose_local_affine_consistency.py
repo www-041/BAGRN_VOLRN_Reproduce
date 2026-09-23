@@ -143,6 +143,7 @@ def diagnose(args: argparse.Namespace) -> dict[str, dict]:
         bounds = _edge_bounds(record, common_bounds)
         models = []
         phase_rows = []
+        validation_crops = []
         variations = {}
         for grid_n in (2, 3):
             grid_models = fit_region_local_affines(
@@ -169,6 +170,13 @@ def diagnose(args: argparse.Namespace) -> dict[str, dict]:
                         )
                     else:
                         phase = {"status": crop["status"]}
+                    validation_crops.append({
+                        "grid_n": grid_n,
+                        "region_id": model["region_id"],
+                        "model": model,
+                        "phase": phase,
+                        "crop": crop,
+                    })
                     phase_rows.append(dict(phase, grid_n=grid_n, region_id=model["region_id"]))
         phase_summary = _phase_summary(phase_rows)
         for variation in variations.values():
@@ -179,6 +187,7 @@ def diagnose(args: argparse.Namespace) -> dict[str, dict]:
         results[key] = {
             "models": models, "variation": variations, "cross_validation": cv,
             "phase": {"rows": phase_rows, "summary": phase_summary},
+            "validation_crops": validation_crops,
             "stability": stability, "evidence": evidence,
         }
     write_diagnostic_artifacts(args.output_dir, results)

@@ -503,7 +503,14 @@ def build_region_validation_crops(
     local_warp, local_valid = warp(local_matrix)
     reference_crop = reference[y0:y1, x0:x1]
     reference_mask = reference_valid[y0:y1, x0:x1]
-    joint = reference_mask & global_valid & local_valid
+    joint = (
+        reference_mask
+        & global_valid
+        & local_valid
+        & np.isfinite(reference_crop)
+        & np.isfinite(global_warp)
+        & np.isfinite(local_warp)
+    )
     if int(joint.sum()) < 20 or float(np.std(reference_crop[joint])) < 1e-6:
         status = "PIXEL_VALIDATION_UNAVAILABLE"
     else:
@@ -533,8 +540,18 @@ def compare_global_vs_local_pixel_alignment(
         local_valid = np.asarray(masks["local_valid"], dtype=bool)
     else:
         ref_valid, global_valid, local_valid = masks
-    joint_global = ref_valid & global_valid
-    joint_local = ref_valid & local_valid
+    joint_global = (
+        ref_valid
+        & global_valid
+        & np.isfinite(ref_crop)
+        & np.isfinite(global_warp_crop)
+    )
+    joint_local = (
+        ref_valid
+        & local_valid
+        & np.isfinite(ref_crop)
+        & np.isfinite(local_warp_crop)
+    )
     if int(joint_global.sum()) < 20 or int(joint_local.sum()) < 20:
         return {"status": "PIXEL_VALIDATION_UNAVAILABLE", "reason": "insufficient_joint_valid"}
 
@@ -735,6 +752,7 @@ def write_diagnostic_artifacts(output_dir: str | Path, results: dict[str, dict])
     low_support = {edge: value for edge, value in evidence.items() if edge == "0-5"}
     _write_json(out / "11_low_support_control.json", low_support)
     (out / "11_low_support_control.txt").write_text(_format_evidence_text(low_support), encoding="utf-8")
+    plot_good_vs_false_good_comparison(results, out / "10_good_vs_false_good_local_geometry.png")
     conclusion = {
         "edges": evidence,
         "can_conclude": ["The result is a fixed-edge diagnostic, not a production registration decision."],
@@ -747,6 +765,7 @@ def write_diagnostic_artifacts(output_dir: str | Path, results: dict[str, dict])
     }
     _write_json(out / "12_local_affine_consistency_conclusion.json", conclusion)
     (out / "12_local_affine_consistency_conclusion.txt").write_text(_format_evidence_text(conclusion), encoding="utf-8")
+    write_region_validation_figures(results, out / "07_region_validation")
     plot_local_affine_field_map(results, out / "08_local_affine_field_map.png")
     plot_local_affine_dashboard(results, out / "13_local_affine_consistency_dashboard.png")
 
@@ -758,7 +777,113 @@ def _format_evidence_text(value: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _validation_image_stretch(crop: dict) -> tuple[float, float]:
+    values = []
+    for key in ("reference", "global_warp", "local_warp"):
+        array = np.asarray(crop[key], dtype=float)
+        values.append(array[np.isfinite(array)])
+    finite = np.concatenate([value for value in values if value.size]) if any(value.size for value in values) else np.array([])
+    if finite.size == 0:
+        return 0.0, 1.0
+    low, high = np.percentile(finite, [2.0, 98.0])
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+        low, high = float(np.nanmin(finite)), float(np.nanmax(finite))
+    if high <= low:
+        high = low + 1.0
+    return float(low), float(high)
+
+
+def _checkerboard(reference: np.ndarray, moving: np.ndarray, tile: int = 24) -> np.ndarray:
+    result = np.asarray(reference, dtype=np.float32).copy()
+    yy, xx = np.indices(result.shape)
+    choose_moving = ((yy // max(tile, 1) + xx // max(tile, 1)) % 2) == 1
+    result[choose_moving] = moving[choose_moving]
+    return result
+
+
+def _select_region_validation_crops(crops: list[dict], limit: int = 4) -> list[dict]:
+    usable = [item for item in crops if item.get("crop", {}).get("reference") is not None]
+    if not usable:
+        return []
+
+    def phase_value(item: dict, key: str, default: float) -> float:
+        value = item.get("phase", {}).get(key)
+        return float(value) if value is not None and np.isfinite(value) else default
+
+    ordered = [
+        min(usable, key=lambda item: phase_value(item, "global_phase_mag", float("inf"))),
+        sorted(usable, key=lambda item: phase_value(item, "global_phase_mag", float("inf")))[len(usable) // 2],
+        max(usable, key=lambda item: phase_value(item, "global_phase_mag", float("-inf"))),
+        max(usable, key=lambda item: phase_value(item, "phase_improvement_px", float("-inf"))),
+    ]
+    selected = []
+    seen = set()
+    for item in ordered:
+        key = (item.get("grid_n"), item.get("region_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(item)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def write_region_validation_figures(results: dict[str, dict], output_dir: str | Path) -> None:
+    """Write same-stretch reference/global/local checkerboards for selected regions."""
+    import matplotlib
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for edge in ("0-6", "2-5", "0-5"):
+        selected = _select_region_validation_crops(results.get(edge, {}).get("validation_crops", []))
+        for item in selected:
+            crop = item["crop"]
+            reference = np.asarray(crop["reference"], dtype=np.float32)
+            global_warp = np.asarray(crop["global_warp"], dtype=np.float32)
+            local_warp = np.asarray(crop["local_warp"], dtype=np.float32)
+            vmin, vmax = _validation_image_stretch(crop)
+            global_overlay = _checkerboard(reference, global_warp)
+            local_overlay = _checkerboard(reference, local_warp)
+            phase = item.get("phase", {})
+            model = item.get("model", {})
+            fig, axes = plt.subplots(2, 2, figsize=(11, 8), constrained_layout=True)
+            panels = (
+                (reference, "A. reference"),
+                (global_overlay, "B. global-affine checkerboard"),
+                (local_overlay, "C. local-affine checkerboard"),
+            )
+            for ax, (image, title) in zip(axes.flat[:3], panels):
+                ax.imshow(image, cmap="gray", vmin=vmin, vmax=vmax)
+                ax.set_title(title)
+                ax.set_axis_off()
+            annotation = {
+                "edge": edge,
+                "grid": item.get("grid_n"),
+                "region": item.get("region_id"),
+                "n_inliers": model.get("n_points"),
+                "global_phase_px": phase.get("global_phase_mag"),
+                "local_phase_px": phase.get("local_phase_mag"),
+                "global_ncc": phase.get("global_ncc"),
+                "local_ncc": phase.get("local_ncc"),
+                "center_delta_px": model.get("center_delta_mag_px"),
+                "phase_improvement_px": phase.get("phase_improvement_px"),
+            }
+            axes.flat[3].text(0.02, 0.98, json.dumps(_json_safe(annotation), indent=2),
+                              va="top", ha="left", family="monospace", fontsize=10,
+                              transform=axes.flat[3].transAxes)
+            axes.flat[3].set_title("D. annotations")
+            axes.flat[3].set_axis_off()
+            name = f"edge_{edge.replace('-', '_')}_grid{item.get('grid_n')}_region{item.get('region_id')}.png"
+            fig.savefig(out / name, dpi=160)
+            plt.close(fig)
+
+
 def plot_local_affine_field_map(results: dict[str, dict], output_path: str | Path) -> None:
+    import matplotlib
+    matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
@@ -779,7 +904,42 @@ def plot_local_affine_field_map(results: dict[str, dict], output_path: str | Pat
     plt.close(fig)
 
 
+def plot_good_vs_false_good_comparison(results: dict[str, dict], output_path: str | Path) -> None:
+    """Plot the fixed 0-6/2-5 diagnostic comparison without changing evidence."""
+    import matplotlib
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    edges = ("0-6", "2-5")
+    labels = ("2x2", "3x3")
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
+    colors = ("tab:blue", "tab:orange")
+    for edge, color in zip(edges, colors):
+        result = results.get(edge, {})
+        variation = result.get("variation", {})
+        cv_summary = result.get("cross_validation", {}).get("summary", {})
+        phase = result.get("phase", {}).get("summary", {})
+        fittable = [variation.get(str(grid), {}).get("n_regions_fittable", 0) for grid in (2, 3)]
+        p95 = [variation.get(str(grid), {}).get("p95_center_delta_mag_px") for grid in (2, 3)]
+        axes[0, 0].plot(labels, fittable, marker="o", color=color, label=edge)
+        axes[0, 1].plot(labels, p95, marker="o", color=color, label=edge)
+        axes[1, 0].bar(edge, cv_summary.get("improvement_px") or 0.0, color=color)
+        axes[1, 1].bar(edge, phase.get("median_phase_improvement_px") or 0.0, color=color)
+    axes[0, 0].set_title("Fittable local regions")
+    axes[0, 1].set_title("P95 local-vs-global center delta (px)")
+    axes[1, 0].set_title("Held-out CV improvement (px)")
+    axes[1, 1].set_title("Independent phase improvement (px)")
+    axes[0, 0].legend()
+    for ax in axes.flat:
+        ax.grid(alpha=0.25)
+    fig.suptitle("0-6 GOOD_REFERENCE vs 2-5 HIGH_INLIER_FALSE_GOOD")
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+
 def plot_local_affine_dashboard(results: dict[str, dict], output_path: str | Path) -> None:
+    import matplotlib
+    matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(3, 4, figsize=(16, 10), constrained_layout=True)

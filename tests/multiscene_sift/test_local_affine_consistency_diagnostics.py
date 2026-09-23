@@ -17,6 +17,7 @@ from src.multiscene_sift.local_affine_consistency_diagnostics import (
     load_local_affine_baseline,
     summarize_local_affine_variation,
     write_diagnostic_artifacts,
+    write_region_validation_figures,
 )
 
 
@@ -176,6 +177,19 @@ def test_global_local_phase_alignment_reports_local_improvement_on_known_shift()
     assert result["phase_improvement_px"] >= 0
 
 
+def test_pixel_phase_excludes_nonfinite_values_even_when_mask_claims_valid():
+    rng = np.random.default_rng(456)
+    ref = rng.normal(size=(64, 64)).astype(np.float32)
+    moving = ref.copy()
+    moving[10:20, 10:20] = np.nan
+    valid = np.ones_like(ref, dtype=bool)
+    result = compare_global_vs_local_pixel_alignment(
+        ref, moving, ref.copy(),
+        {"reference_valid": valid, "global_valid": valid, "local_valid": valid},
+    )
+    assert result["status"] in {"OK", "PIXEL_VALIDATION_UNAVAILABLE"}
+
+
 def test_partition_stability_classifies_matching_summary_contracts():
     global_summary = {
         "n_regions_fittable": 4, "median_center_delta_mag_px": 0.1,
@@ -250,8 +264,31 @@ def test_diagnostic_artifacts_write_required_machine_readable_outputs(tmp_path):
         "06_global_vs_local_phase_summary.json", "09_partition_stability.json",
         "10_good_vs_false_good_local_geometry.json", "11_low_support_control.json",
         "12_local_affine_consistency_conclusion.json", "12_local_affine_consistency_conclusion.txt",
+        "10_good_vs_false_good_local_geometry.png",
     ):
         assert (tmp_path / name).is_file(), name
+
+
+def test_region_validation_figures_use_selected_same_stretch_crops(tmp_path):
+    image = np.arange(64, dtype=np.float32).reshape(8, 8)
+    crop = {
+        "reference": image,
+        "global_warp": image + 2,
+        "local_warp": image + 1,
+    }
+    results = {"0-6": {"validation_crops": [{
+        "grid_n": 2, "region_id": 1,
+        "model": {"n_points": 30, "center_delta_mag_px": 1.0},
+        "phase": {
+            "global_phase_mag": 2.0, "local_phase_mag": 1.0,
+            "global_ncc": 0.8, "local_ncc": 0.9,
+            "phase_improvement_px": 1.0,
+        },
+        "crop": crop,
+    }]}}
+    write_region_validation_figures(results, tmp_path)
+    files = list(tmp_path.glob("edge_0_6_grid2_region1.png"))
+    assert len(files) == 1
 
 
 def test_diagnostic_cli_accepts_required_artifact_roots():
