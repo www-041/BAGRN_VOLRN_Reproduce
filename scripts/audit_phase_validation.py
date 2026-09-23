@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
 
 from src.multiscene_sift.dataset import discover_five_scenes
-from src.multiscene_sift.frame_diagnostics import conjugate_pixel_to_world, rebuild_pair_common_grids
+from src.multiscene_sift.frame_diagnostics import (
+    match_view_frame_params,
+    rebuild_pair_common_grids,
+    world_transform_from_saved_pair,
+)
 from src.multiscene_sift.nine_scene_overlap_diagnostic import SCENE_NAMES_9
 from src.multiscene_sift.phase_validation_audit import (
     AUDIT_EDGES,
@@ -69,7 +74,14 @@ def _root_cause_evidence(result: dict) -> dict:
     }
 
 
-def _resolve_world_matrix(edge_baseline: dict, scenes, i: int, j: int, band: str) -> tuple[np.ndarray, str]:
+def _resolve_world_matrix(
+    edge_baseline: dict,
+    scenes,
+    i: int,
+    j: int,
+    band: str,
+    selected_pair_dir: str | Path,
+) -> tuple[np.ndarray, str]:
     if edge_baseline.get("world_matrix") is not None:
         return np.asarray(edge_baseline["world_matrix"], dtype=float), "canonical_world_matrix"
     pixel_matrix = edge_baseline.get("pixel_matrix")
@@ -78,9 +90,16 @@ def _resolve_world_matrix(edge_baseline: dict, scenes, i: int, j: int, band: str
     grids = rebuild_pair_common_grids(scenes, band, [(i, j)])
     from rasterio.transform import Affine
 
-    common_transform = Affine(*grids[f"pair_{i}_{j}"]["transform"])
-    world_matrix = conjugate_pixel_to_world(np.asarray(pixel_matrix, dtype=float), common_transform)
-    return world_matrix, "selected_pair_pixel_matrix_conjugated_to_pair_common_grid"
+    grid = grids[f"pair_{i}_{j}"]
+    common_transform = Affine(*grid["transform"])
+    config_path = Path(selected_pair_dir) / "01_registration_config_snapshot.json"
+    config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
+    match_view = match_view_frame_params(tuple(grid["overlap_window"]), int(config.get("match_max_side", 1600)))
+    pair_row = {"idx_i": i, "idx_j": j, "pixel_matrix": pixel_matrix}
+    world_matrix = world_transform_from_saved_pair(
+        i, j, [pair_row], common_transform, match_view, adjust_frame=True
+    )
+    return np.asarray(world_matrix, dtype=float), "selected_pair_pixel_matrix_with_existing_match_view_frame_normalization"
 
 
 def run_audit(args: argparse.Namespace) -> dict:
@@ -98,7 +117,9 @@ def run_audit(args: argparse.Namespace) -> dict:
     for (i, j), role in AUDIT_EDGES.items():
         edge = f"{i}-{j}"
         baseline_edge = baseline["edges"][edge]
-        world_matrix, world_matrix_source = _resolve_world_matrix(baseline_edge, scenes, i, j, args.band)
+        world_matrix, world_matrix_source = _resolve_world_matrix(
+            baseline_edge, scenes, i, j, args.band, args.selected_pair_dir
+        )
         inputs = build_exact_phase_inputs(
             scenes[i], scenes[j], world_matrix,
             baseline_edge["direct_tiles"], edge, band=args.band,
