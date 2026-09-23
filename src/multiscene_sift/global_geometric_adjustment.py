@@ -794,6 +794,41 @@ def write_affine_decision(decision: dict, output_dir: str | Path) -> dict:
     return {"json": jp, "txt": tp}
 
 
+def build_method_comparison(mst: dict, translation: dict, affine: dict | None) -> list[dict]:
+    def value(summary, path):
+        current = summary
+        for key in path:
+            if current is None:
+                return "N/A"
+            current = current.get(key)
+        return "N/A" if current is None else current
+    fields = [
+        ("0-1 RMSE", ["zero_one", "rmse_px"]),
+        ("0-1 P95", ["zero_one", "p95_px"]),
+        ("0-1 Max", ["zero_one", "max_px"]),
+        ("Mean edge RMSE", ["edge_balanced", "mean_edge_rmse_px"]),
+        ("Mean edge P95", ["edge_balanced", "mean_edge_p95_px"]),
+        ("Max edge P95", ["edge_balanced", "max_edge_p95_px"]),
+        ("Tree-edge mean P95", ["tree_edges", "mean_edge_p95_px"]),
+        ("Non-tree mean P95", ["non_tree_edges", "mean_edge_p95_px"]),
+    ]
+    return [{"Metric": name, "MST": value(mst, path),
+             "Translation Adj.": value(translation, path),
+             "Affine Adj.": value(affine, path) if affine is not None else "N/A"}
+            for name, path in fields]
+
+
+def write_method_comparison(comparison: list[dict], output_dir: str | Path) -> dict:
+    out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
+    csv_path = out / "13_method_comparison.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Metric", "MST", "Translation Adj.", "Affine Adj."])
+        writer.writeheader(); writer.writerows(comparison)
+    json_path = out / "13_method_comparison.json"
+    json_path.write_text(json.dumps(comparison, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"csv": csv_path, "json": json_path}
+
+
 def apply_translation_corrections(
     mst_global_transforms: dict[int, np.ndarray],
     corrections: dict[int, tuple[float, float]],

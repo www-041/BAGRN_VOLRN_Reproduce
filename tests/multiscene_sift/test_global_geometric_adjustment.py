@@ -860,3 +860,11 @@ def test_affine_decision_rejects_worse_max_edge_even_when_mean_improves():
     affine = {"edge_balanced": {"mean_edge_rmse_px": 5.0, "max_edge_p95_px": 21.0}}
     decision = decide_affine_adjustment(translation, affine, {"status": "OK"})
     assert decision["decision"] == "AFFINE_OVERFITS_OR_UNSTABLE"
+
+
+def test_method_comparison_preserves_na_instead_of_zero():
+    from src.multiscene_sift.global_geometric_adjustment import build_method_comparison
+
+    comparison = build_method_comparison({"zero_one": {"rmse_px": 1.0}}, {"zero_one": {"rmse_px": 0.5}}, None)
+    assert comparison[0]["Metric"] == "0-1 RMSE"
+    assert comparison[0]["Affine Adj."] == "N/A"
