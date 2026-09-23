@@ -439,6 +439,9 @@ VARIANTS = {
     "QUALITY_HUBER": {"prior": "intrinsic_quality", "huber": True},
 }
 
+CYCLE_EDGES = ((0, 1), (0, 4), (1, 4))
+LEAF_EDGES = ((0, 2), (3, 4))
+
 
 def _evaluate_solution(inputs: dict, solution: dict) -> tuple[dict, Any]:
     corrections = {
@@ -638,3 +641,107 @@ def run_translation_variants(inputs: dict, output_dir: str | Path | None = None)
         )
         write_robust_translation_comparison(comparison, out)
     return result
+
+
+def _sensitivity_classification(max_delta_px: float) -> str:
+    if max_delta_px <= 3.0:
+        return "STABLE"
+    if max_delta_px <= 10.0:
+        return "MODERATELY_SENSITIVE"
+    return "HIGHLY_SENSITIVE"
+
+
+def evaluate_cycle_edge_sensitivity(
+    variant_config: dict,
+    mst_global_transforms: dict[int, np.ndarray],
+    edge_observations: dict[tuple[int, int], dict],
+    reference_idx: int,
+    prior_edge_weights: dict[tuple[int, int], float],
+    huber_delta_px: float,
+) -> dict:
+    """Run leave-one-out only on the redundant 0-1-4 triangle."""
+    normalized_observations = {_edge_key(edge): value for edge, value in edge_observations.items()}
+    normalized_priors = {_edge_key(edge): float(value) for edge, value in prior_edge_weights.items()}
+    full_solution = solve_edge_weighted_translation_irls(
+        mst_global_transforms, normalized_observations, reference_idx, normalized_priors,
+        use_huber=bool(variant_config.get("huber", False)), huber_delta_px=huber_delta_px,
+    )
+    full_corrections = full_solution["scene_corrections_px"]
+    results = []
+    cycle_nodes = {0, 1, 4}
+    for removed_edge in CYCLE_EDGES:
+        if removed_edge not in normalized_observations:
+            continue
+        subset_transforms = {
+            scene: matrix for scene, matrix in mst_global_transforms.items()
+            if int(scene) in cycle_nodes
+        }
+        subset_observations = {
+            edge: value for edge, value in normalized_observations.items()
+            if edge != removed_edge and set(edge).issubset(cycle_nodes)
+        }
+        subset_priors = {edge: normalized_priors[edge] for edge in subset_observations}
+        subset_solution = solve_edge_weighted_translation_irls(
+            subset_transforms, subset_observations, reference_idx, subset_priors,
+            use_huber=bool(variant_config.get("huber", False)), huber_delta_px=huber_delta_px,
+        )
+        subset_inputs = {
+            "mst_global_transforms": subset_transforms,
+            "edge_observations": subset_observations,
+        }
+        subset_summary, _ = _evaluate_solution(subset_inputs, subset_solution)
+        changed = {}
+        for scene in sorted(cycle_nodes):
+            before = np.asarray(full_corrections[scene], dtype=np.float64)
+            after = np.asarray(subset_solution["scene_corrections_px"][scene], dtype=np.float64)
+            changed[scene] = float(np.linalg.norm(after - before))
+        max_delta = max(changed.values(), default=0.0)
+        results.append({
+            "removed_edge": removed_edge,
+            "scene_correction_changes_px": changed,
+            "max_correction_delta_px": float(max_delta),
+            "remaining_edge_p95_px": {
+                _edge_label((int(row["edge_i"]), int(row["edge_j"]))): float(row["p95_px"])
+                for row in subset_summary["per_edge"]
+            },
+            "solver_status": subset_solution["status"],
+            "converged": bool(subset_solution["converged"]),
+            "classification": _sensitivity_classification(max_delta),
+        })
+    return {
+        "variant_config": dict(variant_config),
+        "removed_edges": [edge for edge in CYCLE_EDGES if edge in normalized_observations],
+        "leaf_edges_excluded": [list(edge) for edge in LEAF_EDGES],
+        "thresholds_are_engineering_sensitivity_thresholds": True,
+        "results": results,
+    }
+
+
+def run_cycle_sensitivity(inputs: dict, variant_result: dict) -> dict:
+    outputs = {}
+    for name, variant in variant_result["variants"].items():
+        outputs[name] = evaluate_cycle_edge_sensitivity(
+            variant["config"],
+            inputs["mst_global_transforms"],
+            inputs["edge_observations"],
+            inputs["reference_idx"],
+            variant["prior_edge_weights"],
+            variant_result["huber_delta_px"],
+        )
+    return outputs
+
+
+def write_cycle_sensitivity(sensitivity: dict, output_dir: str | Path) -> dict:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    json_path = out / "05_cycle_edge_sensitivity.json"
+    json_path.write_text(json.dumps(_json_safe(sensitivity), indent=2, ensure_ascii=False), encoding="utf-8")
+    csv_path = out / "05_cycle_edge_sensitivity.csv"
+    fields = ["variant", "removed_edge", "max_correction_delta_px", "classification", "solver_status", "converged"]
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for variant, payload in sensitivity.items():
+            for row in payload["results"]:
+                writer.writerow({"variant": variant, **{field: row[field] for field in fields[1:]}})
+    return {"json": json_path, "csv": csv_path}

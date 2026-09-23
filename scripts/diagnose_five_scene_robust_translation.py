@@ -9,8 +9,10 @@ from pathlib import Path
 from src.multiscene_sift.robust_translation_adjustment import (
     _json_safe,
     load_robust_translation_inputs,
+    run_cycle_sensitivity,
     run_translation_variants,
     write_frozen_baseline,
+    write_cycle_sensitivity,
 )
 
 
@@ -33,10 +35,13 @@ def main(argv: list[str] | None = None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_frozen_baseline(inputs, args.output_dir)
     result = run_translation_variants(inputs, args.output_dir)
+    sensitivity = run_cycle_sensitivity(inputs, result)
+    write_cycle_sensitivity(sensitivity, args.output_dir)
     summary = {
         "baseline_reproduction_status": result["baseline_reproduction_status"],
         "baseline_reproduction": result["baseline_reproduction"],
         "huber_delta_px": result["huber_delta_px"],
+        "cycle_sensitivity": sensitivity,
         "variants": {
             name: {
                 "config": value["config"],

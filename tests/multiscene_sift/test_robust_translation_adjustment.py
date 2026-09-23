@@ -233,3 +233,32 @@ def test_variant_comparison_preserves_same_point_ids(tmp_path):
     assert {row["method"] for row in comparison} == {
         "MST", "EQUAL_L2", "EQUAL_HUBER", "QUALITY_L2", "QUALITY_HUBER"
     }
+
+
+def test_cycle_edge_list_excludes_leaf_edges():
+    from src.multiscene_sift.robust_translation_adjustment import (
+        CYCLE_EDGES,
+        LEAF_EDGES,
+    )
+
+    assert CYCLE_EDGES == ((0, 1), (0, 4), (1, 4))
+    assert set(LEAF_EDGES) == {(0, 2), (3, 4)}
+
+
+def test_cycle_sensitivity_only_removes_redundant_triangle_edges():
+    from src.multiscene_sift.robust_translation_adjustment import (
+        CYCLE_EDGES,
+        evaluate_cycle_edge_sensitivity,
+    )
+
+    transforms = {0: np.eye(3), 1: np.eye(3), 2: np.eye(3), 3: np.eye(3), 4: np.eye(3)}
+    observations = {
+        edge: {"x_i": np.zeros((2, 2)), "x_j": np.zeros((2, 2))}
+        for edge in ((0, 1), (0, 2), (0, 4), (1, 4), (3, 4))
+    }
+    result = evaluate_cycle_edge_sensitivity(
+        {"huber": False}, transforms, observations, 4,
+        {edge: 1.0 for edge in observations}, 3.0,
+    )
+    assert tuple(result["removed_edges"]) == CYCLE_EDGES
+    assert all(item["removed_edge"] not in {(0, 2), (3, 4)} for item in result["results"])
