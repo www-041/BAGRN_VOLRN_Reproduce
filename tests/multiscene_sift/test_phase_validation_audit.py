@@ -6,7 +6,10 @@ import pytest
 
 from src.multiscene_sift.phase_validation_audit import (
     AUDIT_EDGES,
+    coordinate_invariance_check,
     load_phase_audit_baseline,
+    phase_from_inputs,
+    trace_phase_validation_flow,
 )
 
 
@@ -71,3 +74,42 @@ def test_baseline_loader_fails_when_required_artifact_is_missing(tmp_path):
     (edge_dir / "07_direct_residual_summary.json").unlink()
     with pytest.raises(FileNotFoundError, match="07_direct_residual_summary"):
         load_phase_audit_baseline(edge_dir, local_dir, selected_pair_dir=selected_dir)
+
+
+def test_phase_flow_trace_records_frame_crop_masks_and_phase():
+    rng = np.random.default_rng(4)
+    ref = rng.normal(size=(64, 64)).astype(np.float32)
+    inputs = {
+        "ref_crop": ref,
+        "warped_target_crop": ref.copy(),
+        "ref_valid_mask": np.ones_like(ref, dtype=bool),
+        "target_valid_mask": np.ones_like(ref, dtype=bool),
+        "joint_valid_mask": np.ones_like(ref, dtype=bool),
+        "metadata": {
+            "matrix_direction": "target -> reference",
+            "ref_tgt_order": "reference, target",
+            "crop_origin_row": 12,
+            "crop_origin_col": 7,
+            "pixel_center_semantics": "pixel centers",
+        },
+    }
+    phase = phase_from_inputs(inputs)
+    trace = trace_phase_validation_flow(inputs, phase)
+    assert trace["matrix_direction"] == "target -> reference"
+    assert trace["crop_origin"] == {"row": 12, "col": 7}
+    assert trace["ref_array"]["shape"] == [64, 64]
+    assert trace["joint_valid"]["count"] == 64 * 64
+    assert trace["phase"]["magnitude_px"] == pytest.approx(0.0)
+    assert trace["ref_tgt_order"] == "reference, target"
+
+
+def test_coordinate_roundtrip_is_invariant_to_crop_origin():
+    from rasterio.transform import Affine
+
+    grid = Affine(2, 0, 1000, 0, -2, 2000)
+    ref = Affine(2, 0, 900, 0, -2, 2100)
+    tgt = Affine(2, 0, 1100, 0, -2, 2200)
+    result = coordinate_invariance_check(grid, ref, tgt, (13, 17, 53, 67))
+    assert result["status"] == "OK"
+    assert result["ref_world_roundtrip_error"] < 1e-9
+    assert result["tgt_world_roundtrip_error"] < 1e-9
