@@ -17,6 +17,7 @@ from src.multiscene_sift.phase_validation_audit import (
     evaluate_shift_counterfactual,
     translation_metric_surface,
     mask_boundary_stress_test,
+    representation_stability,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -212,3 +213,15 @@ def test_mask_boundary_stress_test_is_deterministic_and_reports_validity():
     assert first == second
     assert set(first) == {"V0_original", "V1_erode_16", "V2_erode_32", "V3_erode_64", "V4_central_valid_bbox"}
     assert first["V0_original"]["valid_fraction"] > first["V1_erode_16"]["valid_fraction"]
+
+
+def test_representation_stability_covers_raw_standardized_gradient_sobel_and_edges():
+    rng = np.random.default_rng(11)
+    ref = rng.normal(size=(96, 96)).astype(np.float32)
+    moving = ref * 2.0 + 17.0
+    mask = np.ones_like(ref, dtype=bool)
+    result = representation_stability(ref, moving, mask, include_eroded=True)
+    names = {row["representation"] for row in result}
+    assert {"R0_raw", "R1_standardized", "R2_gradient_magnitude", "R3_sobel_magnitude", "R4_edge_map"} <= names
+    assert {row["mask_variant"] for row in result} == {"original", "erode_32"}
+    assert all("phase" in row for row in result)

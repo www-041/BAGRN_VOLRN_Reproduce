@@ -429,6 +429,64 @@ def mask_boundary_stress_test(
     return out
 
 
+def _standardize_masked(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    out = np.asarray(image, dtype=np.float64).copy()
+    values = out[mask & np.isfinite(out)]
+    if values.size == 0:
+        return np.zeros_like(out)
+    std = float(np.std(values))
+    out = (out - float(np.mean(values))) / max(std, 1e-12)
+    out[~np.isfinite(out)] = 0.0
+    return out
+
+
+def _representation_images(image: np.ndarray, mask: np.ndarray) -> dict[str, np.ndarray]:
+    from scipy.ndimage import sobel
+
+    finite_image = np.nan_to_num(np.asarray(image, dtype=np.float64), nan=0.0)
+    gy, gx = np.gradient(finite_image)
+    gradient = np.hypot(gx, gy)
+    sobel_gradient = np.hypot(sobel(finite_image, axis=1), sobel(finite_image, axis=0))
+    threshold = float(np.percentile(gradient[mask], 75)) if mask.any() else 0.0
+    return {
+        "R0_raw": finite_image,
+        "R1_standardized": _standardize_masked(finite_image, mask),
+        "R2_gradient_magnitude": gradient,
+        "R3_sobel_magnitude": sobel_gradient,
+        "R4_edge_map": (gradient >= threshold).astype(np.float64),
+    }
+
+
+def representation_stability(
+    reference: np.ndarray,
+    moving: np.ndarray,
+    joint_mask: np.ndarray,
+    include_eroded: bool = True,
+) -> list[dict]:
+    from scipy.ndimage import binary_erosion
+
+    masks = [("original", np.asarray(joint_mask, dtype=bool))]
+    if include_eroded:
+        masks.append(("erode_32", binary_erosion(np.asarray(joint_mask, dtype=bool), iterations=32)))
+    rows = []
+    for mask_name, mask in masks:
+        ref_images = _representation_images(reference, mask)
+        moving_images = _representation_images(moving, mask)
+        for name in ref_images:
+            valid_fraction = float(mask.mean())
+            if valid_fraction < 0.30:
+                phase = {"status": "INSUFFICIENT_VALID_AREA"}
+            else:
+                phase = phase_from_inputs({
+                    "ref_crop": ref_images[name], "warped_target_crop": moving_images[name],
+                    "ref_valid_mask": mask, "target_valid_mask": mask, "joint_valid_mask": mask,
+                })
+            rows.append({"representation": name, "mask_variant": mask_name,
+                         "valid_fraction": valid_fraction, "phase": phase,
+                         "raw_ncc": _raw_ncc(ref_images[name], moving_images[name], mask)})
+    return rows
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)
