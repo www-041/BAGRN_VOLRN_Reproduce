@@ -379,3 +379,63 @@ def test_any_required_edge_mismatch_blocks_overall_reproduction_acceptance(tmp_p
     assert result["edges"][0]["state"] == "MISMATCH"
     assert (tmp_path / "03_reproduction_gate.csv").is_file()
     assert (tmp_path / "03_reproduction_gate.json").is_file()
+
+
+def test_coordinate_validation_recomputes_rmse_and_p95(tmp_path):
+    import csv
+    from src.multiscene_sift.inlier_recovery import validate_recovered_pair_coordinates
+
+    path = tmp_path / "inliers.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["point_id", "x_i", "y_i", "x_j", "y_j", "coordinate_frame", "residual_px"])
+        writer.writerow([0, 1, 1, 0, 0, "pair_common_grid", 0])
+        writer.writerow([1, 3, 1, 2, 0, "pair_common_grid", 0])
+
+    result = validate_recovered_pair_coordinates({
+        "edge": [0, 1],
+        "inliers_csv": str(path),
+        "affine_matrix": [[1, 0, 1], [0, 1, 1], [0, 0, 1]],
+        "coordinate_frame": "pair_common_grid",
+        "transform_direction": "target_to_reference",
+        "rmse_px": 0.0,
+        "p95_px": 0.0,
+    })
+
+    assert result["status"] == "PASS"
+    assert result["recomputed_rmse_px"] == 0.0
+    assert result["recomputed_p95_px"] == 0.0
+
+
+def test_coordinate_validation_rejects_wrong_direction_and_frame(tmp_path):
+    from src.multiscene_sift.inlier_recovery import validate_recovered_pair_coordinates
+
+    base = {
+        "edge": [0, 1], "inliers_csv": "missing.csv",
+        "affine_matrix": [[1, 0, 1], [0, 1, 1], [0, 0, 1]],
+        "rmse_px": 0.0, "p95_px": 0.0,
+    }
+    wrong_direction = validate_recovered_pair_coordinates({
+        **base, "coordinate_frame": "pair_common_grid", "transform_direction": "reference_to_target"
+    })
+    wrong_frame = validate_recovered_pair_coordinates({
+        **base, "coordinate_frame": "native_pixels", "transform_direction": "target_to_reference"
+    })
+
+    assert wrong_direction["status"] == "FAIL"
+    assert wrong_direction["reason"] == "WRONG_TRANSFORM_DIRECTION"
+    assert wrong_frame["status"] == "FAIL"
+    assert wrong_frame["reason"] == "WRONG_COORDINATE_FRAME"
+
+
+def test_coordinate_validation_overall_fails_when_any_edge_fails(tmp_path):
+    from src.multiscene_sift.inlier_recovery import evaluate_coordinate_validation
+
+    result = evaluate_coordinate_validation(
+        [{"edge": [0, 1], "transform_direction": "wrong", "coordinate_frame": "pair_common_grid"}],
+        tmp_path,
+    )
+
+    assert result["overall"] == "COORDINATE_RECOVERY_INVALID"
+    assert (tmp_path / "04_inlier_coordinate_validation.csv").is_file()
+    assert (tmp_path / "04_inlier_coordinate_validation.json").is_file()

@@ -222,3 +222,74 @@ def evaluate_reproduction_gate(
                 **{key: row.get(key) for key in fields[2:]},
             })
     return result
+
+
+def validate_recovered_pair_coordinates(replayed: dict) -> dict:
+    """Recompute residual metrics from the exported coordinate CSV."""
+    if replayed.get("transform_direction") != "target_to_reference":
+        return {"edge": replayed.get("edge"), "status": "FAIL", "reason": "WRONG_TRANSFORM_DIRECTION"}
+    if replayed.get("coordinate_frame") != "pair_common_grid":
+        return {"edge": replayed.get("edge"), "status": "FAIL", "reason": "WRONG_COORDINATE_FRAME"}
+    path = Path(replayed["inliers_csv"])
+    if not path.is_file():
+        return {"edge": replayed.get("edge"), "status": "FAIL", "reason": "MISSING_INLIER_CSV"}
+    ref = []
+    tgt = []
+    stored = []
+    with path.open("r", newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            ref.append([float(row["x_i"]), float(row["y_i"])])
+            tgt.append([float(row["x_j"]), float(row["y_j"])])
+            stored.append(float(row["residual_px"]))
+    ref_arr = np.asarray(ref, dtype=np.float64).reshape((-1, 2))
+    tgt_arr = np.asarray(tgt, dtype=np.float64).reshape((-1, 2))
+    predicted = _apply_affine(replayed["affine_matrix"], tgt_arr)
+    errors = np.linalg.norm(predicted - ref_arr, axis=1)
+    rmse = float(np.sqrt(np.mean(errors ** 2))) if len(errors) else 0.0
+    p95 = float(np.percentile(errors, 95)) if len(errors) else 0.0
+    max_error = float(np.max(errors)) if len(errors) else 0.0
+    passed = (
+        abs(rmse - float(replayed["rmse_px"])) <= 1e-9
+        and abs(p95 - float(replayed["p95_px"])) <= 1e-9
+        and np.allclose(errors, stored, atol=1e-9)
+    )
+    return {
+        "edge": replayed.get("edge"),
+        "status": "PASS" if passed else "FAIL",
+        "reason": None if passed else "RESIDUAL_RECOMPUTATION_MISMATCH",
+        "recomputed_rmse_px": rmse,
+        "recomputed_p95_px": p95,
+        "recomputed_max_px": max_error,
+        "n_points": int(len(errors)),
+    }
+
+
+def evaluate_coordinate_validation(
+    replayed_summaries: list[dict], output_dir: str | Path
+) -> dict:
+    """Validate all replayed edges and persist the coordinate audit."""
+    records = [validate_recovered_pair_coordinates(item) for item in replayed_summaries]
+    overall = (
+        "COORDINATE_RECOVERY_VALID"
+        if records and all(item["status"] == "PASS" for item in records)
+        else "COORDINATE_RECOVERY_INVALID"
+    )
+    result = {"overall": overall, "edges": records}
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "04_inlier_coordinate_validation.json").write_text(
+        json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    fields = ["edge_i", "edge_j", "status", "reason", "n_points",
+              "recomputed_rmse_px", "recomputed_p95_px", "recomputed_max_px"]
+    with (out_dir / "04_inlier_coordinate_validation.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for item in records:
+            edge = item.get("edge") or [None, None]
+            writer.writerow({"edge_i": edge[0], "edge_j": edge[1], **{
+                key: item.get(key) for key in fields[2:]
+            }})
+    return result
