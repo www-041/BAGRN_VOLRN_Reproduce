@@ -352,6 +352,46 @@ def evaluate_shift_counterfactual(
     return metrics
 
 
+def translation_metric_surface(
+    reference: np.ndarray,
+    moving: np.ndarray,
+    moving_mask: np.ndarray,
+    radius_px: int = 12,
+    phase_shift: tuple[float, float] | None = None,
+) -> dict:
+    """Search integer non-wrapping translations using independent metrics."""
+    rows = []
+    for dy in range(-int(radius_px), int(radius_px) + 1):
+        for dx in range(-int(radius_px), int(radius_px) + 1):
+            score = evaluate_shift_counterfactual(reference, moving, moving_mask, dx, dy)
+            rows.append({"dx": dx, "dy": dy, "gradient_ncc": score["gradient_ncc"],
+                         "raw_ncc": score["raw_ncc"], "masked_mae": score["masked_mae"],
+                         "valid_count": score["joint_valid_count"]})
+    finite = [row for row in rows if row["gradient_ncc"] is not None and np.isfinite(row["gradient_ncc"])]
+    finite.sort(key=lambda row: row["gradient_ncc"], reverse=True)
+    if not finite:
+        return {"rows": rows, "best_dx": None, "best_dy": None, "best_score": None,
+                "score_at_zero": None, "best_minus_second_best": None}
+    best = finite[0]
+    second = finite[1] if len(finite) > 1 else None
+    zero = next(row for row in rows if row["dx"] == 0 and row["dy"] == 0)
+    result = {
+        "rows": rows,
+        "best_dx": int(best["dx"]), "best_dy": int(best["dy"]),
+        "best_score": float(best["gradient_ncc"]),
+        "best_raw_ncc": best["raw_ncc"], "best_masked_mae": best["masked_mae"],
+        "score_at_zero": zero["gradient_ncc"], "raw_ncc_at_zero": zero["raw_ncc"],
+        "valid_count_at_best": int(best["valid_count"]),
+        "valid_count_at_zero": int(zero["valid_count"]),
+        "best_minus_second_best": float(best["gradient_ncc"] - second["gradient_ncc"]) if second else None,
+    }
+    if phase_shift is not None:
+        phase_dx, phase_dy = (int(round(phase_shift[0])), int(round(phase_shift[1])))
+        near = min(rows, key=lambda row: (row["dx"] - phase_dx) ** 2 + (row["dy"] - phase_dy) ** 2)
+        result["phase_candidate"] = near
+    return result
+
+
 def _phase_arrays(inputs: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ref = np.asarray(inputs["ref_crop"], dtype=np.float64)
     tgt = np.asarray(inputs["warped_target_crop"], dtype=np.float64)

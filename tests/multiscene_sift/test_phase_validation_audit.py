@@ -15,6 +15,7 @@ from src.multiscene_sift.phase_validation_audit import (
     inject_translation_nonwrapping,
     run_phase_sign_convention,
     evaluate_shift_counterfactual,
+    translation_metric_surface,
     write_phase_input_visual_audit,
     trace_phase_validation_flow,
 )
@@ -183,3 +184,16 @@ def test_counterfactual_reported_shift_improves_independent_metrics_on_known_shi
     assert corrected["gradient_ncc"] > zero["gradient_ncc"]
     assert corrected["raw_ncc"] > zero["raw_ncc"]
     assert corrected["masked_mae"] < zero["masked_mae"]
+
+
+def test_translation_sweep_finds_known_correction_without_phase_correlation():
+    rng = np.random.default_rng(9)
+    clean = rng.normal(size=(128, 128)).astype(np.float32)
+    ref = clean.copy()
+    ref[:12, :] = np.nan
+    mask = np.ones_like(clean, dtype=bool)
+    moving, moving_mask = inject_translation_nonwrapping(clean, mask, 5, -3)
+    result = translation_metric_surface(ref, moving, moving_mask, radius_px=6)
+    assert (result["best_dx"], result["best_dy"]) == (-5, 3)
+    assert result["best_score"] > result["score_at_zero"]
+    assert len({row["valid_count"] for row in result["rows"]}) > 1
