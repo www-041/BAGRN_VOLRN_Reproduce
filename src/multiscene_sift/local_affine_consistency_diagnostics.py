@@ -693,11 +693,17 @@ def _phase_rows_for_result(result: dict, edge: str) -> list[dict]:
     return [dict(row, edge=edge) for row in rows]
 
 
-def write_diagnostic_artifacts(output_dir: str | Path, results: dict[str, dict]) -> None:
+def write_diagnostic_artifacts(
+    output_dir: str | Path,
+    results: dict[str, dict],
+    baseline: dict | None = None,
+) -> None:
     """Write the plan's machine-readable summaries and figure entry points."""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "07_region_validation").mkdir(exist_ok=True)
+    if baseline is not None:
+        _write_json(out / "00_local_affine_baseline.json", baseline)
     support_rows, model_rows, displacement_rows, cv_rows, phase_rows = [], [], [], [], []
     variations, cv_summaries, phase_summaries, stability = {}, {}, {}, {}
     evidence = {}

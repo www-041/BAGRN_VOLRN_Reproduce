@@ -255,9 +255,9 @@ def _synthetic_artifact_result():
 
 
 def test_diagnostic_artifacts_write_required_machine_readable_outputs(tmp_path):
-    write_diagnostic_artifacts(tmp_path, _synthetic_artifact_result())
+    write_diagnostic_artifacts(tmp_path, _synthetic_artifact_result(), baseline={"edges": {}})
     for name in (
-        "01_region_support.csv", "02_local_affine_models.csv", "02_local_affine_models.json",
+        "00_local_affine_baseline.json", "01_region_support.csv", "02_local_affine_models.csv", "02_local_affine_models.json",
         "03_local_vs_global_displacement.csv", "03_local_vs_global_summary.json",
         "04_local_affine_variation_summary.json", "05_local_affine_cross_validation.csv",
         "05_local_affine_cross_validation_summary.json", "06_global_vs_local_phase.csv",

@@ -190,7 +190,7 @@ def diagnose(args: argparse.Namespace) -> dict[str, dict]:
             "validation_crops": validation_crops,
             "stability": stability, "evidence": evidence,
         }
-    write_diagnostic_artifacts(args.output_dir, results)
+    write_diagnostic_artifacts(args.output_dir, results, baseline=baseline)
     return results
 
 
