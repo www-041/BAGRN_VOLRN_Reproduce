@@ -144,6 +144,34 @@ def test_coordinate_roundtrip_is_invariant_to_crop_origin():
     assert result["tgt_world_roundtrip_error"] < 1e-9
 
 
+def test_phase_flow_keeps_explicit_reference_target_order():
+    ref = np.full((32, 32), 2.0, dtype=np.float32)
+    tgt = np.full((32, 32), 7.0, dtype=np.float32)
+    mask = np.ones_like(ref, dtype=bool)
+    trace = trace_phase_validation_flow({
+        "ref_crop": ref,
+        "warped_target_crop": tgt,
+        "ref_valid_mask": mask,
+        "target_valid_mask": mask,
+        "joint_valid_mask": mask,
+        "metadata": {"ref_tgt_order": "reference, target"},
+    }, phase={"status": "OK", "dx_px": 0.0, "dy_px": 0.0, "magnitude_px": 0.0})
+    assert trace["ref_tgt_order"] == "reference, target"
+    assert trace["ref_array"]["mean"] == pytest.approx(2.0)
+    assert trace["target_array"]["mean"] == pytest.approx(7.0)
+
+
+def test_forward_and_inverse_translation_directions_are_distinct():
+    rng = np.random.default_rng(15)
+    reference = rng.normal(size=(96, 96)).astype(np.float32)
+    mask = np.ones_like(reference, dtype=bool)
+    moving, moving_mask = inject_translation_nonwrapping(reference, mask, 4, -2)
+    forward = evaluate_shift_counterfactual(reference, moving, moving_mask, 4, -2)
+    inverse = evaluate_shift_counterfactual(reference, moving, moving_mask, -4, 2)
+    assert inverse["gradient_ncc"] > forward["gradient_ncc"]
+    assert inverse["raw_ncc"] > forward["raw_ncc"]
+
+
 def test_export_reload_preserves_exact_phase_inputs_and_phase_result(tmp_path):
     rng = np.random.default_rng(5)
     ref = rng.normal(size=(64, 64)).astype(np.float32)
