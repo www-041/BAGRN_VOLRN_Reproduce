@@ -11,7 +11,7 @@ import time
 
 import numpy as np
 
-from src.registration_benchmark.models import MatchSet, MatchView
+from src.registration_benchmark.models import MatchView, make_matchset_from_view
 
 logger = logging.getLogger(__name__)
 
@@ -71,22 +71,26 @@ def match_lightglue(
     _device = _resolve_device(device)
 
     # --- Initialise models --------------------------------------------------
+    feature_t0 = time.perf_counter()
     extractor = SuperPoint(max_num_keypoints=max_num_keypoints).eval().to(_device)
-    matcher = LightGlue(features="superpoint").eval().to(_device)
 
     # --- Prepare input tensors (1×1×H×W, float32 [0,1]) --------------------
     ref_t = torch.from_numpy(view.ref).float().unsqueeze(0).unsqueeze(0).to(_device)
     tgt_t = torch.from_numpy(view.tgt).float().unsqueeze(0).unsqueeze(0).to(_device)
 
-    # --- Feature extraction & matching --------------------------------------
     with torch.inference_mode():
         feats0 = extractor.extract(ref_t)
         feats1 = extractor.extract(tgt_t)
+    feature_runtime = time.perf_counter() - feature_t0
 
+    matcher_t0 = time.perf_counter()
+    matcher = LightGlue(features="superpoint").eval().to(_device)
+    with torch.inference_mode():
         matches01 = matcher({
             "image0": feats0,
             "image1": feats1,
         })
+    matcher_runtime = time.perf_counter() - matcher_t0
 
     # Remove batch dimension — rbd each dict separately
     feats0 = rbd(feats0)
@@ -107,10 +111,11 @@ def match_lightglue(
     # --- Map to common-grid coordinates ------------------------------------
     if len(ref_xy_view) == 0:
         elapsed = time.perf_counter() - t0
-        return MatchSet(
+        return make_matchset_from_view(
             method="lightglue",
-            ref_xy=np.empty((0, 2)),
-            tgt_xy=np.empty((0, 2)),
+            view=view,
+            ref_xy_view=np.empty((0, 2)),
+            tgt_xy_view=np.empty((0, 2)),
             confidence=np.empty(0),
             runtime_sec=elapsed,
             metadata={
@@ -121,17 +126,19 @@ def match_lightglue(
                 "keypoints_ref": len(feats0.get("keypoints", [])),
                 "keypoints_tgt": len(feats1.get("keypoints", [])),
             },
+            runtime_breakdown={
+                "feature_runtime_sec": feature_runtime,
+                "matcher_runtime_sec": matcher_runtime,
+            },
         )
-
-    ref_xy = view.to_canvas(ref_xy_view)
-    tgt_xy = view.to_canvas(tgt_xy_view)
 
     elapsed = time.perf_counter() - t0
 
-    return MatchSet(
+    return make_matchset_from_view(
         method="lightglue",
-        ref_xy=ref_xy,
-        tgt_xy=tgt_xy,
+        view=view,
+        ref_xy_view=ref_xy_view,
+        tgt_xy_view=tgt_xy_view,
         confidence=conf_np,
         runtime_sec=elapsed,
         metadata={
@@ -141,6 +148,10 @@ def match_lightglue(
             "confidence_source": conf_source,
             "keypoints_ref": len(feats0.get("keypoints", [])),
             "keypoints_tgt": len(feats1.get("keypoints", [])),
+        },
+        runtime_breakdown={
+            "feature_runtime_sec": feature_runtime,
+            "matcher_runtime_sec": matcher_runtime,
         },
     )
 

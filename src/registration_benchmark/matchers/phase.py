@@ -13,7 +13,7 @@ import numpy as np
 from rasterio.transform import from_origin
 
 from src.coregistration import collect_block_matches
-from src.registration_benchmark.models import MatchSet, MatchView
+from src.registration_benchmark.models import MatchView, make_matchset_from_view
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +63,11 @@ def match_phase(
     if not matches:
         elapsed = time.perf_counter() - t0
         logger.warning("Phase: zero matches from %d blocks", screening.get("total", 0))
-        return MatchSet(
+        return make_matchset_from_view(
             method="phase",
-            ref_xy=np.empty((0, 2)),
-            tgt_xy=np.empty((0, 2)),
+            view=view,
+            ref_xy_view=np.empty((0, 2)),
+            tgt_xy_view=np.empty((0, 2)),
             confidence=np.empty(0),
             runtime_sec=elapsed,
             metadata={
@@ -93,15 +94,13 @@ def match_phase(
         confidence[i] = m["confidence"]
 
     # Map both from view pixel space → common-grid pixel space
-    ref_xy = view.to_canvas(ref_xy_view)
-    tgt_xy = view.to_canvas(tgt_xy_view)
-
     elapsed = time.perf_counter() - t0
 
-    return MatchSet(
+    return make_matchset_from_view(
         method="phase",
-        ref_xy=ref_xy,
-        tgt_xy=tgt_xy,
+        view=view,
+        ref_xy_view=ref_xy_view,
+        tgt_xy_view=tgt_xy_view,
         confidence=confidence,
         runtime_sec=elapsed,
         metadata={

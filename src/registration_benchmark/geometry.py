@@ -28,6 +28,9 @@ STATUS_TOO_FEW_INLIERS = "TOO_FEW_INLIERS"
 STATUS_LOW_INLIER_RATIO = "LOW_INLIER_RATIO"
 STATUS_INVALID_GEOMETRY = "INVALID_GEOMETRY"
 
+RANSAC_RESIDUAL_THRESHOLD = 2.0
+MAX_RANSAC_TRIALS = 5000
+RANSAC_RANDOM_SEED = 0
 MIN_INLIERS = 20
 MIN_INLIER_RATIO = 0.30
 
@@ -90,9 +93,9 @@ class GeometryResult:
 
 def fit_affine_ransac(
     matches: MatchSet,
-    residual_threshold: float = 2.0,
-    max_trials: int = 5000,
-    random_seed: int = 0,
+    residual_threshold: float = RANSAC_RESIDUAL_THRESHOLD,
+    max_trials: int = MAX_RANSAC_TRIALS,
+    random_seed: int = RANSAC_RANDOM_SEED,
 ) -> GeometryResult:
     """Fit a 2-D affine transform to tie-points via RANSAC.
 

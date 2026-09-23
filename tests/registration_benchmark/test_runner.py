@@ -136,6 +136,15 @@ class TestRunner:
             assert "status" in row
             assert "raw_matches" in row
             assert "inliers" in row
+            assert row["feature_runtime_sec"] >= 0.0
+            assert row["matcher_runtime_sec"] >= 0.0
+            assert row["geometry_runtime_sec"] >= 0.0
+            assert row["total_runtime_sec"] >= row["match_runtime_sec"]
+
+        csv_header = (out / "summary.csv").read_text().splitlines()[0]
+        assert "feature_runtime_sec" in csv_header
+        assert "matcher_runtime_sec" in csv_header
+        assert "geometry_runtime_sec" in csv_header
 
     def test_unknown_method_raises(self, tmp_dir):
         from tests.registration_benchmark.conftest import make_synthetic_pair

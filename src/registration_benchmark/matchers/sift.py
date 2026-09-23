@@ -11,7 +11,7 @@ import time
 import cv2
 import numpy as np
 
-from src.registration_benchmark.models import MatchSet, MatchView
+from src.registration_benchmark.models import MatchView, make_matchset_from_view
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ def match_sift(
     t0 = time.perf_counter()
 
     # --- Convert [0, 1] float32 → uint8 ---------------------------------------
+    feature_t0 = time.perf_counter()
     ref_u8 = _to_uint8(view.ref)
     tgt_u8 = _to_uint8(view.tgt)
 
@@ -47,22 +48,29 @@ def match_sift(
 
     kp_ref, des_ref = sift.detectAndCompute(ref_u8, None)
     kp_tgt, des_tgt = sift.detectAndCompute(tgt_u8, None)
+    feature_runtime = time.perf_counter() - feature_t0
 
     if des_ref is None or des_tgt is None or len(kp_ref) < 2 or len(kp_tgt) < 2:
         elapsed = time.perf_counter() - t0
         logger.warning("SIFT: insufficient keypoints (ref=%d, tgt=%d)",
                        len(kp_ref) if kp_ref is not None else 0,
                        len(kp_tgt) if kp_tgt is not None else 0)
-        return MatchSet(
+        return make_matchset_from_view(
             method="sift",
-            ref_xy=np.empty((0, 2)),
-            tgt_xy=np.empty((0, 2)),
+            view=view,
+            ref_xy_view=np.empty((0, 2)),
+            tgt_xy_view=np.empty((0, 2)),
             confidence=np.empty(0),
             runtime_sec=elapsed,
             metadata={"nfeatures": nfeatures, "ratio_threshold": ratio_threshold},
+            runtime_breakdown={
+                "feature_runtime_sec": feature_runtime,
+                "matcher_runtime_sec": 0.0,
+            },
         )
 
     # --- BFMatcher + KNN k=2 ---------------------------------------------------
+    matcher_t0 = time.perf_counter()
     matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
     raw_matches = matcher.knnMatch(des_ref, des_tgt, k=2)
 
@@ -78,6 +86,7 @@ def match_sift(
     for m, n in raw_matches_rev:
         if m.distance < ratio_threshold * n.distance:
             good_rev.append(m)
+    matcher_runtime = time.perf_counter() - matcher_t0
 
     # Build reverse index: tgt_idx → ref_idx
     rev_map = {m.queryIdx: m.trainIdx for m in good_rev}
@@ -91,10 +100,11 @@ def match_sift(
     if not mutual:
         elapsed = time.perf_counter() - t0
         logger.warning("SIFT: zero mutual matches after symmetric check")
-        return MatchSet(
+        return make_matchset_from_view(
             method="sift",
-            ref_xy=np.empty((0, 2)),
-            tgt_xy=np.empty((0, 2)),
+            view=view,
+            ref_xy_view=np.empty((0, 2)),
+            tgt_xy_view=np.empty((0, 2)),
             confidence=np.empty(0),
             runtime_sec=elapsed,
             metadata={
@@ -103,6 +113,10 @@ def match_sift(
                 "raw_fwd": len(good_fwd),
                 "raw_rev": len(good_rev),
                 "mutual": 0,
+            },
+            runtime_breakdown={
+                "feature_runtime_sec": feature_runtime,
+                "matcher_runtime_sec": matcher_runtime,
             },
         )
 
@@ -149,10 +163,11 @@ def match_sift(
     # --- Map to common-grid coordinates ----------------------------------------
     if len(ref_xy_view) == 0:
         elapsed = time.perf_counter() - t0
-        return MatchSet(
+        return make_matchset_from_view(
             method="sift",
-            ref_xy=np.empty((0, 2)),
-            tgt_xy=np.empty((0, 2)),
+            view=view,
+            ref_xy_view=np.empty((0, 2)),
+            tgt_xy_view=np.empty((0, 2)),
             confidence=np.empty(0),
             runtime_sec=elapsed,
             metadata={
@@ -163,17 +178,19 @@ def match_sift(
                 "mutual": n,
                 "valid_mask_filtered": True,
             },
+            runtime_breakdown={
+                "feature_runtime_sec": feature_runtime,
+                "matcher_runtime_sec": matcher_runtime,
+            },
         )
-
-    ref_xy = view.to_canvas(ref_xy_view)
-    tgt_xy = view.to_canvas(tgt_xy_view)
 
     elapsed = time.perf_counter() - t0
 
-    return MatchSet(
+    return make_matchset_from_view(
         method="sift",
-        ref_xy=ref_xy,
-        tgt_xy=tgt_xy,
+        view=view,
+        ref_xy_view=ref_xy_view,
+        tgt_xy_view=tgt_xy_view,
         confidence=confidence,
         runtime_sec=elapsed,
         metadata={
@@ -183,6 +200,10 @@ def match_sift(
             "raw_rev": len(good_rev),
             "mutual": n,
             "valid_mask_filtered": int((~keep).sum()) if hasattr(keep, '__len__') else 0,
+        },
+        runtime_breakdown={
+            "feature_runtime_sec": feature_runtime,
+            "matcher_runtime_sec": matcher_runtime,
         },
     )
 

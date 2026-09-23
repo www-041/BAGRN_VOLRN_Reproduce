@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 
-from src.registration_benchmark.models import MatchSet, MatchView
+from src.registration_benchmark.models import MatchView, make_matchset_from_view
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +100,11 @@ def match_loftr(
     elapsed = time.perf_counter() - t0
 
     if len(kpts0) == 0:
-        return MatchSet(
+        return make_matchset_from_view(
             method="loftr",
-            ref_xy=np.empty((0, 2)),
-            tgt_xy=np.empty((0, 2)),
+            view=view,
+            ref_xy_view=np.empty((0, 2)),
+            tgt_xy_view=np.empty((0, 2)),
             confidence=np.empty(0),
             runtime_sec=elapsed,
             metadata={
@@ -114,13 +115,11 @@ def match_loftr(
             },
         )
 
-    ref_xy = view.to_canvas(kpts0)
-    tgt_xy = view.to_canvas(kpts1)
-
-    return MatchSet(
+    return make_matchset_from_view(
         method="loftr",
-        ref_xy=ref_xy,
-        tgt_xy=tgt_xy,
+        view=view,
+        ref_xy_view=kpts0,
+        tgt_xy_view=kpts1,
         confidence=conf,
         runtime_sec=elapsed,
         metadata={

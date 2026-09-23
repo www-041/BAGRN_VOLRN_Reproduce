@@ -156,6 +156,9 @@ def run_two_image_benchmark(
                 "verification_magnitude": None,
                 "verification_confidence": None,
                 "verification_status": None,
+                "feature_runtime_sec": None,
+                "matcher_runtime_sec": None,
+                "geometry_runtime_sec": None,
                 "match_runtime_sec": None,
                 "total_runtime_sec": None,
             }
@@ -197,7 +200,7 @@ def _run_one_method(
     # 1. Match ---------------------------------------------------------------
     matcher_fn = MATCHERS[method]
     matches = _run_matcher(method, matcher_fn, view, device)
-    matches.validate()
+    matches.validate_for_geometry()
     logger.info("  raw matches: %d", len(matches.ref_xy))
 
     # Phase block screening diagnostics
@@ -215,7 +218,9 @@ def _run_one_method(
         )
 
     # 2. RANSAC Affine -------------------------------------------------------
+    geometry_t0 = time.perf_counter()
     geom = fit_affine_ransac(matches, residual_threshold=ransac_threshold)
+    geometry_runtime = time.perf_counter() - geometry_t0
     logger.info("  geometry: status=%s, inliers=%d/%d",
                 geom.status, geom.n_inlier, geom.n_raw)
 
@@ -244,6 +249,8 @@ def _run_one_method(
     else:
         metrics = {}
 
+    runtime_breakdown = matches.metadata.get("runtime_breakdown", {})
+
     return {
         "method": method,
         "status": geom.status,
@@ -263,6 +270,9 @@ def _run_one_method(
         "verification_magnitude": metrics.get("verification_magnitude"),
         "verification_confidence": metrics.get("verification_confidence"),
         "verification_status": metrics.get("verification_status"),
+        "feature_runtime_sec": runtime_breakdown.get("feature_runtime_sec"),
+        "matcher_runtime_sec": runtime_breakdown.get("matcher_runtime_sec"),
+        "geometry_runtime_sec": geometry_runtime,
         "match_runtime_sec": matches.runtime_sec,
         "total_runtime_sec": elapsed,
         "error": metrics.get("error"),
@@ -284,6 +294,7 @@ def _write_summary_csv(path: Path, summary: list[dict]):
         "residual_p95", "residual_max", "gradient_ncc_before",
         "gradient_ncc_after", "verification_magnitude",
         "verification_confidence", "verification_status",
+        "feature_runtime_sec", "matcher_runtime_sec", "geometry_runtime_sec",
         "match_runtime_sec", "total_runtime_sec",
         "error",
     ]

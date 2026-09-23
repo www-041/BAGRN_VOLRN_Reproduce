@@ -12,6 +12,44 @@ from typing import Any, Dict
 import numpy as np
 
 
+PAIR_COMMON_GRID_FRAME = "pair_common_grid"
+CONFIDENCE_SEMANTICS = "method_internal_only"
+
+# Capability metadata is descriptive only.  It must never be used to alter
+# the shared geometry thresholds or to compare confidence magnitudes across
+# matcher families.
+MATCHER_INFO = {
+    "phase": {
+        "name": "phase",
+        "family": "sparse_classical_block",
+        "detector_free": False,
+        "uses_learned_features": False,
+        "confidence_semantics": CONFIDENCE_SEMANTICS,
+    },
+    "sift": {
+        "name": "sift",
+        "family": "sparse_classical",
+        "detector_free": False,
+        "uses_learned_features": False,
+        "confidence_semantics": CONFIDENCE_SEMANTICS,
+    },
+    "loftr": {
+        "name": "loftr",
+        "family": "semi_dense_detector_free",
+        "detector_free": True,
+        "uses_learned_features": True,
+        "confidence_semantics": CONFIDENCE_SEMANTICS,
+    },
+    "lightglue": {
+        "name": "lightglue",
+        "family": "sparse_learned",
+        "detector_free": False,
+        "uses_learned_features": True,
+        "confidence_semantics": CONFIDENCE_SEMANTICS,
+    },
+}
+
+
 @dataclass
 class MatchSet:
     """Tie-point matches produced by a single matcher.
@@ -39,7 +77,7 @@ class MatchSet:
     runtime_sec: float
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def validate(self) -> None:
+    def validate(self, *, require_coordinate_frame: bool = False) -> None:
         """Raise :class:`ValueError` if any invariant is violated."""
         if self.ref_xy.ndim != 2 or self.ref_xy.shape[1] != 2:
             raise ValueError("ref_xy must have shape (N, 2)")
@@ -55,6 +93,26 @@ class MatchSet:
 
         if not np.isfinite(self.tgt_xy).all():
             raise ValueError("tgt_xy contains non-finite values")
+
+        if require_coordinate_frame and self.metadata.get("coordinate_frame") != PAIR_COMMON_GRID_FRAME:
+            raise ValueError(
+                "matcher coordinates must use the pair_common_grid coordinate frame"
+            )
+
+    def validate_for_geometry(self) -> None:
+        """Validate the stricter contract required before shared RANSAC."""
+        self.validate(require_coordinate_frame=True)
+        if self.metadata.get("confidence_semantics") != CONFIDENCE_SEMANTICS:
+            raise ValueError(
+                "confidence must be marked as method_internal_only; "
+                "cross-method confidence comparison is not allowed"
+            )
+
+        breakdown = self.metadata.get("runtime_breakdown")
+        if breakdown is not None:
+            required = {"feature_runtime_sec", "matcher_runtime_sec", "total_runtime_sec"}
+            if not required.issubset(breakdown):
+                raise ValueError("runtime_breakdown is missing required timing fields")
 
 
 @dataclass
@@ -117,8 +175,8 @@ class MatchView:
     scale_x: float
     scale_y: float
 
-    def to_canvas(self, xy: np.ndarray) -> np.ndarray:
-        """Convert match-view pixel coordinates back to common-grid coordinates.
+    def to_common_grid(self, xy: np.ndarray) -> np.ndarray:
+        """Undo resize and overlap-crop offsets into pair-common-grid pixels.
 
         Args:
             xy: Array of shape ``(N, 2)`` with columns ``[x, y]`` in match-view
@@ -139,3 +197,49 @@ class MatchView:
         out[:, 1] = self.origin_y + out[:, 1] / self.scale_y
 
         return out
+
+    def to_canvas(self, xy: np.ndarray) -> np.ndarray:
+        """Backward-compatible alias for :meth:`to_common_grid`."""
+        return self.to_common_grid(xy)
+
+
+def make_matchset_from_view(
+    *,
+    method: str,
+    view: MatchView,
+    ref_xy_view: np.ndarray,
+    tgt_xy_view: np.ndarray,
+    confidence: np.ndarray,
+    runtime_sec: float,
+    metadata: dict[str, Any] | None = None,
+    runtime_breakdown: dict[str, float] | None = None,
+) -> MatchSet:
+    """Build a ``MatchSet`` after one canonical coordinate conversion.
+
+    Matcher adapters may use any internal resized/cropped coordinates, but the
+    object entering shared RANSAC is always in ``pair_common_grid``.
+    """
+    ref_xy_view = np.asarray(ref_xy_view, dtype=np.float64)
+    tgt_xy_view = np.asarray(tgt_xy_view, dtype=np.float64)
+    confidence = np.asarray(confidence, dtype=np.float64)
+    meta = dict(metadata or {})
+    meta["coordinate_frame"] = PAIR_COMMON_GRID_FRAME
+    meta["confidence_semantics"] = CONFIDENCE_SEMANTICS
+    if runtime_breakdown is None:
+        runtime_breakdown = {
+            "feature_runtime_sec": 0.0,
+            "matcher_runtime_sec": float(runtime_sec),
+        }
+    meta["runtime_breakdown"] = {
+        "feature_runtime_sec": float(runtime_breakdown.get("feature_runtime_sec", 0.0)),
+        "matcher_runtime_sec": float(runtime_breakdown.get("matcher_runtime_sec", 0.0)),
+        "total_runtime_sec": float(runtime_sec),
+    }
+    return MatchSet(
+        method=method,
+        ref_xy=view.to_common_grid(ref_xy_view),
+        tgt_xy=view.to_common_grid(tgt_xy_view),
+        confidence=confidence,
+        runtime_sec=float(runtime_sec),
+        metadata=meta,
+    )
