@@ -151,7 +151,12 @@ def test_efficient_loftr_official_import_compatibility():
     assert LoFTR is not None
 
 
-def test_weights_directory_alias_resolves_to_official_repository_root(tmp_path):
+def test_weights_directory_alias_resolves_to_official_repository_root(
+    tmp_path, monkeypatch
+):
+    # The real-user environment may intentionally define a checkpoint path;
+    # this unit test must exercise the weights-directory default in isolation.
+    monkeypatch.delenv("EFFICIENT_LOFTR_WEIGHTS", raising=False)
     repo = tmp_path / "EfficientLoFTR"
     (repo / "src" / "loftr").mkdir(parents=True)
     weights_dir = repo / "weights"
