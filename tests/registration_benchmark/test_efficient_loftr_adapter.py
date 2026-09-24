@@ -135,7 +135,11 @@ def test_efficient_loftr_official_import_compatibility():
     if not repo_value:
         pytest.skip("EFFICIENT_LOFTR_REPO is not configured")
 
-    repo_src = Path(repo_value).expanduser().resolve() / "src"
+    try:
+        repo, _ = _resolve_paths(repo_value, None)
+    except RuntimeError:
+        pytest.skip("configured EfficientLoFTR paths are unavailable")
+    repo_src = repo / "src"
     if not (repo_src / "loftr").is_dir():
         pytest.skip("configured EfficientLoFTR source tree is unavailable")
 
