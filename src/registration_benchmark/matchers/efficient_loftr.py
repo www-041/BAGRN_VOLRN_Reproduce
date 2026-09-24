@@ -287,7 +287,7 @@ def _load_model(
 
         config = copy.deepcopy(full_default_cfg if model_type == "full" else opt_default_cfg)
         matcher = LoFTR(config=config)
-        checkpoint = torch.load(str(weights), map_location="cpu")
+        checkpoint = _load_checkpoint(torch, weights)
         state_dict = checkpoint.get("state_dict", checkpoint)
         matcher.load_state_dict(state_dict)
         matcher = reparameter(matcher).eval().to(device)
@@ -298,6 +298,25 @@ def _load_model(
         if isinstance(exc, RuntimeError) and str(exc).startswith(EFFICIENT_LOFTR_UNAVAILABLE):
             raise
         raise RuntimeError(f"{EFFICIENT_LOFTR_UNAVAILABLE}: {exc}") from exc
+
+
+def _load_checkpoint(torch_module, weights: Path):
+    """Load the explicitly configured official checkpoint.
+
+    The official EfficientLoFTR Lightning checkpoint contains non-tensor
+    training metadata.  PyTorch 2.6 changed ``torch.load``'s default to
+    ``weights_only=True``, which rejects that metadata before the model can
+    extract its ``state_dict``.  ``weights_only=False`` is intentional here:
+    this adapter only loads the user-selected official checkpoint path.  The
+    fallback keeps the adapter compatible with older PyTorch releases that do
+    not accept the keyword.
+    """
+    try:
+        return torch_module.load(
+            str(weights), map_location="cpu", weights_only=False
+        )
+    except TypeError:
+        return torch_module.load(str(weights), map_location="cpu")
 
 
 def _install_kornia_grid_compat() -> None:

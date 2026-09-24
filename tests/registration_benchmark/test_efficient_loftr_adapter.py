@@ -15,6 +15,7 @@ from src.registration_benchmark.matchers.efficient_loftr import (
     _model_to_view_coordinates,
     _install_kornia_grid_compat,
     _install_pytorch_lightning_compat,
+    _load_checkpoint,
     _resolve_paths,
     is_efficient_loftr_available,
     match_efficient_loftr,
@@ -181,3 +182,20 @@ def test_weights_directory_alias_resolves_to_official_repository_root(
 
     assert resolved_repo == repo.resolve()
     assert resolved_weights == checkpoint.resolve()
+
+
+def test_trusted_official_checkpoint_load_disables_weights_only(tmp_path):
+    checkpoint = tmp_path / "eloftr_outdoor.ckpt"
+    checkpoint.write_bytes(b"test")
+    calls = []
+
+    class FakeTorch:
+        @staticmethod
+        def load(path, *, map_location, weights_only):
+            calls.append((path, map_location, weights_only))
+            return {"state_dict": {}}
+
+    loaded = _load_checkpoint(FakeTorch(), checkpoint)
+
+    assert loaded == {"state_dict": {}}
+    assert calls == [(str(checkpoint), "cpu", False)]
