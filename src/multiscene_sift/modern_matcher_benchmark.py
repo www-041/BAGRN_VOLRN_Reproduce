@@ -35,6 +35,28 @@ logger = logging.getLogger(__name__)
 MODERN_MATCHERS = ("sift", "loftr", "efficient_loftr", "lightglue_disk")
 
 
+def _resolve_scene_names(
+    input_root: str,
+    scene_names: list[str] | None,
+) -> list[str]:
+    """Use all five child scene directories when names are not supplied."""
+    if scene_names is not None:
+        return list(scene_names)
+
+    root = Path(input_root)
+    discovered = sorted(
+        child.name
+        for child in root.iterdir()
+        if child.is_dir() and not child.name.startswith(".")
+    )
+    if len(discovered) != 5:
+        raise ValueError(
+            f"Expected exactly five scene directories under {root}, "
+            f"found {len(discovered)}: {discovered}"
+        )
+    return discovered
+
+
 def run_modern_matcher_benchmark(
     input_root: str,
     output_dir: str,
@@ -76,9 +98,10 @@ def run_modern_matcher_benchmark(
     with open(out / "run_config.json", "w") as f:
         json.dump(config, f, indent=2)
 
+    resolved_scene_names = _resolve_scene_names(input_root, scene_names)
     scenes, manifest = discover_five_scenes(
         input_root,
-        scene_names,
+        resolved_scene_names,
         bands=(registration_band,),
     )
     save_manifest(manifest, out / "dataset_manifest.json")
