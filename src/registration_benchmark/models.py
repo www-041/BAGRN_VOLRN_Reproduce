@@ -54,6 +54,13 @@ MATCHER_INFO = {
         "uses_learned_features": True,
         "confidence_semantics": CONFIDENCE_SEMANTICS,
     },
+    "lightglue_disk": {
+        "name": "lightglue_disk",
+        "family": "sparse_learned_local_features",
+        "detector_free": False,
+        "uses_learned_features": True,
+        "confidence_semantics": CONFIDENCE_SEMANTICS,
+    },
 }
 
 

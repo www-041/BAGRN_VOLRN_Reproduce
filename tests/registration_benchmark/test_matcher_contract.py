@@ -84,7 +84,7 @@ def test_runtime_breakdown_and_confidence_semantics_are_explicit():
 
 
 def test_capability_descriptions_are_method_specific_and_non_comparable():
-    for method in ("sift", "loftr", "efficient_loftr", "lightglue"):
+    for method in ("sift", "loftr", "efficient_loftr", "lightglue", "lightglue_disk"):
         info = MATCHER_INFO[method]
         assert info["name"] == method
         assert info["confidence_semantics"] == "method_internal_only"
