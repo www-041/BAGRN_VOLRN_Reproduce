@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import math
 import time
 from pathlib import Path
 
@@ -50,6 +51,25 @@ def _resolve_scene_names(
     if scene_names is not None:
         return list(scene_names)
     return list(DEFAULT_FIVE_SCENE_NAMES)
+
+
+def _pixel_size_m_from_scene_metadata(scenes, band: str) -> float:
+    """Read the isotropic pixel size used by global consistency metrics."""
+    if not scenes:
+        raise ValueError("at least one scene is required for pixel metadata")
+    transform = scenes[0].transforms.get(band)
+    if transform is None:
+        raise ValueError(f"missing {band} raster transform for pixel metrics")
+    pixel_x_m = abs(float(transform.a))
+    pixel_y_m = abs(float(transform.e))
+    if pixel_x_m <= 0 or pixel_y_m <= 0:
+        raise ValueError("raster pixel size must be positive")
+    if not math.isclose(pixel_x_m, pixel_y_m, rel_tol=1e-9, abs_tol=1e-9):
+        raise ValueError(
+            f"global pixel metrics require isotropic pixels, got "
+            f"{pixel_x_m} x {pixel_y_m} m"
+        )
+    return pixel_x_m
 
 
 def run_modern_matcher_benchmark(
@@ -127,6 +147,7 @@ def run_modern_matcher_benchmark(
             matcher,
             len(edges),
             random_seed,
+            registration_band,
         )
 
     comparison = {
@@ -151,6 +172,7 @@ def _evaluate_network(
     matcher: str,
     geographic_edges: int,
     random_seed: int,
+    registration_band: str,
 ) -> dict:
     try:
         adj, accepted = build_accepted_graph(pairwise_results, matcher_name=matcher)
@@ -183,11 +205,12 @@ def _evaluate_network(
     tree_edges = build_spanning_tree(adj, accepted, reference_idx)
     transforms = compose_global_transforms(scenes, accepted, tree_edges, reference_idx)
     save_global_registration_info(ref_info, tree_edges, transforms, method_out)
+    pixel_size_m = _pixel_size_m_from_scene_metadata(scenes, registration_band)
     consistency = global_consistency_diagnostics(
         accepted,
         transforms,
         tree_edges,
-        pixel_size=1.0,
+        pixel_size_m=pixel_size_m,
     )
     save_consistency_diagnostics(consistency, method_out)
     summary = collect_registration_summary(
@@ -199,6 +222,7 @@ def _evaluate_network(
         bagrn_runtime_sec=0.0,
         volrn_runtime_sec=0.0,
         total_runtime_sec=sum(float(r.runtime_sec) for r in pairwise_results),
+        pixel_size_m=pixel_size_m,
     )
     network = {
         **summary,

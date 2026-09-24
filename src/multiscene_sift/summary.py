@@ -38,6 +38,16 @@ def _round_float(value, digits: int = 6):
     return round(float(value), digits)
 
 
+def _metric_values(rows, key: str, legacy_key: str | None = None):
+    values = []
+    for row in rows:
+        value = row.get(key)
+        if value is None and legacy_key is not None:
+            value = row.get(legacy_key)
+        values.append(value)
+    return values
+
+
 def collect_registration_summary(
     *,
     matcher: str,
@@ -48,6 +58,7 @@ def collect_registration_summary(
     bagrn_runtime_sec: float,
     volrn_runtime_sec: float,
     total_runtime_sec: float,
+    pixel_size_m: float | None = None,
 ) -> dict:
     """Aggregate detailed pairwise/global outputs into one PPT-friendly row.
 
@@ -55,7 +66,8 @@ def collect_registration_summary(
     failed pairs are not silently removed. Pairwise residual aggregates use only
     finite values. Global aggregates prefer non-tree accepted edges because tree
     edges participate directly in construction of the global transforms; when no
-    non-tree edge exists, all consistency edges are used as a documented fallback.
+    non-tree edge exists, all consistency edges are used as a documented
+    fallback. Global residuals are exposed separately in CRS metres and pixels.
     """
     pairwise_results = list(pairwise_results)
     accepted = [r for r in pairwise_results if r.status == "OK"]
@@ -67,6 +79,23 @@ def collect_registration_summary(
     else:
         global_eval = list(consistency)
         global_scope = "all_edges_fallback"
+
+    if pixel_size_m is None:
+        pixel_sizes = _finite_values(r.get("pixel_size_m") for r in global_eval)
+        pixel_size_m = pixel_sizes[0] if pixel_sizes else None
+
+    global_rmse_world = _metric_values(global_eval, "global_rmse_world_m")
+    global_p95_world = _metric_values(global_eval, "global_p95_world_m")
+    global_max_world = _metric_values(global_eval, "global_max_world_m")
+    global_rmse_pixel = _metric_values(
+        global_eval, "global_rmse_pixel", "global_rmse_px"
+    )
+    global_p95_pixel = _metric_values(
+        global_eval, "global_p95_pixel", "global_p95_px"
+    )
+    global_max_pixel = _metric_values(
+        global_eval, "global_max_pixel", "global_max_px"
+    )
 
     summary = {
         "matcher": str(matcher).lower(),
@@ -100,17 +129,27 @@ def collect_registration_summary(
         "global_eval_scope": global_scope,
         "global_eval_edges": len(global_eval),
         "global_n_points": int(sum(int(r.get("n_points", 0)) for r in global_eval)),
+        "pixel_size_m": _round_float(pixel_size_m),
+        "global_rmse_world_m": _round_float(_mean_or_none(global_rmse_world)),
+        "global_p95_world_m": _round_float(_mean_or_none(global_p95_world)),
+        "global_p95_worst_world_m": _round_float(_max_or_none(global_p95_world)),
+        "global_max_world_m": _round_float(_max_or_none(global_max_world)),
+        "global_rmse_pixel": _round_float(_mean_or_none(global_rmse_pixel)),
+        "global_p95_pixel": _round_float(_mean_or_none(global_p95_pixel)),
+        "global_p95_worst_pixel": _round_float(_max_or_none(global_p95_pixel)),
+        "global_max_pixel": _round_float(_max_or_none(global_max_pixel)),
+        # Deprecated aliases retained for existing report readers.
         "global_rmse_mean_px": _round_float(
-            _mean_or_none(r.get("global_rmse_px") for r in global_eval)
+            _mean_or_none(global_rmse_pixel)
         ),
         "global_p95_mean_px": _round_float(
-            _mean_or_none(r.get("global_p95_px") for r in global_eval)
+            _mean_or_none(global_p95_pixel)
         ),
         "global_p95_worst_px": _round_float(
-            _max_or_none(r.get("global_p95_px") for r in global_eval)
+            _max_or_none(global_p95_pixel)
         ),
         "global_max_px": _round_float(
-            _max_or_none(r.get("global_max_px") for r in global_eval)
+            _max_or_none(global_max_pixel)
         ),
         "matching_runtime_sec": _round_float(
             sum(float(getattr(r, "matcher_runtime_sec", 0.0)) for r in pairwise_results)

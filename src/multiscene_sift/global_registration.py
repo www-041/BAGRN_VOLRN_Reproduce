@@ -300,7 +300,9 @@ def global_consistency_diagnostics(
     accepted: list[PairwiseRegistration],
     G: list[np.ndarray],
     tree_edges: list[dict],
-    pixel_size: float = 30.0,
+    pixel_size_m: float | None = None,
+    *,
+    pixel_size: float | None = None,
     pixel_size_x: float | None = None,
     pixel_size_y: float | None = None,
 ) -> list[dict]:
@@ -310,17 +312,36 @@ def global_consistency_diagnostics(
         P_i_world = pair_common_transform * ref_xy[k]
         P_j_world = pair_common_transform * tgt_xy[k]
         e_k = || G_i @ P_i_world - G_j @ P_j_world ||
+        e_world_k = sqrt(dx**2 + dy**2), in CRS metres
         e_px_k = sqrt((dx/res_x)^2 + (dy/res_y)^2)
 
-    Reports point-level median, RMSE, P90, P95, max per edge.
+    Reports point-level median, RMSE, P90, P95, and max per edge in both
+    explicit world-metre and pixel units. Pixel resolution must be supplied
+    explicitly; the deprecated ``pixel_size`` keyword is accepted only as a
+    compatibility alias and has no default.
 
     Returns:
         List of per-edge diagnostics dicts.
     """
-    if pixel_size_x is None:
-        pixel_size_x = pixel_size
-    if pixel_size_y is None:
-        pixel_size_y = pixel_size
+    if pixel_size_m is not None and pixel_size is not None:
+        raise ValueError("pass only one of pixel_size_m or deprecated pixel_size")
+    if pixel_size_m is None:
+        pixel_size_m = pixel_size
+    if pixel_size_x is None and pixel_size_y is None:
+        if pixel_size_m is None:
+            raise ValueError("pixel_size_m is required for pixel metrics")
+        pixel_size_x = pixel_size_m
+        pixel_size_y = pixel_size_m
+    elif pixel_size_x is None or pixel_size_y is None:
+        raise ValueError("pixel_size_x and pixel_size_y must be provided together")
+
+    pixel_size_x = float(pixel_size_x)
+    pixel_size_y = float(pixel_size_y)
+    if pixel_size_x <= 0 or pixel_size_y <= 0:
+        raise ValueError("pixel sizes must be positive")
+    isotropic_pixel_size_m = (
+        pixel_size_x if np.isclose(pixel_size_x, pixel_size_y) else None
+    )
 
     tree_pairs: set[tuple[int, int]] = set()
     for e in tree_edges:
@@ -362,7 +383,19 @@ def global_consistency_diagnostics(
 
         dx_px = dx_world / pixel_size_x
         dy_px = dy_world / pixel_size_y
+        errors_world_m = np.sqrt(dx_world**2 + dy_world**2)
         errors_px = np.sqrt(dx_px**2 + dy_px**2)
+
+        world_median = float(np.median(errors_world_m))
+        world_rmse = float(np.sqrt(np.mean(errors_world_m**2)))
+        world_p90 = float(np.percentile(errors_world_m, 90))
+        world_p95 = float(np.percentile(errors_world_m, 95))
+        world_max = float(np.max(errors_world_m))
+        pixel_median = float(np.median(errors_px))
+        pixel_rmse = float(np.sqrt(np.mean(errors_px**2)))
+        pixel_p90 = float(np.percentile(errors_px, 90))
+        pixel_p95 = float(np.percentile(errors_px, 95))
+        pixel_max = float(np.max(errors_px))
 
         is_tree = (r.idx_i, r.idx_j) in tree_pairs
 
@@ -371,11 +404,23 @@ def global_consistency_diagnostics(
             "idx_j": r.idx_j,
             "in_tree": is_tree,
             "n_points": len(errors_px),
-            "global_median_px": round(float(np.median(errors_px)), 4),
-            "global_rmse_px": round(float(np.sqrt(np.mean(errors_px**2))), 4),
-            "global_p90_px": round(float(np.percentile(errors_px, 90)), 4),
-            "global_p95_px": round(float(np.percentile(errors_px, 95)), 4),
-            "global_max_px": round(float(np.max(errors_px)), 4),
+            "global_median_world_m": round(world_median, 4),
+            "global_rmse_world_m": round(world_rmse, 4),
+            "global_p90_world_m": round(world_p90, 4),
+            "global_p95_world_m": round(world_p95, 4),
+            "global_max_world_m": round(world_max, 4),
+            "global_median_pixel": round(pixel_median, 4),
+            "global_rmse_pixel": round(pixel_rmse, 4),
+            "global_p90_pixel": round(pixel_p90, 4),
+            "global_p95_pixel": round(pixel_p95, 4),
+            "global_max_pixel": round(pixel_max, 4),
+            "pixel_size_m": isotropic_pixel_size_m,
+            # Deprecated aliases retained for legacy diagnostic consumers.
+            "global_median_px": round(pixel_median, 4),
+            "global_rmse_px": round(pixel_rmse, 4),
+            "global_p90_px": round(pixel_p90, 4),
+            "global_p95_px": round(pixel_p95, 4),
+            "global_max_px": round(pixel_max, 4),
         })
 
     return results
@@ -425,16 +470,43 @@ def save_consistency_diagnostics(
     """Save global_edge_consistency.csv and .json."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # CSV
+    # CSV. Keep the deprecated *_px aliases so existing loop-diagnostic
+    # readers remain compatible while the new explicit-unit fields are used by
+    # the modern benchmark.
     csv_path = out_dir / "global_edge_consistency.csv"
     with open(csv_path, "w") as f:
-        f.write("idx_i,idx_j,in_tree,n_points,global_median_px,"
-                "global_rmse_px,global_p90_px,global_p95_px,global_max_px\n")
+        f.write(
+            "idx_i,idx_j,in_tree,n_points,pixel_size_m,"
+            "global_median_world_m,global_rmse_world_m,global_p90_world_m,"
+            "global_p95_world_m,global_max_world_m,global_median_pixel,"
+            "global_rmse_pixel,global_p90_pixel,global_p95_pixel,"
+            "global_max_pixel,global_median_px,global_rmse_px,"
+            "global_p90_px,global_p95_px,global_max_px\n"
+        )
         for r in results:
-            f.write(f"{r['idx_i']},{r['idx_j']},{r['in_tree']},"
-                    f"{r['n_points']},{r['global_median_px']},"
-                    f"{r['global_rmse_px']},{r['global_p90_px']},"
-                    f"{r['global_p95_px']},{r['global_max_px']}\n")
+            pixel_size_m = r.get("pixel_size_m", "")
+            world_values = [
+                r.get("global_median_world_m", ""),
+                r.get("global_rmse_world_m", ""),
+                r.get("global_p90_world_m", ""),
+                r.get("global_p95_world_m", ""),
+                r.get("global_max_world_m", ""),
+            ]
+            pixel_values = [
+                r.get("global_median_pixel", r.get("global_median_px", "")),
+                r.get("global_rmse_pixel", r.get("global_rmse_px", "")),
+                r.get("global_p90_pixel", r.get("global_p90_px", "")),
+                r.get("global_p95_pixel", r.get("global_p95_px", "")),
+                r.get("global_max_pixel", r.get("global_max_px", "")),
+            ]
+            f.write(
+                f"{r['idx_i']},{r['idx_j']},{r['in_tree']},"
+                f"{r['n_points']},{pixel_size_m},"
+                f"{','.join(map(str, world_values))},{','.join(map(str, pixel_values))},"
+                f"{r['global_median_px']},{r['global_rmse_px']},"
+                f"{r['global_p90_px']},{r['global_p95_px']},"
+                f"{r['global_max_px']}\n"
+            )
 
     # JSON
     with open(out_dir / "global_edge_consistency.json", "w") as f:

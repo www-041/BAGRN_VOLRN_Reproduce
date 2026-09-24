@@ -10,11 +10,13 @@ from src.multiscene_sift.global_registration import (
 )
 
 
-def _make_pair_with_points(idx_i, idx_j, ref_pts, tgt_pts, pixel_mat=None):
+def _make_pair_with_points(
+    idx_i, idx_j, ref_pts, tgt_pts, pixel_mat=None, resolution=30
+):
     """Create a PairwiseRegistration with inlier points."""
     if pixel_mat is None:
         pixel_mat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    T = from_origin(500000, 4000000, 30, 30)
+    T = from_origin(500000, 4000000, resolution, resolution)
     return PairwiseRegistration(
         idx_i=idx_i, idx_j=idx_j, status="OK",
         raw_matches=len(ref_pts),
@@ -172,3 +174,43 @@ class TestPointLevelConsistency:
         assert r["global_rmse_px"] == pytest.approx(expected_rmse, abs=0.01)
         assert r["global_median_px"] == pytest.approx(2.0, abs=0.01)
         assert r["global_max_px"] == pytest.approx(3.0, abs=0.01)
+
+    def test_reports_world_and_pixel_units_separately(self):
+        """A 140 m residual at 14 m/pixel must report as 10 pixels."""
+        ref_pts = np.array([[10.0, 10.0], [20.0, 20.0]])
+        tgt_pts = ref_pts.copy()
+        tgt_pts[:, 0] += 10.0
+        pair = _make_pair_with_points(
+            0, 1, ref_pts, tgt_pts, resolution=14
+        )
+
+        results = global_consistency_diagnostics(
+            [pair], [np.eye(3), np.eye(3)], [], pixel_size_m=14.0
+        )
+
+        row = results[0]
+        assert row["global_rmse_world_m"] == pytest.approx(140.0)
+        assert row["global_rmse_pixel"] == pytest.approx(10.0)
+        assert row["pixel_size_m"] == pytest.approx(14.0)
+
+    def test_requires_explicit_pixel_size(self):
+        """Pixel metrics must not silently default to one metre per pixel."""
+        pair = _make_pair_with_points(
+            0, 1, [[0.0, 0.0]], [[1.0, 0.0]], resolution=14
+        )
+
+        with pytest.raises(ValueError, match="pixel_size_m"):
+            global_consistency_diagnostics([pair], [np.eye(3), np.eye(3)], [])
+
+    def test_reports_fractional_pixel_residual_for_explicit_resolution(self):
+        """A 7 m residual at 14 m/pixel must report as 0.5 pixel."""
+        pair = _make_pair_with_points(
+            0, 1, [[0.0, 0.0]], [[0.5, 0.0]], resolution=14
+        )
+
+        row = global_consistency_diagnostics(
+            [pair], [np.eye(3), np.eye(3)], [], pixel_size_m=14.0
+        )[0]
+
+        assert row["global_rmse_world_m"] == pytest.approx(7.0)
+        assert row["global_rmse_pixel"] == pytest.approx(0.5)

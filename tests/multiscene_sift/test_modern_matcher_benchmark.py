@@ -7,14 +7,17 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from rasterio.transform import from_origin
 
 from src.multiscene_sift.models import OverlapEdge, PairwiseRegistration, Scene
 from src.multiscene_sift.modern_matcher_benchmark import (
     DEFAULT_FIVE_SCENE_NAMES,
     MODERN_MATCHERS,
+    _pixel_size_m_from_scene_metadata,
     _resolve_scene_names,
     run_modern_matcher_benchmark,
 )
+from src.multiscene_sift.summary import collect_registration_summary
 
 
 def _scene(index: int) -> Scene:
@@ -54,6 +57,42 @@ def _failed_pair(i: int, j: int, matcher: str) -> PairwiseRegistration:
 
 def test_benchmark_defaults_to_established_five_scene_set():
     assert _resolve_scene_names("unused", None) == list(DEFAULT_FIVE_SCENE_NAMES)
+
+
+def test_benchmark_reads_pixel_size_from_scene_transform():
+    scene = _scene(0)
+    scene.transforms = {"B14": from_origin(500000, 4000000, 14.0, 14.0)}
+
+    assert _pixel_size_m_from_scene_metadata([scene], "B14") == pytest.approx(14.0)
+
+
+def test_summary_exposes_world_and_pixel_global_metrics():
+    summary = collect_registration_summary(
+        matcher="sift",
+        random_seed=0,
+        geographic_edges=1,
+        pairwise_results=[_failed_pair(0, 1, "sift")],
+        consistency=[
+            {
+                "in_tree": False,
+                "n_points": 2,
+                "global_rmse_world_m": 140.0,
+                "global_p95_world_m": 140.0,
+                "global_max_world_m": 140.0,
+                "global_rmse_pixel": 10.0,
+                "global_p95_pixel": 10.0,
+                "global_max_pixel": 10.0,
+                "pixel_size_m": 14.0,
+            }
+        ],
+        bagrn_runtime_sec=0.0,
+        volrn_runtime_sec=0.0,
+        total_runtime_sec=0.0,
+    )
+
+    assert summary["pixel_size_m"] == pytest.approx(14.0)
+    assert summary["global_rmse_world_m"] == pytest.approx(140.0)
+    assert summary["global_rmse_pixel"] == pytest.approx(10.0)
 
 
 def test_modern_matchers_are_frozen_and_use_one_geometry_config():
