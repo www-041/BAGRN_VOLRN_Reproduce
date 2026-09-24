@@ -1,0 +1,135 @@
+"""Small-fixture tests for the frozen B9 registration runner."""
+
+from __future__ import annotations
+
+import json
+
+from src.multiscene_sift.b9_frozen_config import build_frozen_config
+from src.multiscene_sift.models import PairwiseRegistration
+
+
+def _record(index: int) -> dict:
+    return {
+        "scene_id": f"scene_{index}",
+        "scene_dir": f"D:/B9/scene_{index}",
+        "b9_path": f"D:/B9/scene_{index}/scene_{index}_B9.TIF",
+        "mtl_path": f"D:/B9/scene_{index}/scene_{index}_MTL.txt",
+        "crs": "EPSG:32650",
+        "pixel_size_x_m": 14.0,
+        "pixel_size_y_m": 14.0,
+        "width": 100,
+        "height": 100,
+        "left": float(index * 50),
+        "bottom": 0.0,
+        "right": float(index * 50 + 100),
+        "top": 100.0,
+    }
+
+
+def _pair(i: int, j: int) -> dict:
+    return {
+        "idx_i": i,
+        "idx_j": j,
+        "scene_i": f"scene_{i}",
+        "scene_j": f"scene_{j}",
+        "intersection_area": 100.0,
+        "overlap_area_i_ratio": 0.5,
+        "overlap_area_j_ratio": 0.5,
+        "symmetric_overlap_ratio": 0.5,
+        "has_overlap": True,
+    }
+
+
+def _config():
+    records = [_record(index) for index in range(5)]
+    pairs = [_pair(i, j) for i in range(5) for j in range(i + 1, 5)]
+    return build_frozen_config(records, pairs, [0, 1, 2, 3, 4])
+
+
+def _result(i: int, j: int, status: str = "OK") -> PairwiseRegistration:
+    return PairwiseRegistration(
+        idx_i=i,
+        idx_j=j,
+        status=status,
+        raw_matches=30,
+        inliers=25 if status == "OK" else 0,
+        inlier_ratio=0.8 if status == "OK" else 0.0,
+        coverage=0.5 if status == "OK" else 0.0,
+        residual_median=0.4 if status == "OK" else float("nan"),
+        residual_rmse=0.5 if status == "OK" else float("nan"),
+        residual_p95=0.9 if status == "OK" else float("nan"),
+        pair_pixel_matrix=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        pair_common_transform=None,
+        runtime_sec=1.5,
+        matcher="sift",
+        matcher_runtime_sec=1.0,
+        geometry_runtime_sec=0.5,
+    )
+
+
+def test_b9_runner_delegates_to_shared_pairwise_api_and_writes_runtime(tmp_path):
+    from src.multiscene_sift import b9_runner
+
+    calls = []
+
+    def fake_run_all_pairs(scenes, edges, out_dir, **kwargs):
+        calls.append((scenes, edges, out_dir, kwargs))
+        return [_result(i, j) for i in range(5) for j in range(i + 1, 5)]
+
+    output = tmp_path / "sift"
+    b9_runner.run_b9_registration(
+        _config(), output, matcher="sift", pair_runner=fake_run_all_pairs
+    )
+
+    assert len(calls) == 1
+    scenes, edges, _, kwargs = calls[0]
+    assert len(scenes) == 5
+    assert len(edges) == 10
+    assert kwargs["band"] == "B9"
+    assert kwargs["ransac_threshold"] == 2.0
+    assert kwargs["random_seed"] == 0
+    assert json.loads((output / "accepted_graph.json").read_text())["status"] == "CONNECTED"
+    runtime = json.loads((output / "runtime.json").read_text())
+    assert runtime["matcher_runtime_sec"] == 10.0
+    assert runtime["geometry_runtime_sec"] == 5.0
+    assert (output / "pairwise_summary.csv").exists()
+    assert (output / "pairwise_summary.json").exists()
+
+
+def test_b9_runner_records_disconnected_network_without_lowering_thresholds(tmp_path):
+    from src.multiscene_sift import b9_runner
+
+    def fake_run_all_pairs(scenes, edges, out_dir, **kwargs):
+        return [_result(0, 1)]
+
+    output = tmp_path / "lightglue_disk"
+    b9_runner.run_b9_registration(
+        _config(), output, matcher="lightglue_disk", pair_runner=fake_run_all_pairs
+    )
+
+    graph = json.loads((output / "accepted_graph.json").read_text())
+    assert graph["status"] == "NETWORK_DISCONNECTED"
+    assert graph["thresholds_unchanged"] is True
+
+
+def test_b9_runner_reports_efficient_loftr_unavailable_without_fallback(tmp_path, monkeypatch):
+    from src.multiscene_sift import b9_runner
+
+    called = False
+
+    def fake_run_all_pairs(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("unavailable EfficientLoFTR must not fallback")
+
+    monkeypatch.setattr(b9_runner, "is_efficient_loftr_available", lambda: False)
+    output = tmp_path / "efficient_loftr"
+    b9_runner.run_b9_registration(
+        _config(), output, matcher="efficient_loftr", pair_runner=fake_run_all_pairs
+    )
+
+    summary = json.loads((output / "pairwise_summary.json").read_text())
+    assert not called
+    assert {row["status"] for row in summary["results"]} == {
+        "EFFICIENT_LOFTR_UNAVAILABLE"
+    }
