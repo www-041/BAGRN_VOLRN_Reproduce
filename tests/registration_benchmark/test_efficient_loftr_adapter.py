@@ -14,6 +14,7 @@ from src.registration_benchmark.matchers.efficient_loftr import (
     EFFICIENT_LOFTR_UNAVAILABLE,
     _model_to_view_coordinates,
     _install_kornia_grid_compat,
+    _resolve_paths,
     is_efficient_loftr_available,
     match_efficient_loftr,
 )
@@ -148,3 +149,17 @@ def test_efficient_loftr_official_import_compatibility():
     from src.loftr import LoFTR
 
     assert LoFTR is not None
+
+
+def test_weights_directory_alias_resolves_to_official_repository_root(tmp_path):
+    repo = tmp_path / "EfficientLoFTR"
+    (repo / "src" / "loftr").mkdir(parents=True)
+    weights_dir = repo / "weights"
+    weights_dir.mkdir()
+    checkpoint = weights_dir / "eloftr_outdoor.ckpt"
+    checkpoint.write_bytes(b"test")
+
+    resolved_repo, resolved_weights = _resolve_paths(str(weights_dir), None)
+
+    assert resolved_repo == repo.resolve()
+    assert resolved_weights == checkpoint.resolve()

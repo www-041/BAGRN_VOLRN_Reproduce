@@ -242,9 +242,20 @@ def _resolve_paths(
     repo_value = repo_dir or os.environ.get("EFFICIENT_LOFTR_REPO")
     if not repo_value:
         raise RuntimeError(f"{EFFICIENT_LOFTR_UNAVAILABLE}: set EFFICIENT_LOFTR_REPO")
-    repo = Path(repo_value).expanduser().resolve()
+    repo_candidate = Path(repo_value).expanduser().resolve()
+    # Accept the user's convenient ``...\EfficientLoFTR\weights`` setting
+    # while keeping the official repository root for importing ``src\loftr``.
+    if (
+        repo_candidate.name.lower() == "weights"
+        and (repo_candidate.parent / "src" / "loftr").is_dir()
+    ):
+        repo = repo_candidate.parent
+        default_weights = repo_candidate / DEFAULT_WEIGHTS_NAME
+    else:
+        repo = repo_candidate
+        default_weights = repo / "weights" / DEFAULT_WEIGHTS_NAME
     weight_value = weights_path or os.environ.get("EFFICIENT_LOFTR_WEIGHTS")
-    weights = Path(weight_value).expanduser().resolve() if weight_value else repo / "weights" / DEFAULT_WEIGHTS_NAME
+    weights = Path(weight_value).expanduser().resolve() if weight_value else default_weights
     return repo, weights
 
 
