@@ -282,6 +282,7 @@ def _load_model(
         if repo_src not in project_src.__path__:
             project_src.__path__.insert(0, repo_src)
         _install_kornia_grid_compat()
+        _install_pytorch_lightning_compat()
         from src.loftr import LoFTR, full_default_cfg, opt_default_cfg, reparameter
 
         config = copy.deepcopy(full_default_cfg if model_type == "full" else opt_default_cfg)
@@ -319,3 +320,32 @@ def _install_kornia_grid_compat() -> None:
     compat_module = types.ModuleType("kornia.utils.grid")
     compat_module.create_meshgrid = create_meshgrid
     sys.modules["kornia.utils.grid"] = compat_module
+
+
+def _install_pytorch_lightning_compat() -> None:
+    """Provide EfficientLoFTR's tiny Lightning utility dependency if absent.
+
+    The official inference source only needs ``rank_zero_only`` from the old
+    Lightning utility module. Avoid installing the historical Lightning 1.x
+    stack into the shared registration environment just for that symbol.
+    """
+    try:
+        from pytorch_lightning.utilities import rank_zero_only  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+
+    import types
+
+    def rank_zero_only(function=None):
+        if function is None:
+            return lambda wrapped: wrapped
+        return function
+
+    rank_zero_only.rank = 0
+    utilities_module = types.ModuleType("pytorch_lightning.utilities")
+    utilities_module.rank_zero_only = rank_zero_only
+    lightning_module = types.ModuleType("pytorch_lightning")
+    lightning_module.utilities = utilities_module
+    sys.modules["pytorch_lightning"] = lightning_module
+    sys.modules["pytorch_lightning.utilities"] = utilities_module

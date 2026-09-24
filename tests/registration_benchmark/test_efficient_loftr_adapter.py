@@ -14,6 +14,7 @@ from src.registration_benchmark.matchers.efficient_loftr import (
     EFFICIENT_LOFTR_UNAVAILABLE,
     _model_to_view_coordinates,
     _install_kornia_grid_compat,
+    _install_pytorch_lightning_compat,
     _resolve_paths,
     is_efficient_loftr_available,
     match_efficient_loftr,
@@ -128,6 +129,14 @@ def test_efficient_loftr_kornia_grid_import_compatibility():
     from kornia.utils.grid import create_meshgrid
 
     assert callable(create_meshgrid)
+
+
+def test_efficient_loftr_lightning_utility_import_compatibility():
+    _install_pytorch_lightning_compat()
+
+    from pytorch_lightning.utilities import rank_zero_only
+
+    assert rank_zero_only.rank == 0
 
 
 def test_efficient_loftr_official_import_compatibility():
