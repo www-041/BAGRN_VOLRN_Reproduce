@@ -59,6 +59,7 @@ class PairwiseRegistration:
     matcher: str = "sift"
     matcher_runtime_sec: float = 0.0
     geometry_runtime_sec: float = 0.0
+    peak_gpu_memory_mb: float | None = None
 
 
 @dataclass

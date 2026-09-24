@@ -118,6 +118,12 @@ def collect_registration_summary(
         "geometry_runtime_sec": _round_float(
             sum(float(getattr(r, "geometry_runtime_sec", 0.0)) for r in pairwise_results)
         ),
+        "peak_gpu_memory_mb": _round_float(
+            _max_or_none(
+                getattr(r, "peak_gpu_memory_mb", None)
+                for r in pairwise_results
+            )
+        ),
         "pairwise_total_runtime_sec": _round_float(
             sum(float(getattr(r, "runtime_sec", 0.0)) for r in pairwise_results)
         ),

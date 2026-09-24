@@ -19,6 +19,8 @@ from src.registration_benchmark.common_grid import (
     build_match_view,
 )
 from src.registration_benchmark.matchers.sift import match_sift
+from src.registration_benchmark.matchers.efficient_loftr import match_efficient_loftr
+from src.registration_benchmark.matchers.lightglue_disk import match_lightglue_disk
 from src.registration_benchmark.geometry import fit_affine_ransac, STATUS_OK
 from src.registration_benchmark.metrics import spatial_coverage_ratio
 
@@ -26,7 +28,7 @@ from src.multiscene_sift.models import OverlapEdge, PairwiseRegistration, Scene
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_MATCHERS = ("sift", "loftr")
+SUPPORTED_MATCHERS = ("sift", "loftr", "efficient_loftr", "lightglue_disk")
 
 # Fixed registration parameters (quality thresholds, not tunable via CLI)
 SIFT_NFEATURES = 8000
@@ -45,7 +47,7 @@ def _normalize_matcher_name(matcher: str) -> str:
     return name
 
 
-def _run_matcher(view, matcher: str):
+def _run_matcher(view, matcher: str, device: str = "auto"):
     """Run exactly one matcher and return a unified MatchSet."""
     matcher = _normalize_matcher_name(matcher)
     if matcher == "sift":
@@ -55,10 +57,28 @@ def _run_matcher(view, matcher: str):
             ratio_threshold=LOWE_RATIO,
         )
 
+    if matcher == "efficient_loftr":
+        return match_efficient_loftr(view, device=device)
+    if matcher == "lightglue_disk":
+        return match_lightglue_disk(view, device=device)
+
     # Lazy import keeps the SIFT-only path usable when torch/kornia is absent.
     from src.registration_benchmark.matchers.loftr import match_loftr
+    return match_loftr(view, device=device)
 
-    return match_loftr(view)
+
+def _peak_gpu_memory_mb(device: str) -> float | None:
+    """Return peak CUDA allocation when a CUDA device is active."""
+    try:
+        import torch
+        use_cuda = device == "cuda" or str(device).startswith("cuda")
+        if device == "auto":
+            use_cuda = torch.cuda.is_available()
+        if not use_cuda or not torch.cuda.is_available():
+            return None
+        return float(torch.cuda.max_memory_allocated() / (1024.0 ** 2))
+    except (ImportError, RuntimeError):
+        return None
 
 
 def register_pair(
@@ -69,6 +89,7 @@ def register_pair(
     ransac_threshold: float = 2.0,
     random_seed: int = 0,
     matcher: str = "sift",
+    device: str = "auto",
     diagnostic_capture=None,
 ) -> PairwiseRegistration:
     """Register scene_j onto scene_i using the requested matcher + shared RANSAC."""
@@ -105,13 +126,15 @@ def register_pair(
             matcher=matcher,
             matcher_runtime_sec=0.0,
             geometry_runtime_sec=0.0,
+            peak_gpu_memory_mb=_peak_gpu_memory_mb(device),
         )
 
     # 2. Build one shared match view for either matcher
     view = build_match_view(pair, max_side=match_max_side)
 
     # 3. Tie-point matching -- the only matcher-specific branch
-    matches = _run_matcher(view, matcher)
+    matches = _run_matcher(view, matcher, device=device)
+    matches.validate_for_geometry()
 
     # 4. Shared RANSAC Affine
     t_geom = time.perf_counter()
@@ -144,6 +167,7 @@ def register_pair(
             time.perf_counter() - t0,
             matcher,
             geometry_runtime,
+            peak_gpu_memory_mb=_peak_gpu_memory_mb(device),
         )
 
     if geom.n_inlier < MIN_INLIERS or geom.inlier_ratio < MIN_INLIER_RATIO:
@@ -158,6 +182,7 @@ def register_pair(
             time.perf_counter() - t0,
             matcher,
             geometry_runtime,
+            peak_gpu_memory_mb=_peak_gpu_memory_mb(device),
         )
 
     # Coverage
@@ -179,6 +204,7 @@ def register_pair(
         time.perf_counter() - t0,
         matcher,
         geometry_runtime,
+        peak_gpu_memory_mb=_peak_gpu_memory_mb(device),
     )
 
 
@@ -193,6 +219,7 @@ def _make_result(
     runtime: float,
     matcher: str,
     geometry_runtime: float,
+    peak_gpu_memory_mb: float | None = None,
 ) -> PairwiseRegistration:
     """Build a PairwiseRegistration from geometry result."""
     inlier_ref = np.empty((0, 2))
@@ -255,6 +282,7 @@ def _make_result(
         matcher=matcher,
         matcher_runtime_sec=float(getattr(matches, "runtime_sec", 0.0)),
         geometry_runtime_sec=float(geometry_runtime),
+        peak_gpu_memory_mb=peak_gpu_memory_mb,
         inlier_ref_xy=inlier_ref,
         inlier_tgt_xy=inlier_tgt,
     )
@@ -269,6 +297,7 @@ def run_all_pairs(
     ransac_threshold: float = 2.0,
     random_seed: int = 0,
     matcher: str = "sift",
+    device: str = "auto",
 ) -> list[PairwiseRegistration]:
     """Run the selected matcher + shared RANSAC for all geographic edges."""
     matcher = _normalize_matcher_name(matcher)
@@ -296,6 +325,7 @@ def run_all_pairs(
                 ransac_threshold=ransac_threshold,
                 random_seed=random_seed,
                 matcher=matcher,
+                device=device,
             )
         except Exception as exc:
             logger.exception(
@@ -321,6 +351,7 @@ def run_all_pairs(
                 matcher=matcher,
                 matcher_runtime_sec=0.0,
                 geometry_runtime_sec=0.0,
+                peak_gpu_memory_mb=None,
             )
         results.append(reg)
 
@@ -338,7 +369,8 @@ def save_pairwise_summary(
         f.write(
             "idx_i,idx_j,status,raw_matches,inliers,inlier_ratio,"
             "coverage,residual_median,residual_rmse,residual_p95,"
-            "runtime_sec,matcher,matcher_runtime_sec,geometry_runtime_sec\n"
+            "runtime_sec,matcher,matcher_runtime_sec,geometry_runtime_sec,"
+            "peak_gpu_memory_mb\n"
         )
         for r in results:
             f.write(
@@ -346,7 +378,8 @@ def save_pairwise_summary(
                 f"{r.inliers},{r.inlier_ratio:.4f},{r.coverage:.4f},"
                 f"{r.residual_median},{r.residual_rmse},{r.residual_p95},"
                 f"{r.runtime_sec:.6f},{r.matcher},"
-                f"{r.matcher_runtime_sec:.6f},{r.geometry_runtime_sec:.6f}\n"
+                f"{r.matcher_runtime_sec:.6f},{r.geometry_runtime_sec:.6f},"
+                f"{r.peak_gpu_memory_mb}\n"
             )
 
     json_path = out_dir / "pairwise_summary.json"
@@ -367,6 +400,7 @@ def save_pairwise_summary(
                 "pixel_matrix": r.pair_pixel_matrix,
                 "matcher_runtime_sec": r.matcher_runtime_sec,
                 "geometry_runtime_sec": r.geometry_runtime_sec,
+                "peak_gpu_memory_mb": r.peak_gpu_memory_mb,
                 "runtime_sec": r.runtime_sec,
             }
             for r in results
