@@ -96,4 +96,3 @@ def test_windows_style_chinese_directory_does_not_break_discovery(tmp_path):
     assert len(records) == 1
     assert Path(records[0]["b9_path"]).exists()
     assert Path(records[0]["mtl_path"]).exists()
-

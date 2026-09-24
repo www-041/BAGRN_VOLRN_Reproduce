@@ -64,4 +64,3 @@ def test_overlap_outputs_include_required_artifacts(tmp_path):
         assert (tmp_path / name).exists()
     saved = json.loads((tmp_path / "02_overlap_graph.json").read_text(encoding="utf-8"))
     assert saved["edges"][0]["symmetric_overlap_ratio"] == pytest.approx(0.5)
-

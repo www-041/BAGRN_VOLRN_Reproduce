@@ -42,4 +42,3 @@ def test_manifest_writes_required_csv_and_json_schema(tmp_path):
     )
     assert payload["scenes"][0]["scene_index"] == 0
     assert payload["scenes"][0]["pixel_size_x_m"] == 14.0
-
