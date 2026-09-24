@@ -10,6 +10,7 @@ import pytest
 
 from src.multiscene_sift.models import OverlapEdge, PairwiseRegistration, Scene
 from src.multiscene_sift.modern_matcher_benchmark import (
+    DEFAULT_FIVE_SCENE_NAMES,
     MODERN_MATCHERS,
     _resolve_scene_names,
     run_modern_matcher_benchmark,
@@ -51,14 +52,8 @@ def _failed_pair(i: int, j: int, matcher: str) -> PairwiseRegistration:
     )
 
 
-def test_benchmark_auto_discovers_exactly_five_scene_directories(tmp_path):
-    root = tmp_path / "flat"
-    for name in ("scene_3", "scene_1", "scene_5", "scene_2", "scene_4"):
-        (root / name).mkdir(parents=True)
-
-    assert _resolve_scene_names(str(root), None) == [
-        "scene_1", "scene_2", "scene_3", "scene_4", "scene_5"
-    ]
+def test_benchmark_defaults_to_established_five_scene_set():
+    assert _resolve_scene_names("unused", None) == list(DEFAULT_FIVE_SCENE_NAMES)
 
 
 def test_modern_matchers_are_frozen_and_use_one_geometry_config():

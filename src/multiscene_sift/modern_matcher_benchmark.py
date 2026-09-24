@@ -33,28 +33,23 @@ from src.multiscene_sift.summary import collect_registration_summary
 logger = logging.getLogger(__name__)
 
 MODERN_MATCHERS = ("sift", "loftr", "efficient_loftr", "lightglue_disk")
+DEFAULT_FIVE_SCENE_NAMES = (
+    "DZ01V_L2_E113.4_N36.6_20260810030932_01_T1",
+    "DZ01V_L2_E113.6_N36.3_20260616031133_01_T1",
+    "DZ01V_L2_E113.0_N36.4_20260222031837_01_T1",
+    "DZ01V_L2_E114.0_N36.4_20260714030410_01_T1",
+    "DZ01V_L2_E113.7_N36.6_20260616031127_01_T1",
+)
 
 
 def _resolve_scene_names(
     input_root: str,
     scene_names: list[str] | None,
 ) -> list[str]:
-    """Use all five child scene directories when names are not supplied."""
+    """Use the same fixed five-scene set as the established mosaic pipeline."""
     if scene_names is not None:
         return list(scene_names)
-
-    root = Path(input_root)
-    discovered = sorted(
-        child.name
-        for child in root.iterdir()
-        if child.is_dir() and not child.name.startswith(".")
-    )
-    if len(discovered) != 5:
-        raise ValueError(
-            f"Expected exactly five scene directories under {root}, "
-            f"found {len(discovered)}: {discovered}"
-        )
-    return discovered
+    return list(DEFAULT_FIVE_SCENE_NAMES)
 
 
 def run_modern_matcher_benchmark(
@@ -83,9 +78,11 @@ def run_modern_matcher_benchmark(
     t0 = time.perf_counter()
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    resolved_scene_names = _resolve_scene_names(input_root, scene_names)
     config = {
         "input_root": input_root,
         "output_dir": str(out),
+        "scene_names": resolved_scene_names,
         "registration_band": registration_band,
         "matchers": list(requested),
         "match_max_side": match_max_side,
@@ -98,7 +95,6 @@ def run_modern_matcher_benchmark(
     with open(out / "run_config.json", "w") as f:
         json.dump(config, f, indent=2)
 
-    resolved_scene_names = _resolve_scene_names(input_root, scene_names)
     scenes, manifest = discover_five_scenes(
         input_root,
         resolved_scene_names,
