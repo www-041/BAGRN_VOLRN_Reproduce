@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -9,6 +13,7 @@ from src.registration_benchmark.models import MatchView, PAIR_COMMON_GRID_FRAME
 from src.registration_benchmark.matchers.efficient_loftr import (
     EFFICIENT_LOFTR_UNAVAILABLE,
     _model_to_view_coordinates,
+    _install_kornia_grid_compat,
     is_efficient_loftr_available,
     match_efficient_loftr,
 )
@@ -114,3 +119,32 @@ def test_mocked_inference_smoke_emits_common_grid_matchset(monkeypatch, tmp_path
 
 def test_availability_probe_does_not_claim_missing_model_is_available():
     assert isinstance(is_efficient_loftr_available(), bool)
+
+
+def test_efficient_loftr_kornia_grid_import_compatibility():
+    _install_kornia_grid_compat()
+
+    from kornia.utils.grid import create_meshgrid
+
+    assert callable(create_meshgrid)
+
+
+def test_efficient_loftr_official_import_compatibility():
+    repo_value = os.environ.get("EFFICIENT_LOFTR_REPO")
+    if not repo_value:
+        pytest.skip("EFFICIENT_LOFTR_REPO is not configured")
+
+    repo_src = Path(repo_value).expanduser().resolve() / "src"
+    if not (repo_src / "loftr").is_dir():
+        pytest.skip("configured EfficientLoFTR source tree is unavailable")
+
+    _install_kornia_grid_compat()
+    import src as project_src
+
+    if str(repo_src) not in project_src.__path__:
+        project_src.__path__.insert(0, str(repo_src))
+    sys.modules.pop("src.loftr", None)
+
+    from src.loftr import LoFTR
+
+    assert LoFTR is not None

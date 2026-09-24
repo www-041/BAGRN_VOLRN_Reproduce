@@ -270,6 +270,7 @@ def _load_model(
         repo_src = str(repo / "src")
         if repo_src not in project_src.__path__:
             project_src.__path__.insert(0, repo_src)
+        _install_kornia_grid_compat()
         from src.loftr import LoFTR, full_default_cfg, opt_default_cfg, reparameter
 
         config = copy.deepcopy(full_default_cfg if model_type == "full" else opt_default_cfg)
@@ -285,3 +286,25 @@ def _load_model(
         if isinstance(exc, RuntimeError) and str(exc).startswith(EFFICIENT_LOFTR_UNAVAILABLE):
             raise
         raise RuntimeError(f"{EFFICIENT_LOFTR_UNAVAILABLE}: {exc}") from exc
+
+
+def _install_kornia_grid_compat() -> None:
+    """Expose EfficientLoFTR's old Kornia grid import on newer Kornia.
+
+    EfficientLoFTR imports ``create_meshgrid`` from ``kornia.utils.grid``;
+    newer Kornia exposes the same function from ``kornia.geometry.grid``.
+    Keep the compatibility shim local to this adapter so the shared LoFTR,
+    LightGlue, and project-wide Kornia environment is not downgraded or
+    globally modified outside an EfficientLoFTR load.
+    """
+    try:
+        from kornia.utils.grid import create_meshgrid  # noqa: F401
+        return
+    except (ImportError, ModuleNotFoundError):
+        from kornia.geometry.grid import create_meshgrid
+
+    import types
+
+    compat_module = types.ModuleType("kornia.utils.grid")
+    compat_module.create_meshgrid = create_meshgrid
+    sys.modules["kornia.utils.grid"] = compat_module
