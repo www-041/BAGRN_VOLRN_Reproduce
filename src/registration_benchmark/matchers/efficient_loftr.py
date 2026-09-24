@@ -348,23 +348,42 @@ def _install_pytorch_lightning_compat() -> None:
     Lightning utility module. Avoid installing the historical Lightning 1.x
     stack into the shared registration environment just for that symbol.
     """
+    import types
+
     try:
         from pytorch_lightning.utilities import rank_zero_only  # noqa: F401
+    except ModuleNotFoundError:
+        def rank_zero_only(function=None):
+            if function is None:
+                return lambda wrapped: wrapped
+            return function
+
+        rank_zero_only.rank = 0
+        utilities_module = types.ModuleType("pytorch_lightning.utilities")
+        utilities_module.rank_zero_only = rank_zero_only
+        lightning_module = types.ModuleType("pytorch_lightning")
+        lightning_module.__path__ = []
+        lightning_module.utilities = utilities_module
+        sys.modules["pytorch_lightning"] = lightning_module
+        sys.modules["pytorch_lightning.utilities"] = utilities_module
+
+    try:
+        from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint  # noqa: F401
         return
     except ModuleNotFoundError:
         pass
 
-    import types
+    class ModelCheckpoint:
+        """Placeholder required to unpickle official inference checkpoints."""
 
-    def rank_zero_only(function=None):
-        if function is None:
-            return lambda wrapped: wrapped
-        return function
-
-    rank_zero_only.rank = 0
-    utilities_module = types.ModuleType("pytorch_lightning.utilities")
-    utilities_module.rank_zero_only = rank_zero_only
-    lightning_module = types.ModuleType("pytorch_lightning")
-    lightning_module.utilities = utilities_module
-    sys.modules["pytorch_lightning"] = lightning_module
-    sys.modules["pytorch_lightning.utilities"] = utilities_module
+    callbacks_module = types.ModuleType("pytorch_lightning.callbacks")
+    model_checkpoint_module = types.ModuleType(
+        "pytorch_lightning.callbacks.model_checkpoint"
+    )
+    model_checkpoint_module.ModelCheckpoint = ModelCheckpoint
+    callbacks_module.model_checkpoint = model_checkpoint_module
+    lightning_module = sys.modules.get("pytorch_lightning")
+    if lightning_module is not None:
+        lightning_module.callbacks = callbacks_module
+    sys.modules["pytorch_lightning.callbacks"] = callbacks_module
+    sys.modules["pytorch_lightning.callbacks.model_checkpoint"] = model_checkpoint_module

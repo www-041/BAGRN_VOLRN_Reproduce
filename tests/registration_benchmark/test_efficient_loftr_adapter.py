@@ -136,8 +136,10 @@ def test_efficient_loftr_lightning_utility_import_compatibility():
     _install_pytorch_lightning_compat()
 
     from pytorch_lightning.utilities import rank_zero_only
+    from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 
     assert rank_zero_only.rank == 0
+    assert ModelCheckpoint is not None
 
 
 def test_efficient_loftr_official_import_compatibility():
