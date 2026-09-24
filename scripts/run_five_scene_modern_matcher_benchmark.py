@@ -4,6 +4,15 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
+from pathlib import Path
+
+# When this file is launched as ``python scripts/<file>.py``, Python places
+# only ``scripts`` on sys.path. Add the repository root so the source package
+# is importable without requiring a caller-specific PYTHONPATH.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from src.multiscene_sift.modern_matcher_benchmark import (
     MODERN_MATCHERS,
