@@ -134,6 +134,29 @@ def estimate_affine_lstsq(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     return matrix
 
 
+class _MemorySafeAffineRansacModel:
+    """scikit-image RANSAC adapter backed by the bounded affine solver."""
+
+    def __init__(self, matrix: np.ndarray):
+        self.params = np.asarray(matrix, dtype=np.float64)
+        self.model = AffineTransform(matrix=self.params)
+
+    @classmethod
+    def from_estimate(cls, src, dst, weights=None):
+        try:
+            matrix = estimate_affine_lstsq(src, dst)
+        except ValueError:
+            return None
+        return cls(matrix)
+
+    def __call__(self, points):
+        return self.model(points)
+
+    def residuals(self, src, dst):
+        predicted = self(src)
+        return np.sqrt(np.sum((predicted - dst) ** 2, axis=1))
+
+
 def fit_affine_ransac(
     matches: MatchSet,
     residual_threshold: float = RANSAC_RESIDUAL_THRESHOLD,
@@ -186,7 +209,7 @@ def fit_affine_ransac(
     # --- RANSAC ------------------------------------------------------------------
     model, inliers = ransac(
         (src, dst),
-        AffineTransform,
+        _MemorySafeAffineRansacModel,
         min_samples=3,
         residual_threshold=residual_threshold,
         max_trials=max_trials,
