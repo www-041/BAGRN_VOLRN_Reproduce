@@ -91,6 +91,49 @@ class GeometryResult:
 # ---------------------------------------------------------------------------
 
 
+def estimate_affine_lstsq(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """Estimate a 2-D affine matrix with memory-bounded least squares.
+
+    ``src`` and ``dst`` use the same ``(x, y)`` coordinate convention as the
+    shared RANSAC path. The returned matrix maps ``src`` to ``dst`` and has
+    the homogeneous form ``[[a,b,tx],[c,d,ty],[0,0,1]]``.
+
+    The design matrix has only three columns, so the solve does not construct
+    the large homogeneous matrix used by scikit-image's projective-style
+    ``AffineTransform._estimate`` SVD implementation.
+    """
+    src = np.asarray(src, dtype=np.float64)
+    dst = np.asarray(dst, dtype=np.float64)
+
+    if src.ndim != 2 or src.shape[1:] != (2,):
+        raise ValueError("src must have shape (N, 2)")
+    if dst.ndim != 2 or dst.shape[1:] != (2,):
+        raise ValueError("dst must have shape (N, 2)")
+    if src.shape != dst.shape:
+        raise ValueError("src and dst must have the same shape")
+    if len(src) < 3:
+        raise ValueError("at least 3 point correspondences are required")
+    if not np.isfinite(src).all() or not np.isfinite(dst).all():
+        raise ValueError("src and dst must contain only finite values")
+
+    design = np.column_stack([src[:, 0], src[:, 1], np.ones(len(src))])
+    coefficients, _, rank, _ = np.linalg.lstsq(design, dst, rcond=None)
+    if rank < 3:
+        raise ValueError("affine point configuration is rank deficient")
+
+    matrix = np.array(
+        [
+            [coefficients[0, 0], coefficients[1, 0], coefficients[2, 0]],
+            [coefficients[0, 1], coefficients[1, 1], coefficients[2, 1]],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    if not np.isfinite(matrix).all():
+        raise ValueError("affine estimate is non-finite")
+    return matrix
+
+
 def fit_affine_ransac(
     matches: MatchSet,
     residual_threshold: float = RANSAC_RESIDUAL_THRESHOLD,
