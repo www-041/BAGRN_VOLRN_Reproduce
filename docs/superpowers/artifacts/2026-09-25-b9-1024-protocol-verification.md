@@ -69,3 +69,26 @@ Then stop. Do not automatically switch to 960/800, FP16/BF16, model optimization
 - Four-matcher benchmark: not run.
 - MST/global translation/mosaic/BAGRN/VOLRN: not run.
 - Old 1600 config and historical outputs: untouched.
+
+## Task 5–6 official run contract
+
+After the GPU gate passed, the official fair-comparison output root is frozen as:
+
+```text
+data/output/b9_five_scene_validation/matcher_runs_1024/
+```
+
+The four run directories are `sift`, `loftr`, `efficient_loftr`, and `lightglue_disk`. This directory was empty/absent when the contract was frozen; no existing formal result was overwritten.
+
+The official protocol is the B9 frozen five-scene set, B9 band, EPSG:32650, 14 m pixels, the same frozen geographic candidate graph, `match_max_side=1024`, `pair_common_grid` coordinates, and unchanged shared RANSAC/acceptance settings. The old 1600 output root remains historical/debug-only and must not be mixed into the 1024 comparison.
+
+Recommended sequential run order is:
+
+```text
+1. SIFT
+2. LoFTR
+3. EfficientLoFTR
+4. LightGlue+DISK
+```
+
+Runs must be sequential rather than parallel to avoid GPU contention and simplify failure attribution.
