@@ -212,3 +212,53 @@ def test_affine_direction_is_src_to_dst_with_scale_rotation_and_shear():
 
     assert result.status == STATUS_OK
     np.testing.assert_allclose(result.model(src), dst, rtol=0, atol=1e-8)
+
+
+def _dense_stress_matches(n_points: int, seed: int) -> MatchSet:
+    rng = np.random.default_rng(seed)
+    matrix = np.array(
+        [
+            [1.002, -0.015, 12.5],
+            [0.010, 0.998, -7.25],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    n_inliers = int(n_points * 0.97)
+    src_inliers = rng.uniform(-5000.0, 5000.0, size=(n_inliers, 2))
+    dst_inliers = _apply(matrix, src_inliers) + rng.normal(
+        0.0, 0.10, size=(n_inliers, 2)
+    )
+    src_outliers = rng.uniform(-5000.0, 5000.0, size=(n_points - n_inliers, 2))
+    dst_outliers = rng.uniform(-5000.0, 5000.0, size=(n_points - n_inliers, 2))
+    src = np.vstack([src_inliers, src_outliers])
+    dst = np.vstack([dst_inliers, dst_outliers])
+    return MatchSet(
+        method="dense_synthetic",
+        ref_xy=dst,
+        tgt_xy=src,
+        confidence=np.ones(n_points),
+        runtime_sec=0.0,
+        metadata={
+            "coordinate_frame": "pair_common_grid",
+            "confidence_semantics": "method_internal_only",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "n_points,seed", [(20_000, 901), (50_000, 902)], ids=["20k", "50k"]
+)
+def test_dense_affine_ransac_stress_is_memory_safe(n_points, seed):
+    result = fit_affine_ransac(
+        _dense_stress_matches(n_points, seed),
+        residual_threshold=2.0,
+        max_trials=5000,
+        random_seed=0,
+    )
+
+    assert result.status == STATUS_OK
+    assert result.model is not None
+    assert np.isfinite(result.model.params).all()
+    assert result.inlier_ratio > 0.94
+    assert np.isfinite(result.residual_rmse)
+    assert np.isfinite(result.residual_p95)
