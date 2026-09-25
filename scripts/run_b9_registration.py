@@ -19,6 +19,13 @@ def main() -> int:
         choices=("sift", "loftr", "efficient_loftr", "lightglue_disk"),
     )
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--pair",
+        nargs=2,
+        type=int,
+        metavar=("EXPERIMENT_I", "EXPERIMENT_J"),
+        help="run one frozen candidate pair using local experiment indices",
+    )
     args = parser.parse_args()
 
     config = json.loads(args.config.read_text(encoding="utf-8"))
@@ -27,6 +34,7 @@ def main() -> int:
         args.output_dir,
         matcher=args.matcher,
         device=args.device,
+        pair=tuple(args.pair) if args.pair is not None else None,
     )
     print(f"status={result['status']} matcher={args.matcher} output={args.output_dir}")
     return 0

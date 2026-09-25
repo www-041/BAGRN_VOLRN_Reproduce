@@ -30,6 +30,7 @@ def run_b9_registration(
     *,
     matcher: str,
     device: str = "auto",
+    pair: tuple[int, int] | None = None,
     pair_runner: Callable = run_all_pairs,
 ) -> dict:
     """Run one requested matcher over the frozen B9 geographic edges.
@@ -45,6 +46,21 @@ def run_b9_registration(
     output.mkdir(parents=True, exist_ok=True)
     scenes = scenes_from_frozen_config(frozen_config)
     edges = edges_from_frozen_config(frozen_config)
+    if pair is not None:
+        requested_pair = tuple(sorted((int(pair[0]), int(pair[1]))))
+        candidate_edges = {
+            tuple(sorted((edge.idx_i, edge.idx_j))) for edge in edges
+        }
+        if requested_pair not in candidate_edges:
+            raise ValueError(
+                f"pair {requested_pair} is not a frozen candidate edge; "
+                f"available={sorted(candidate_edges)}"
+            )
+        edges = [
+            edge
+            for edge in edges
+            if tuple(sorted((edge.idx_i, edge.idx_j))) == requested_pair
+        ]
     t0 = time.perf_counter()
 
     if matcher == "efficient_loftr" and not is_efficient_loftr_available():
@@ -89,6 +105,8 @@ def run_b9_registration(
         "radiometric_normalization": False,
         "mosaic": False,
     }
+    if pair is not None:
+        run_config["selected_pair"] = list(requested_pair)
     _write_json(run_config, output / "run_config.json")
     return {"status": graph["status"], "accepted_graph": graph, "runtime": runtime}
 

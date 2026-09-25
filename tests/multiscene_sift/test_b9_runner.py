@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from src.multiscene_sift.b9_frozen_config import build_frozen_config
 from src.multiscene_sift.models import PairwiseRegistration
 
@@ -133,3 +135,37 @@ def test_b9_runner_reports_efficient_loftr_unavailable_without_fallback(tmp_path
     assert {row["status"] for row in summary["results"]} == {
         "EFFICIENT_LOFTR_UNAVAILABLE"
     }
+
+
+def test_b9_runner_pair_selector_limits_execution_to_requested_candidate(tmp_path):
+    from src.multiscene_sift import b9_runner
+
+    calls = []
+
+    def fake_run_all_pairs(scenes, edges, out_dir, **kwargs):
+        calls.append(edges)
+        return [_result(edges[0].idx_i, edges[0].idx_j)]
+
+    b9_runner.run_b9_registration(
+        _config(),
+        tmp_path / "pair",
+        matcher="sift",
+        pair=(0, 1),
+        pair_runner=fake_run_all_pairs,
+    )
+
+    assert len(calls) == 1
+    assert [(edge.idx_i, edge.idx_j) for edge in calls[0]] == [(0, 1)]
+
+
+def test_b9_runner_pair_selector_rejects_non_candidate_pair(tmp_path):
+    from src.multiscene_sift import b9_runner
+
+    with pytest.raises(ValueError, match="not a frozen candidate edge"):
+        b9_runner.run_b9_registration(
+            _config(),
+            tmp_path / "invalid-pair",
+            matcher="sift",
+            pair=(0, 99),
+            pair_runner=lambda *args, **kwargs: [],
+        )
