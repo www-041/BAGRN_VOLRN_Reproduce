@@ -44,3 +44,32 @@ The complete pre-change package freeze is in `2026-09-25-registration-pip-freeze
 ## Task 0 scope
 
 No production code, CUDA package, driver, or model weight was modified in Task 0.
+
+## Task 1 wheel resolution
+
+- CUDA index: `https://download.pytorch.org/whl/cu126`
+- CPU rollback index: `https://download.pytorch.org/whl/cpu`
+- CUDA torch index result: `2.14.0+cu126` available; Python 3.11 Windows wheel metadata resolved.
+- CPU torch index result: `2.14.0+cpu` available; Python 3.11 Windows wheel metadata resolved.
+- CUDA torchvision index result: `0.29.0+cu126` available; Python 3.11 Windows wheel metadata resolved.
+- CPU torchvision index result: `0.29.0+cpu` available; Python 3.11 Windows wheel metadata resolved.
+- `torchaudio`: `NOT_INSTALLED`; no query/install/rollback entry required.
+
+### Frozen exact sets
+
+```text
+INSTALL_SET:
+torch=2.14.0+cu126
+torchvision=0.29.0+cu126
+torchaudio=NOT_INSTALLED
+
+ROLLBACK_SET:
+torch=2.14.0+cpu
+torchvision=0.29.0+cpu
+torchaudio=NOT_INSTALLED
+```
+
+- CUDA dry-run used `--ignore-installed` so pip resolved wheel metadata rather than reporting the already-installed CPU distributions as satisfied.
+- CUDA dry-run resolved `torch-2.14.0+cu126-cp311-cp311-win_amd64.whl` and `torchvision-0.29.0+cu126-cp311-cp311-win_amd64.whl`.
+- CPU dry-run resolved `torch-2.14.0+cpu-cp311-cp311-win_amd64.whl` and `torchvision-0.29.0+cpu-cp311-cp311-win_amd64.whl`.
+- No package was installed during Task 1.

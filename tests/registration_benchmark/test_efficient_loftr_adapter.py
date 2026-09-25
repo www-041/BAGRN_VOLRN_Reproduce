@@ -16,10 +16,21 @@ from src.registration_benchmark.matchers.efficient_loftr import (
     _install_kornia_grid_compat,
     _install_pytorch_lightning_compat,
     _load_checkpoint,
+    _resolve_device,
     _resolve_paths,
     is_efficient_loftr_available,
     match_efficient_loftr,
 )
+
+
+def test_auto_device_resolves_to_cuda_when_cuda_is_available():
+    import torch
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable in the active environment")
+    assert _resolve_device("auto") == "cuda"
+    assert _resolve_device("cpu") == "cpu"
+    assert _resolve_device("cuda") == "cuda"
 
 
 def _view() -> MatchView:
