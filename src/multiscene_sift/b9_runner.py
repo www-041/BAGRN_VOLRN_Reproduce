@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 from pathlib import Path
 from typing import Callable
@@ -12,6 +13,7 @@ from rasterio.crs import CRS
 from rasterio.transform import Affine
 
 from src.multiscene_sift.global_registration import build_accepted_graph
+from src.multiscene_sift.geometry_artifacts import save_pair_geometry_bundle
 from src.multiscene_sift.models import OverlapEdge, PairwiseRegistration, Scene
 from src.multiscene_sift.pairwise import (
     SUPPORTED_MATCHERS,
@@ -86,6 +88,13 @@ def run_b9_registration(
         )
         status = None
 
+    geometry_index = _persist_geometry_artifacts(
+        results,
+        scenes,
+        frozen_config,
+        output,
+        protocol_config_path=protocol_config_path,
+    )
     save_pairwise_summary(results, output)
     graph = _write_accepted_graph(
         results,
@@ -112,7 +121,117 @@ def run_b9_registration(
     if pair is not None:
         run_config["selected_pair"] = list(requested_pair)
     _write_json(run_config, output / "run_config.json")
-    return {"status": graph["status"], "accepted_graph": graph, "runtime": runtime}
+    return {
+        "status": graph["status"],
+        "accepted_graph": graph,
+        "runtime": runtime,
+        "geometry_index": geometry_index,
+    }
+
+
+def _config_sha256(frozen_config: dict, protocol_config_path: str | Path | None) -> str:
+    if protocol_config_path is not None:
+        path = Path(protocol_config_path)
+        if path.is_file():
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+    canonical = json.dumps(
+        frozen_config, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _persist_geometry_artifacts(
+    results: list[PairwiseRegistration],
+    scenes: list[Scene],
+    frozen_config: dict,
+    output: Path,
+    *,
+    protocol_config_path: str | Path | None,
+) -> dict:
+    """Persist in-memory pair geometry before writing summary metrics."""
+    index_path = output / "geometry_index.json"
+    geometry_dir = output / "geometry"
+    if index_path.exists() or (geometry_dir.exists() and any(geometry_dir.iterdir())):
+        raise FileExistsError(
+            f"Global-ready geometry output is not empty: {output}; "
+            "resume logic must preserve incomplete output before retry"
+        )
+    geometry_dir.mkdir(parents=True, exist_ok=True)
+
+    config_path = (
+        str(protocol_config_path)
+        if protocol_config_path is not None
+        else "<in-memory-frozen-config>"
+    )
+    config_sha = _config_sha256(frozen_config, protocol_config_path)
+    accepted = []
+    rejected = []
+    failed = []
+    bundles = []
+    for result in results:
+        pair = [int(result.idx_i), int(result.idx_j)]
+        if result.pair_common_transform is None or result.inlier_ref_xy is None or result.inlier_tgt_xy is None:
+            failed.append({
+                "pair": pair,
+                "status": str(result.status),
+                "reason": "GEOMETRY_UNAVAILABLE",
+            })
+            continue
+
+        scene_i = scenes[result.idx_i]
+        scene_j = scenes[result.idx_j]
+        transform = scene_i.transforms[frozen_config["band"]]
+        sidecar = save_pair_geometry_bundle(
+            geometry_dir,
+            matcher=result.matcher,
+            idx_i=result.idx_i,
+            idx_j=result.idx_j,
+            scene_i=scene_i.name,
+            scene_j=scene_j.name,
+            accepted=result.status == "OK",
+            status=result.status,
+            inlier_ref_xy=result.inlier_ref_xy,
+            inlier_tgt_xy=result.inlier_tgt_xy,
+            pair_pixel_matrix=result.pair_pixel_matrix,
+            pair_common_transform=result.pair_common_transform,
+            crs=None if scene_i.crs is None else str(scene_i.crs),
+            pixel_size_x_m=abs(float(transform.a)),
+            pixel_size_y_m=abs(float(transform.e)),
+            coordinate_frame="pair_common_grid",
+            transform_direction="target_to_reference",
+            config_path=config_path,
+            config_sha256=config_sha,
+            match_max_side=int(frozen_config["registration"]["match_max_side"]),
+        )
+        record = {
+            "pair": pair,
+            "status": str(result.status),
+            "accepted": result.status == "OK",
+            "sidecar": str(sidecar.relative_to(output)),
+            "npz": str(sidecar.with_suffix(".npz").relative_to(output)),
+            "point_count": int(len(result.inlier_ref_xy)),
+        }
+        bundles.append(record)
+        (accepted if result.status == "OK" else rejected).append(record)
+
+    index = {
+        "schema_version": 1,
+        "matcher": results[0].matcher if results else None,
+        "protocol_config_path": config_path,
+        "config_sha256": config_sha,
+        "match_max_side": int(frozen_config["registration"]["match_max_side"]),
+        "coordinate_frame": "pair_common_grid",
+        "transform_direction": "target_to_reference",
+        "scene_manifest_indices": frozen_config["selection"]["manifest_indices"],
+        "scene_ids": [scene.name for scene in scenes],
+        "processed_pair_count": len(results),
+        "accepted": accepted,
+        "rejected": rejected,
+        "failed": failed,
+        "bundles": bundles,
+    }
+    _write_json(index, index_path)
+    return index
 
 
 def scenes_from_frozen_config(config: dict) -> list[Scene]:

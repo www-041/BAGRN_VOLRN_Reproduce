@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
+from rasterio.transform import Affine
 
 from src.multiscene_sift.b9_frozen_config import build_frozen_config
 from src.multiscene_sift.models import PairwiseRegistration
@@ -187,3 +189,74 @@ def test_b9_runner_records_protocol_config_path(tmp_path):
 
     run_config = json.loads((output / "run_config.json").read_text())
     assert run_config["protocol_config_path"].endswith("04_frozen_five_scene_config_1024.json")
+
+
+def test_b9_runner_persists_geometry_before_pairwise_summary(tmp_path):
+    from src.multiscene_sift import b9_runner
+    from src.multiscene_sift.geometry_artifacts import load_pair_geometry_bundle
+
+    config = _config()
+    config["registration"]["match_max_side"] = 1024
+    config_path = tmp_path / "04_frozen_five_scene_config_1024.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    result = _result(0, 1)
+    result.pair_common_transform = Affine(14.0, 0.0, 100.0, 0.0, -14.0, 200.0)
+    result.inlier_ref_xy = np.array([[2.0, 3.0], [4.0, 5.0]], dtype=np.float64)
+    result.inlier_tgt_xy = np.array([[1.5, 3.0], [3.5, 5.0]], dtype=np.float64)
+
+    def fake_run_all_pairs(scenes, edges, out_dir, **kwargs):
+        return [result]
+
+    output = tmp_path / "globalready"
+    b9_runner.run_b9_registration(
+        config,
+        output,
+        matcher="sift",
+        pair=(0, 1),
+        protocol_config_path=config_path,
+        pair_runner=fake_run_all_pairs,
+    )
+
+    index = json.loads((output / "geometry_index.json").read_text(encoding="utf-8"))
+    assert index["match_max_side"] == 1024
+    assert index["accepted"][0]["pair"] == [0, 1]
+    assert (output / "pairwise_summary.json").exists()
+    bundle = load_pair_geometry_bundle(output / "geometry" / "pair_00_01.json")
+    np.testing.assert_array_equal(bundle["inlier_ref_xy"], result.inlier_ref_xy)
+
+
+def test_b9_runner_indexes_rejected_geometry_and_failed_pair_without_fake_npz(tmp_path):
+    from src.multiscene_sift import b9_runner
+
+    config = _config()
+    config["registration"]["match_max_side"] = 1024
+    rejected = _result(0, 1, status="TOO_FEW_INLIERS")
+    rejected.pair_common_transform = Affine(14.0, 0.0, 100.0, 0.0, -14.0, 200.0)
+    rejected.inlier_ref_xy = np.empty((0, 2), dtype=np.float64)
+    rejected.inlier_tgt_xy = np.empty((0, 2), dtype=np.float64)
+    failed = _result(0, 1, status="FAILED")
+
+    output = tmp_path / "rejected"
+    b9_runner.run_b9_registration(
+        config,
+        output,
+        matcher="sift",
+        pair=(0, 1),
+        pair_runner=lambda *args, **kwargs: [rejected],
+    )
+    index = json.loads((output / "geometry_index.json").read_text(encoding="utf-8"))
+    assert index["rejected"][0]["accepted"] is False
+    assert index["rejected"][0]["point_count"] == 0
+    assert len(list((output / "geometry").glob("*.npz"))) == 1
+
+    failed_output = tmp_path / "failed"
+    b9_runner.run_b9_registration(
+        config,
+        failed_output,
+        matcher="sift",
+        pair=(0, 1),
+        pair_runner=lambda *args, **kwargs: [failed],
+    )
+    failed_index = json.loads((failed_output / "geometry_index.json").read_text(encoding="utf-8"))
+    assert failed_index["failed"][0]["reason"] == "GEOMETRY_UNAVAILABLE"
+    assert not list((failed_output / "geometry").glob("*.npz"))
