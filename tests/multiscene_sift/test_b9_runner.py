@@ -169,3 +169,21 @@ def test_b9_runner_pair_selector_rejects_non_candidate_pair(tmp_path):
             pair=(0, 99),
             pair_runner=lambda *args, **kwargs: [],
         )
+
+
+def test_b9_runner_records_protocol_config_path(tmp_path):
+    from src.multiscene_sift import b9_runner
+
+    output = tmp_path / "formal"
+    b9_runner.run_b9_registration(
+        _config(),
+        output,
+        matcher="sift",
+        protocol_config_path="data/output/b9_five_scene_validation/04_frozen_five_scene_config_1024.json",
+        pair_runner=lambda scenes, edges, out_dir, **kwargs: [
+            _result(edge.idx_i, edge.idx_j) for edge in edges
+        ],
+    )
+
+    run_config = json.loads((output / "run_config.json").read_text())
+    assert run_config["protocol_config_path"].endswith("04_frozen_five_scene_config_1024.json")

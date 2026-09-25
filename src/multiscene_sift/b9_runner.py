@@ -31,6 +31,7 @@ def run_b9_registration(
     matcher: str,
     device: str = "auto",
     pair: tuple[int, int] | None = None,
+    protocol_config_path: str | Path | None = None,
     pair_runner: Callable = run_all_pairs,
 ) -> dict:
     """Run one requested matcher over the frozen B9 geographic edges.
@@ -100,6 +101,9 @@ def run_b9_registration(
         "device": device,
         "scene_manifest_indices": frozen_config["selection"]["manifest_indices"],
         "match_max_side": frozen_config["registration"]["match_max_side"],
+        "protocol_config_path": (
+            str(protocol_config_path) if protocol_config_path is not None else None
+        ),
         "ransac": frozen_config["ransac"],
         "global_adjustment": False,
         "radiometric_normalization": False,

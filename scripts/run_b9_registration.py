@@ -35,6 +35,7 @@ def main() -> int:
         matcher=args.matcher,
         device=args.device,
         pair=tuple(args.pair) if args.pair is not None else None,
+        protocol_config_path=args.config,
     )
     print(f"status={result['status']} matcher={args.matcher} output={args.output_dir}")
     return 0
