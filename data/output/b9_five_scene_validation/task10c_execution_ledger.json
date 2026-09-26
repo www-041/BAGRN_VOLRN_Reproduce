@@ -295,20 +295,31 @@
       "ended_at": "2026-09-26",
       "git_head": "56e22a4",
       "commands": [
-        ".venv-registration/Scripts/python.exe -m pytest tests/test_task10c_science_invariants.py -q"
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_task10c_science_invariants.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_bagrn.py tests/test_volrn.py tests/test_cloud_aware_bagrn.py tests/test_cloud_aware_volrn.py tests/test_cloud_aware_metrics.py tests/test_mosaic.py tests/test_volrn_solver_diagnostics.py tests/test_volrn_valid_masks.py tests/test_task9_protocol_strict.py tests/test_task10_mosaic_dtype.py tests/test_task10c_science_invariants.py tests/multiscene_sift -q",
+        ".venv-registration/Scripts/python.exe -m pytest -q"
       ],
-      "exit_codes": [0],
+      "exit_codes": [0, 0, 0],
       "artifacts": [
         "tests/test_task10c_science_invariants.py"
       ],
       "scientific_status": "TASK10C_SYNTHETIC_INVARIANTS_PASS",
       "exceptions": [
         "Synthetic local-radiometry case improved a predeclared blockwise discrepancy after VOLRN and produced non-identity finite coefficients with residual convergence.",
-        "Too-small iteration budget is classified COMPLETED_NONCONVERGED; all RAW/BAGRN/BAGRN_VOLRN summaries expose the six-metric schema plus additional diagnostics."
+        "Too-small iteration budget is classified COMPLETED_NONCONVERGED; all RAW/BAGRN/BAGRN_VOLRN summaries expose the six-metric schema plus additional diagnostics.",
+        "Task10C focused suite: 449 passed, 2 skipped, 8581 warnings.",
+        "Full pytest after Task10C core repairs: 807 passed, 4 skipped, 10182 warnings in 112.92s."
       ]
     }
   },
   "real_experiments": [],
+  "hard_stop": {
+    "status": "TASK10C_BLOCKED",
+    "reason": "Repository lacks the paper source or trusted reference needed to uniquely verify Eq.(38) CD and Eq.(39) GL; the plan forbids guessing before real science.",
+    "blocked_before": "Task12",
+    "real_experiments_run": false,
+    "push_performed": false
+  },
   "environment": {
     "python": "3.11.6",
     "numpy": "2.4.6",
