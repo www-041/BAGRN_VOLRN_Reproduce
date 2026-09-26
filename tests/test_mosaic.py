@@ -139,3 +139,27 @@ def test_create_mosaic_nodata():
     finally:
         if os.path.exists(out_path):
             os.remove(out_path)
+
+
+def test_weighted_feather_contract_single_overlap_and_nodata(tmp_path):
+    """Freeze single-source, overlap, and nodata behavior of weighted mode."""
+    first = np.full((1, 6, 6), 100, dtype=np.uint16)
+    first[0, 0, :] = 0
+    second = np.full((1, 6, 6), 200, dtype=np.uint16)
+    output = tmp_path / "weighted_contract.tif"
+
+    create_mosaic(
+        [first, second],
+        [from_origin(0, 6, 1, 1), from_origin(3, 6, 1, 1)],
+        "EPSG:4326",
+        [0, 0],
+        str(output),
+        resolution=1.0,
+    )
+
+    with rasterio.open(output) as ds:
+        data = ds.read(1)
+        assert data[3, 1] == 100  # single-source first-scene region
+        assert data[3, 8] == 200  # single-source second-scene region
+        assert 100 < data[3, 4] < 200  # weighted overlap
+        assert data[0, 1] == 0  # declared nodata remains invalid
