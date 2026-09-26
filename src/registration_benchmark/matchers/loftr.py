@@ -10,7 +10,11 @@ import time
 
 import numpy as np
 
-from src.registration_benchmark.models import MatchView, make_matchset_from_view
+from src.registration_benchmark.models import (
+    MatchView,
+    filter_matches_by_valid_mask,
+    make_matchset_from_view,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +101,10 @@ def match_loftr(
         kpts1 = kpts1[idx]
         conf = conf[idx]
 
+    kpts0, kpts1, conf, valid_keep = filter_matches_by_valid_mask(
+        kpts0, kpts1, conf, view
+    )
+
     elapsed = time.perf_counter() - t0
 
     if len(kpts0) == 0:
@@ -110,6 +118,7 @@ def match_loftr(
             metadata={
                 "confidence_threshold": confidence_threshold,
                 "max_matches": max_matches,
+                "valid_mask_filtered": int((~valid_keep).sum()),
                 "device": device,
                 "pretrained": "outdoor",
             },
@@ -125,6 +134,7 @@ def match_loftr(
         metadata={
             "confidence_threshold": confidence_threshold,
             "max_matches": max_matches,
+            "valid_mask_filtered": int((~valid_keep).sum()),
             "device": device,
             "pretrained": "outdoor",
         },

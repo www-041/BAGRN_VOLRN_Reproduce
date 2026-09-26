@@ -22,7 +22,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from src.registration_benchmark.models import MatchView, make_matchset_from_view
+from src.registration_benchmark.models import (
+    MatchView,
+    filter_matches_by_valid_mask,
+    make_matchset_from_view,
+)
 
 EFFICIENT_LOFTR_UNAVAILABLE = "EFFICIENT_LOFTR_UNAVAILABLE"
 OFFICIAL_REPOSITORY = "https://github.com/zju3dv/EfficientLoFTR"
@@ -126,11 +130,13 @@ def match_efficient_loftr(
         mkpts1_model, original_shape=view.tgt.shape, model_shape=tgt_transform["model_shape"]
     )
 
-    keep = confidence >= confidence_threshold
-    keep &= _valid_match_mask(ref_view, tgt_view, view)
-    ref_view = ref_view[keep]
-    tgt_view = tgt_view[keep]
-    confidence = confidence[keep]
+    confidence_keep = confidence >= confidence_threshold
+    ref_view = ref_view[confidence_keep]
+    tgt_view = tgt_view[confidence_keep]
+    confidence = confidence[confidence_keep]
+    ref_view, tgt_view, confidence, valid_keep = filter_matches_by_valid_mask(
+        ref_view, tgt_view, confidence, view
+    )
 
     elapsed = time.perf_counter() - t0
     metadata = {
@@ -141,6 +147,7 @@ def match_efficient_loftr(
         "precision": precision,
         "device": resolved_device,
         "confidence_threshold": confidence_threshold,
+        "valid_mask_filtered": int((~valid_keep).sum()),
         "confidence_source": "official_mconf",
         "confidence_semantics": "method_internal_only",
         "output_coordinate_frame": "resized_model_input",
@@ -206,17 +213,6 @@ def _prepare_model_input(image: np.ndarray) -> tuple[np.ndarray, dict[str, objec
         "scale_y_model_per_original": float(model_h / original_h),
         "resize_inverse": "x_original=x_model/scale_x, y_original=y_model/scale_y",
     }
-
-
-def _valid_match_mask(ref_xy: np.ndarray, tgt_xy: np.ndarray, view: MatchView) -> np.ndarray:
-    keep = np.ones(len(ref_xy), dtype=bool)
-    for i, (ref_point, tgt_point) in enumerate(zip(ref_xy, tgt_xy)):
-        for point, valid in ((ref_point, view.ref_valid), (tgt_point, view.tgt_valid)):
-            x, y = int(round(point[0])), int(round(point[1]))
-            if not (0 <= y < valid.shape[0] and 0 <= x < valid.shape[1] and valid[y, x]):
-                keep[i] = False
-                break
-    return keep
 
 
 def _to_numpy(value) -> np.ndarray:

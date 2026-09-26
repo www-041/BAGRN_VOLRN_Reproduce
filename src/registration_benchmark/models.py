@@ -217,6 +217,51 @@ class MatchView:
         return self.to_common_grid(xy)
 
 
+def filter_matches_by_valid_mask(
+    ref_xy_view: np.ndarray,
+    tgt_xy_view: np.ndarray,
+    confidence: np.ndarray,
+    view: MatchView,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Keep only finite matches landing on valid pixels in both images.
+
+    Coordinates are in the match-view frame and use ``[x, y]`` ordering.
+    The same rounded-pixel and out-of-bounds contract is shared by every
+    matcher before coordinates enter common-grid geometry.
+    """
+    ref_xy_view = np.asarray(ref_xy_view, dtype=np.float64)
+    tgt_xy_view = np.asarray(tgt_xy_view, dtype=np.float64)
+    confidence = np.asarray(confidence, dtype=np.float64)
+    if ref_xy_view.ndim != 2 or ref_xy_view.shape[1] != 2:
+        raise ValueError("ref_xy_view must have shape (N, 2)")
+    if tgt_xy_view.shape != ref_xy_view.shape:
+        raise ValueError("tgt_xy_view must match ref_xy_view shape")
+    if confidence.shape != (len(ref_xy_view),):
+        raise ValueError("confidence must have shape (N,)")
+
+    keep = np.zeros(len(ref_xy_view), dtype=bool)
+    for i, (ref_point, tgt_point) in enumerate(zip(ref_xy_view, tgt_xy_view)):
+        if not (np.isfinite(ref_point).all() and np.isfinite(tgt_point).all()):
+            continue
+        ref_x, ref_y = int(round(ref_point[0])), int(round(ref_point[1]))
+        tgt_x, tgt_y = int(round(tgt_point[0])), int(round(tgt_point[1]))
+        ref_in_bounds = (
+            0 <= ref_y < view.ref_valid.shape[0]
+            and 0 <= ref_x < view.ref_valid.shape[1]
+        )
+        tgt_in_bounds = (
+            0 <= tgt_y < view.tgt_valid.shape[0]
+            and 0 <= tgt_x < view.tgt_valid.shape[1]
+        )
+        keep[i] = (
+            ref_in_bounds
+            and tgt_in_bounds
+            and bool(view.ref_valid[ref_y, ref_x])
+            and bool(view.tgt_valid[tgt_y, tgt_x])
+        )
+    return ref_xy_view[keep], tgt_xy_view[keep], confidence[keep], keep
+
+
 def make_matchset_from_view(
     *,
     method: str,

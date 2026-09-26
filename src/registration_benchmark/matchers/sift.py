@@ -11,7 +11,11 @@ import time
 import cv2
 import numpy as np
 
-from src.registration_benchmark.models import MatchView, make_matchset_from_view
+from src.registration_benchmark.models import (
+    MatchView,
+    filter_matches_by_valid_mask,
+    make_matchset_from_view,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,24 +145,10 @@ def match_sift(
         confidence = np.ones_like(distances)
     confidence = np.clip(confidence, 0.0, 1.0)
 
-    # --- Valid-mask filter (discard matches on invalid pixels) -----------------
-    keep = np.ones(n, dtype=bool)
-    for i in range(n):
-        r = int(round(ref_xy_view[i, 1]))
-        c = int(round(ref_xy_view[i, 0]))
-        if 0 <= r < view.ref_valid.shape[0] and 0 <= c < view.ref_valid.shape[1]:
-            if not view.ref_valid[r, c]:
-                keep[i] = False
-
-        tr = int(round(tgt_xy_view[i, 1]))
-        tc = int(round(tgt_xy_view[i, 0]))
-        if 0 <= tr < view.tgt_valid.shape[0] and 0 <= tc < view.tgt_valid.shape[1]:
-            if not view.tgt_valid[tr, tc]:
-                keep[i] = False
-
-    ref_xy_view = ref_xy_view[keep]
-    tgt_xy_view = tgt_xy_view[keep]
-    confidence = confidence[keep]
+    # --- Shared valid-mask filter (discard invalid/out-of-bounds pixels) ------
+    ref_xy_view, tgt_xy_view, confidence, keep = filter_matches_by_valid_mask(
+        ref_xy_view, tgt_xy_view, confidence, view
+    )
 
     # --- Map to common-grid coordinates ----------------------------------------
     if len(ref_xy_view) == 0:

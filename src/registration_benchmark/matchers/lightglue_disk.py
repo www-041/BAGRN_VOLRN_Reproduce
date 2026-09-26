@@ -14,7 +14,11 @@ import time
 
 import numpy as np
 
-from src.registration_benchmark.models import MatchView, make_matchset_from_view
+from src.registration_benchmark.models import (
+    MatchView,
+    filter_matches_by_valid_mask,
+    make_matchset_from_view,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +90,9 @@ def match_lightglue_disk(
             raise
         raise RuntimeError(f"{LIGHTGLUE_DISK_UNAVAILABLE}: {exc}") from exc
 
-    keep = _valid_match_mask(ref_xy_view, tgt_xy_view, view)
-    ref_xy_view = ref_xy_view[keep]
-    tgt_xy_view = tgt_xy_view[keep]
-    confidence = confidence[keep]
+    ref_xy_view, tgt_xy_view, confidence, valid_keep = filter_matches_by_valid_mask(
+        ref_xy_view, tgt_xy_view, confidence, view
+    )
     elapsed = time.perf_counter() - t0
 
     return make_matchset_from_view(
@@ -111,6 +114,7 @@ def match_lightglue_disk(
             "disk_internal_resize": disk_resize,
             "disk_extractor_inverse_resize_applied": True,
             "pair_common_grid_mapping_applied": True,
+            "valid_mask_filtered": int((~valid_keep).sum()),
             "device": resolved_device,
         },
         runtime_breakdown={
@@ -157,17 +161,6 @@ def _extract_matches(
         ref_idx, tgt_idx, confidence = ref_idx[selected], tgt_idx[selected], confidence[selected]
 
     return keypoints0[ref_idx], keypoints1[tgt_idx], confidence
-
-
-def _valid_match_mask(ref_xy: np.ndarray, tgt_xy: np.ndarray, view: MatchView) -> np.ndarray:
-    keep = np.ones(len(ref_xy), dtype=bool)
-    for i, (ref_point, tgt_point) in enumerate(zip(ref_xy, tgt_xy)):
-        for point, valid in ((ref_point, view.ref_valid), (tgt_point, view.tgt_valid)):
-            x, y = int(round(point[0])), int(round(point[1]))
-            if not (0 <= y < valid.shape[0] and 0 <= x < valid.shape[1] and valid[y, x]):
-                keep[i] = False
-                break
-    return keep
 
 
 def _to_numpy(value) -> np.ndarray:
