@@ -13,7 +13,7 @@
 """
 
 import numpy as np
-from scipy.ndimage import sobel
+from scipy.ndimage import binary_erosion, sobel
 from typing import List, Optional
 
 
@@ -293,6 +293,18 @@ def _gradient_orientation_map(band_data: np.ndarray, valid_mask: np.ndarray = No
     return np.arctan2(np.abs(gy), np.abs(gx))
 
 
+def _gradient_support_mask(valid_mask: np.ndarray) -> np.ndarray:
+    """Return pixels whose full 3x3 Sobel stencil is jointly valid.
+
+    A Sobel sample adjacent to NoData can be dominated by the artificial
+    zero used to avoid NaNs.  Eroding the validity mask prevents such boundary
+    stencils from contributing to GL; this is a validity guard, not a metric
+    redefinition.
+    """
+    mask = np.asarray(valid_mask, dtype=bool)
+    return binary_erosion(mask, structure=np.ones((3, 3), dtype=bool), border_value=0)
+
+
 def compute_gl(
     arrays_before: List[np.ndarray],
     arrays_after: List[np.ndarray],
@@ -332,7 +344,8 @@ def compute_gl(
                     )
                 valid_mask &= ~cm
 
-            n_valid = valid_mask.sum()
+            gradient_mask = _gradient_support_mask(valid_mask)
+            n_valid = gradient_mask.sum()
             if n_valid == 0:
                 continue
 
@@ -340,7 +353,7 @@ def compute_gl(
             orient_after = _gradient_orientation_map(after, valid_mask)
 
             diff = np.abs(orient_before - orient_after)
-            delta_g = diff[valid_mask].sum()
+            delta_g = diff[gradient_mask].sum()
             total_gl += delta_g / n_valid
             contributing_count += 1
 

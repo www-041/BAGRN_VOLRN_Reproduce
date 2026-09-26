@@ -100,8 +100,10 @@ def _pair_metrics(
         metric_a, metric_b, metric_mask = _crop(shared, after[i][0], after[j][0])
         metric = compute_overlap_metrics(metric_a, metric_b, metric_mask, min_valid_pixels=1)
         raw_shared = valid_masks[i] & valid_masks[j]
-        a = before[i][0][raw_shared].astype(np.float64)
-        b = before[j][0][raw_shared].astype(np.float64)
+        # Histogram diagnostics describe the post-normalization result.
+        # ``before`` remains the reference only for the separate GL metric.
+        a = after[i][0][raw_shared].astype(np.float64)
+        b = after[j][0][raw_shared].astype(np.float64)
         if a.size:
             histogram = {
                 "mean_abs_difference": float(abs(a.mean() - b.mean())),
@@ -246,6 +248,8 @@ def run_fixed_geometry_radiometric(
     rho: float = 1.0,
     max_iter: int = 20,
     tol: float = 1e-4,
+    protocol_path: str | Path | None = None,
+    strict_protocol: bool = False,
 ) -> dict:
     """Run one RAW/BAGRN/BAGRN_VOLRN experiment without changing geometry."""
     method = str(method).upper()
@@ -257,6 +261,21 @@ def run_fixed_geometry_radiometric(
     global_run_dir = Path(global_run_dir)
     output_grid = Path(output_grid)
     output_dir = Path(output_dir)
+    if strict_protocol:
+        expected = {
+            "block_size_pixels": 400,
+            "lambda_param": 0.5,
+            "rho": 1.0,
+            "max_iter": 200,
+            "tol": 1e-4,
+            "radiometric_control_idx": 0,
+        }
+        actual = locals()
+        for key, value in expected.items():
+            if float(actual[key]) != float(value):
+                raise ValueError(f"strict protocol mismatch for {key}")
+        if protocol_path is None:
+            raise ValueError("strict protocol requires protocol_path")
     if output_dir.exists() and any(output_dir.iterdir()):
         raise FileExistsError(f"output directory is non-empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -310,13 +329,33 @@ def run_fixed_geometry_radiometric(
         volrn_runtime = time.perf_counter() - start
         final_arrays = volrn_result
 
+    # Keep the six-metric schema separate from the additional seam/histogram
+    # diagnostics.  The formula audit determines whether these can be called
+    # verified paper metrics; this namespace is stable regardless of that
+    # scientific qualification.
+    paper_metric_values = compute_all(
+        processing_arrays,
+        final_arrays,
+        processing_nodata,
+        overlaps,
+        bands=[0],
+    )
+    paper_metrics = {
+        "ADM": paper_metric_values.get("adm"),
+        "ADSD": paper_metric_values.get("adsd"),
+        "CD": paper_metric_values.get("cd"),
+        "GL": paper_metric_values.get("gl"),
+        "RDOA": paper_metric_values.get("rdoa"),
+        "Ave": paper_metric_values.get("ave"),
+    }
+
     mosaic_path = output_dir / "mosaic.tif"
     _, mosaic_diag = create_mosaic(
         arrays=final_arrays, transforms=final_transforms, crs=str(grid["crs"]),
         nodata_values=final_nodata, output_path=str(mosaic_path),
         resolution=float(grid.get("resolution", grid["pixel_size"])), mode="weighted",
         output_transform=grid_transform(grid), output_width=int(grid["width"]),
-        output_height=int(grid["height"]), return_diagnostics=True,
+        output_height=int(grid["height"]), output_dtype="float32", return_diagnostics=True,
     )
     valid_union = np.any(np.stack(valid_masks), axis=0)
     contributor_count = np.sum(np.stack(valid_masks), axis=0).astype(np.uint8)
@@ -352,6 +391,8 @@ def run_fixed_geometry_radiometric(
         "source_config": str(source_config), "output_grid": str(output_grid),
         "global_root": str(global_run_dir.parent),
         "output_root": str(output_dir.parent.parent.parent),
+        "strict_protocol": bool(strict_protocol),
+        "radiometric_control_idx": radiometric_control_idx,
         "volrn_params": {
             "block_size_pixels": block_size_pixels, "lambda": lambda_param,
             "rho": rho, "max_iter": max_iter, "tol": tol,
@@ -369,8 +410,15 @@ def run_fixed_geometry_radiometric(
         "scene_ids": scene_ids,
         "geometry_mutable": False,
     }
+    if protocol_path is not None:
+        config["protocol_sha256"] = _sha256(Path(protocol_path))
     radiometric_method = {
         "method": method, "band": "B9", "radiometric_control_idx": radiometric_control_idx,
+        "radiometric_control_scene_id": scene_ids[radiometric_control_idx],
+        "radiometric_control_rationale": (
+            "predeclared reference for reproducibility; not selected from "
+            "outcome metrics; independent of geometry reference."
+        ),
         "cloud_mask_enabled": False, "mosaic_mode": "weighted",
         "block_size_pixels": block_size_pixels, "lambda": lambda_param,
         "rho": rho, "max_iter": max_iter, "tol": tol,
@@ -379,9 +427,25 @@ def run_fixed_geometry_radiometric(
         output_dir, config, geometry_source=geometry_source,
         radiometric_method=radiometric_method,
     )
+    if method == "RAW":
+        science_status = "PASS_RAW"
+    elif method == "BAGRN":
+        science_status = "PASS_BAGRN"
+    else:
+        science_status = (
+            "PASS_CONVERGED"
+            if bool(volrn_diag.get("all_converged", False))
+            and all(item.get("science_pass", False) for item in volrn_diag.get("band_solver_diagnostics", []))
+            else "COMPLETED_NONCONVERGED"
+        )
+
     summary = {
         "schema_version": 1, "dataset": "B9", "geometry_run": geometry_run,
         "radiometric_method": method, "scene_ids": scene_ids,
+        "science_status": science_status,
+        "radiometric_control_idx": radiometric_control_idx,
+        "paper_metrics": paper_metrics,
+        "additional_diagnostics": overlap_metrics,
         "overlap_count": len(overlaps), "overlaps": overlaps,
         "registered_metrics": registered_metrics,
         "overlap_metrics": overlap_metrics,
