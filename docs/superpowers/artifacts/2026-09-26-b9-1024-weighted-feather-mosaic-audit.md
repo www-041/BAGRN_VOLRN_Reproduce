@@ -65,3 +65,14 @@ The sequential batch completed all eight frozen combinations with status `PASS`.
 ## Task 7 — fixed feather seam-zone diagnostics
 
 `mosaic_audit_1024/03_seam_zone_metrics.csv` contains 80 `PASS` rows. The seam diagnostic is not an optimized seamline: for each accepted pair it is the shared-valid region where pairwise normalized fixed-feather weights satisfy `min(w_i_norm, w_j_norm) >= 0.25`. The threshold is identical for all eight runs and is recorded in every row. Seam-zone pixel counts range from 1,675,636 to 8,732,548. Seam gradient metrics are structural; auxiliary seam intensity MAE/RMSE/bias fields remain labeled `RADIOMETRY_SENSITIVE`, so no geometry-only seam claim is made.
+
+## Task 8 — standardized visual audit
+
+The figure set is in `mosaic_audit_1024/figures/`, with selection and crop metadata in `07_figure_selection.json`:
+
+- 8 official mosaic previews and 8 contributor-count maps, using the fixed runner preview policy and Task 5 shared contributor scale;
+- 16 separately warped-source checkerboards and 16 gradient overlays for each matcher’s selected worst/stable edges, with LightGlue+DISK pair `1-3` included explicitly;
+- 16 seam-zone zooms (highest mismatch and median region for both Global methods), reusing identical crop bounds between MST and Translation-L2 within each matcher;
+- 4 MST-vs-Translation absolute mosaic-difference maps.
+
+The difference maps are explicitly diagnostic only: they remain sensitive to radiometry and warp interpolation and are not geometric ground-truth error maps.
