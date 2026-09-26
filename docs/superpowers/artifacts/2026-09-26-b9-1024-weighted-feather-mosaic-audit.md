@@ -91,3 +91,11 @@ The cross-reference is descriptive, not causal:
 - EfficientLoFTR has the broadest mean geometry-audit coverage among the four methods (`0.9219`) and the lowest mean geometric P95 (`0.6045 px`) in the joined Task8C table. Its mean overlap gradient-magnitude NCC (`0.8257`) is close to the other methods, so broad coverage is compatible with stable overlap structure but does not prove causation or superiority.
 
 No BAGRN/VOLRN or radiometric normalization was run, and the report does not infer radiometric causes from the auxiliary intensity fields.
+
+## Task 11 — final audit summary
+
+`mosaic_audit_1024/05_mosaic_audit_summary.json` records the frozen protocol, all eight `PASS` statuses, per-method structural medians/worst pairs, seam-zone summaries, MST→Translation observations, and scope limits. The final summary confirms: 5 B9 scenes `[2,3,5,8,10]`, 14 m, one canonical grid, 8 persisted Global solutions, identical bilinear warp/weighted feather semantics, and no radiometric normalization.
+
+The summary reports structural medians separately for MST and Translation-L2. For example, median gradient-magnitude NCC is SIFT `0.8328/0.8324`, LoFTR `0.8239/0.8249`, EfficientLoFTR `0.8180/0.8180`, and LightGlue+DISK `0.8083/0.8114` (MST/Translation-L2). These are descriptive fixed-protocol values, not a final method ranking.
+
+This stage supports comparison of final warp/mosaic structural behavior under fixed blending, localization of overlap/seam misalignment, and checking whether Global-transform differences survive into the final mosaic. It does not support radiometric quality superiority, absolute geolocation accuracy, final algorithm superiority, or seamline-optimization quality.
