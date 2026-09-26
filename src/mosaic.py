@@ -138,6 +138,7 @@ def create_mosaic(
     output_transform=None,
     output_width=None,
     output_height=None,
+    output_dtype: Optional[str] = None,
 ) -> str:
     """
     创建镶嵌图。
@@ -173,6 +174,9 @@ def create_mosaic(
         如果给定，直接用作输出宽度。
     output_height : int or None
         如果给定，直接用作输出高度。
+    output_dtype : str or None
+        Explicit output dtype for scientific products.  When omitted, retain
+        the historical geometry-mosaic dtype inference.
     """
     n_images = len(arrays)
     if n_images == 0:
@@ -557,10 +561,16 @@ def create_mosaic(
 
     # ---- 4. 写出 ----
     # 如果 nodata 是 None 且结果含 NaN，使用 float32 保留 NaN
-    out_dtype = arrays[0].dtype.name
+    inferred_dtype = arrays[0].dtype.name
     has_nan_nodata = (np.isnan(nd_val) if np.isscalar(nd_val) and isinstance(nd_val, float) else False)
-    if has_nan_nodata:
-        out_dtype = "float32"
+    if output_dtype is not None:
+        out_dtype = np.dtype(output_dtype).name
+        if not np.issubdtype(np.dtype(out_dtype), np.floating):
+            raise ValueError("scientific mosaic output_dtype must be floating point")
+    else:
+        out_dtype = inferred_dtype
+        if has_nan_nodata:
+            out_dtype = "float32"
 
     profile = {
         "driver": "GTiff",
