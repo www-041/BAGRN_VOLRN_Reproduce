@@ -307,6 +307,7 @@ def json_safe(value):
 
 MATCHERS = ("sift", "loftr", "efficient_loftr", "lightglue_disk")
 GLOBAL_METHODS = ("mst", "translation_l2")
+GLOBAL_METHOD_LABELS = {"mst": "MST", "translation_l2": "Translation-L2"}
 
 
 def _read_json(path: Path) -> dict:
@@ -357,7 +358,7 @@ def load_frozen_audit_inputs(root: str | Path) -> dict[tuple[str, str], dict]:
             transforms = load_transform_map(run / "global_transforms.json")
             edge_rows = compute_edge_residual_metrics(
                 edges, geometry["bundles"], transforms, 14.0,
-                matcher=matcher, global_method=method,
+                matcher=matcher, global_method=GLOBAL_METHOD_LABELS[method],
             )
             residuals = {}
             global_points = {}
@@ -368,7 +369,7 @@ def load_frozen_audit_inputs(root: str | Path) -> dict[tuple[str, str], dict]:
                 global_points[pair] = (ref, tgt)
             inputs[(matcher, method)] = {
                 "matcher": matcher,
-                "global_method": method,
+                "global_method": GLOBAL_METHOD_LABELS[method],
                 "geometry": geometry,
                 "accepted_edges": edges,
                 "bundles": geometry["bundles"],
@@ -450,16 +451,17 @@ def build_residual_distribution_summary(inputs: Mapping[tuple[str, str], Mapping
     rows = []
     for (matcher, method), run in inputs.items():
         summary = summarize_residuals(run["edge_rows"], run["residuals"])
-        rows.append({"matcher": matcher, "global_method": method,
+        rows.append({"matcher": matcher, "global_method": run["global_method"],
                      "point_weighted_rmse_pixel": summary["point_weighted"]["rmse_pixel"],
                      "point_weighted_p90_pixel": summary["point_weighted"]["p90_pixel"],
                      "point_weighted_p95_pixel": summary["point_weighted"]["p95_pixel"],
+                     "point_weighted_max_pixel": summary["point_weighted"]["max_pixel"],
                      **summary["edge_balanced"]})
     return rows
 
 
 def build_tree_non_tree_rows(inputs: Mapping[tuple[str, str], Mapping]) -> list[dict]:
-    return [tree_non_tree_summary(run["edge_rows"], matcher, method) for (matcher, method), run in inputs.items()]
+    return [tree_non_tree_summary(run["edge_rows"], matcher, run["global_method"]) for (matcher, _), run in inputs.items()]
 
 
 def build_delta_rows(inputs: Mapping[tuple[str, str], Mapping]) -> tuple[list[dict], list[dict]]:
