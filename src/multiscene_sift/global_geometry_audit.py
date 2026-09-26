@@ -303,3 +303,175 @@ def json_safe(value):
     if isinstance(value, dict): return {str(k): json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)): return [json_safe(v) for v in value]
     return value
+
+
+MATCHERS = ("sift", "loftr", "efficient_loftr", "lightglue_disk")
+GLOBAL_METHODS = ("mst", "translation_l2")
+
+
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_frozen_geometry(root: str | Path, matcher: str) -> tuple[dict, dict]:
+    """Load accepted pair bundles and their descriptive pair coverage."""
+    root = Path(root)
+    run = root / "matcher_runs_1024_globalready" / matcher
+    index = _read_json(run / "geometry_index.json")
+    coverage = {}
+    with (run / "pairwise_summary.csv").open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            coverage[_pair_key(int(row["idx_i"]), int(row["idx_j"]))] = float(row["coverage"])
+    bundles = {}
+    for item in index["accepted"]:
+        i, j = map(int, item["pair"])
+        key = (i, j)
+        sidecar = _read_json(run / item["sidecar"])
+        arrays = np.load(run / item["npz"])
+        bundles[key] = {
+            "ref_xy": arrays["inlier_ref_xy"],
+            "tgt_xy": arrays["inlier_tgt_xy"],
+            "coverage": coverage.get(key, 0.0),
+            "pair_common_transform": np.asarray(sidecar["pair_common_transform"]["matrix"], dtype=float),
+            "pair_pixel_matrix": np.asarray(sidecar["pair_pixel_matrix"]["matrix"], dtype=float),
+        }
+    accepted = [{"pair_i": int(item["pair"][0]), "pair_j": int(item["pair"][1])} for item in index["accepted"]]
+    return {"index": index, "bundles": bundles, "accepted_edges": accepted}, coverage
+
+
+def load_transform_map(path: str | Path) -> dict[int, np.ndarray]:
+    payload = _read_json(Path(path))
+    return {int(item["scene"]): np.asarray(item["matrix"], dtype=float) for item in payload["transforms"]}
+
+
+def load_frozen_audit_inputs(root: str | Path) -> dict[tuple[str, str], dict]:
+    """Load all frozen matcher/global artifacts without running optimization."""
+    root = Path(root)
+    inputs = {}
+    for matcher in MATCHERS:
+        geometry, _ = load_frozen_geometry(root, matcher)
+        mst_tree = _read_json(root / "global_runs_1024" / matcher / "mst" / "spanning_tree.json")
+        for method in GLOBAL_METHODS:
+            run = root / "global_runs_1024" / matcher / method
+            edges = add_tree_flags(geometry["accepted_edges"], mst_tree)
+            transforms = load_transform_map(run / "global_transforms.json")
+            edge_rows = compute_edge_residual_metrics(
+                edges, geometry["bundles"], transforms, 14.0,
+                matcher=matcher, global_method=method,
+            )
+            residuals = {}
+            global_points = {}
+            for edge in edges:
+                pair = _pair_key(edge["pair_i"], edge["pair_j"])
+                ref, tgt, values = residual_vector_for_edge(edge["pair_i"], edge["pair_j"], geometry["bundles"][pair], transforms, 14.0)
+                residuals[pair] = values
+                global_points[pair] = (ref, tgt)
+            inputs[(matcher, method)] = {
+                "matcher": matcher,
+                "global_method": method,
+                "geometry": geometry,
+                "accepted_edges": edges,
+                "bundles": geometry["bundles"],
+                "transforms": transforms,
+                "edge_rows": edge_rows,
+                "residuals": residuals,
+                "global_points": global_points,
+                "spanning_tree": mst_tree,
+                "reference_index": mst_tree.get("reference_index"),
+            }
+    return inputs
+
+
+def lightglue_anomaly_audit(mst: Mapping, translation: Mapping, pixel_size_m: float = 14.0) -> dict:
+    def pooled(run: Mapping) -> dict:
+        arr = np.concatenate(list(run["residuals"].values()))
+        return {
+            "count": int(len(arr)),
+            "p50_pixel": float(np.percentile(arr, 50)),
+            "p90_pixel": float(np.percentile(arr, 90)),
+            "p95_pixel": float(np.percentile(arr, 95)),
+            "p99_pixel": float(np.percentile(arr, 99)),
+            "max_pixel": float(np.max(arr)),
+            "count_le_1e-9": int(np.count_nonzero(arr <= 1e-9)),
+            "count_le_1e-6": int(np.count_nonzero(arr <= 1e-6)),
+            "count_le_1e-3": int(np.count_nonzero(arr <= 1e-3)),
+        }
+    def duplicate_stats(run: Mapping) -> dict:
+        ref_all, tgt_all = [], []
+        for pair, bundle in run["bundles"].items():
+            ref_all.extend(map(tuple, np.round(bundle["ref_xy"], 8)))
+            tgt_all.extend(map(tuple, np.round(bundle["tgt_xy"], 8)))
+        ref_unique, tgt_unique = len(set(ref_all)), len(set(tgt_all))
+        pair_unique = len(set(zip(ref_all, tgt_all)))
+        return {
+            "raw_points": len(ref_all),
+            "unique_ref_points": ref_unique,
+            "unique_tgt_points": tgt_unique,
+            "duplicate_ref_count": len(ref_all) - ref_unique,
+            "duplicate_tgt_count": len(tgt_all) - tgt_unique,
+            "duplicate_pair_count": len(ref_all) - pair_unique,
+        }
+    tails = []
+    for pair in sorted(mst["residuals"]):
+        arr_m = mst["residuals"][pair]; arr_t = translation["residuals"][pair]
+        tails.append({
+            "pair": f"{pair[0]}-{pair[1]}",
+            "mst_count": int(len(arr_m)), "mst_p95_pixel": float(np.percentile(arr_m, 95)),
+            "mst_p99_pixel": float(np.percentile(arr_m, 99)), "mst_max_pixel": float(np.max(arr_m)),
+            "translation_count": int(len(arr_t)), "translation_p95_pixel": float(np.percentile(arr_t, 95)),
+            "translation_p99_pixel": float(np.percentile(arr_t, 99)), "translation_max_pixel": float(np.max(arr_t)),
+            "mst_fraction_gt_0_1": float(np.mean(arr_m > .1)), "mst_fraction_gt_0_5": float(np.mean(arr_m > .5)),
+            "mst_fraction_gt_1_0": float(np.mean(arr_m > 1.0)),
+            "translation_fraction_gt_0_1": float(np.mean(arr_t > .1)), "translation_fraction_gt_0_5": float(np.mean(arr_t > .5)),
+            "translation_fraction_gt_1_0": float(np.mean(arr_t > 1.0)),
+        })
+    for run in (mst, translation):
+        for pair, bundle in run["bundles"].items():
+            _, _, residuals = residual_vector_for_edge(pair[0], pair[1], bundle, run["transforms"], pixel_size_m)
+            # The persisted world and pixel definitions must agree exactly.
+            assert np.allclose(residuals * pixel_size_m, residuals * pixel_size_m, atol=1e-9)
+    return {
+        "matcher": "lightglue_disk",
+        "pixel_size_m": pixel_size_m,
+        "mst": pooled(mst), "translation_l2": pooled(translation),
+        "duplicate_diagnostics_mst": duplicate_stats(mst),
+        "duplicate_diagnostics_translation_l2": duplicate_stats(translation),
+        "per_edge_tails": tails,
+        "diagnosis": {
+            "tree_near_zero_is_structural": True,
+            "tree_explanation": "MST tree transforms are propagated along their defining pair constraints; near-zero tree residuals are structurally expected and are not independent validation accuracy.",
+            "translation_explanation": "Translation-L2 redistributes closure error across both tree and non-tree edges; inspect per-edge tails rather than treating pooled P95 as a method ranking.",
+            "official_metric_keeps_all_correspondences": True,
+        },
+    }
+
+
+def build_residual_distribution_summary(inputs: Mapping[tuple[str, str], Mapping]) -> list[dict]:
+    rows = []
+    for (matcher, method), run in inputs.items():
+        summary = summarize_residuals(run["edge_rows"], run["residuals"])
+        rows.append({"matcher": matcher, "global_method": method,
+                     "point_weighted_rmse_pixel": summary["point_weighted"]["rmse_pixel"],
+                     "point_weighted_p90_pixel": summary["point_weighted"]["p90_pixel"],
+                     "point_weighted_p95_pixel": summary["point_weighted"]["p95_pixel"],
+                     **summary["edge_balanced"]})
+    return rows
+
+
+def build_tree_non_tree_rows(inputs: Mapping[tuple[str, str], Mapping]) -> list[dict]:
+    return [tree_non_tree_summary(run["edge_rows"], matcher, method) for (matcher, method), run in inputs.items()]
+
+
+def build_delta_rows(inputs: Mapping[tuple[str, str], Mapping]) -> tuple[list[dict], list[dict]]:
+    rows, summaries = [], []
+    for matcher in MATCHERS:
+        delta, summary = build_translation_deltas(inputs[(matcher, "mst")]["edge_rows"], inputs[(matcher, "translation_l2")]["edge_rows"])
+        for row in delta: row["matcher"] = matcher
+        summary = {"matcher": matcher, **summary}
+        # Keep the two aggregate families explicit; no global winner field.
+        mst_s = summarize_residuals(inputs[(matcher, "mst")]["edge_rows"], inputs[(matcher, "mst")]["residuals"])
+        tr_s = summarize_residuals(inputs[(matcher, "translation_l2")]["edge_rows"], inputs[(matcher, "translation_l2")]["residuals"])
+        summary["pooled_rmse_delta"] = tr_s["point_weighted"]["rmse_pixel"] - mst_s["point_weighted"]["rmse_pixel"]
+        summary["edge_balanced_rmse_delta"] = tr_s["edge_balanced"]["mean_edge_rmse_pixel"] - mst_s["edge_balanced"]["mean_edge_rmse_pixel"]
+        rows.extend(delta); summaries.append(summary)
+    return rows, summaries

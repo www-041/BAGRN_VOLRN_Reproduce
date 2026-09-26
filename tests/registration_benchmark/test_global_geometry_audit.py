@@ -9,6 +9,7 @@ from src.multiscene_sift.global_geometry_audit import (
     cycle_basis,
     summarize_residuals,
     tree_non_tree_summary,
+    occupancy_count,
 )
 
 
@@ -131,3 +132,8 @@ def test_cycle_basis_is_deterministic_and_has_expected_rank() -> None:
     cycles = cycle_basis(edges, 5)
     assert len(cycles) == 6
     assert cycles == cycle_basis(list(reversed(edges)), 5)
+
+
+def test_coverage_occupancy_counts_known_cells_exactly() -> None:
+    points = np.array([[1, 1], [1.5, 1.5], [15, 8], [19, 19]], dtype=float)
+    assert occupancy_count(points, (0, 0, 20, 20), (2, 2)) == 3
