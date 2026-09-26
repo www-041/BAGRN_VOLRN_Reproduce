@@ -132,9 +132,10 @@
       "commands": [
         ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_geometry_artifacts.py tests/multiscene_sift/test_task4_provenance.py -q",
         ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_geometry_artifacts.py tests/multiscene_sift/test_task4_provenance.py -q",
-        ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_global_ready.py tests/multiscene_sift/test_global_ready_validation.py tests/multiscene_sift/test_global_geometric_adjustment.py tests/multiscene_sift/test_global_comparison.py tests/multiscene_sift/test_global_execution.py tests/multiscene_sift/test_modern_matcher_benchmark.py tests/multiscene_sift/test_phase_validation_audit.py -q"
+        ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_global_ready.py tests/multiscene_sift/test_global_ready_validation.py tests/multiscene_sift/test_global_geometric_adjustment.py tests/multiscene_sift/test_global_comparison.py tests/multiscene_sift/test_global_execution.py tests/multiscene_sift/test_modern_matcher_benchmark.py tests/multiscene_sift/test_phase_validation_audit.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest -q"
       ],
-      "exit_codes": [1, 0, 0],
+      "exit_codes": [1, 0, 0, 0],
       "artifacts": [
         "tests/multiscene_sift/test_geometry_artifacts.py",
         "tests/multiscene_sift/test_task4_provenance.py",
@@ -151,6 +152,28 @@
         "The first repository-environment focused run intentionally failed before implementation as required by TDD.",
         "Existing pre-Task4 legacy bundles without npz_sha256 remain untouched; newly saved bundles are content-hashed and validation rejects missing or mismatched hashes.",
         "Pytest emitted existing deprecation/cache warnings; post-repair focused exit codes were 0."
+      ]
+    },
+    "5": {
+      "status": "complete",
+      "started_at": "2026-09-26",
+      "ended_at": "2026-09-26",
+      "git_head": "7232942",
+      "commands": [
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_bagrn_valid_overlap.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_bagrn_valid_overlap.py tests/test_bagrn.py tests/test_cloud_aware_bagrn.py tests/test_bagrn_regressions.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_bagrn.py tests/test_cloud_aware_bagrn.py tests/test_bagrn_regressions.py tests/test_synthetic_end_to_end_smoke.py tests/test_main.py tests/test_multiband_pipeline_regressions.py tests/test_cloud_pipeline_integration.py -q"
+      ],
+      "exit_codes": [1, 0, 0],
+      "artifacts": [
+        "tests/test_bagrn_valid_overlap.py",
+        "src/bagrn.py"
+      ],
+      "scientific_status": "BAGRN_VALID_OVERLAP_PASS",
+      "exceptions": [
+        "The first focused run intentionally failed before implementation as required by TDD.",
+        "BAGRN regression/endpoint suite: 22 passed, 1095 warnings.",
+        "Geometric overlap pixel weighting remains the WLS weight; clear-valid counts are recorded separately per band and invalid edges are removed before solving."
       ]
     }
   },
