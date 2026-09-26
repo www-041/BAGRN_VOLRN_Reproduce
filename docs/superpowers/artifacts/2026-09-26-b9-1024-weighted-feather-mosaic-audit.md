@@ -76,3 +76,7 @@ The figure set is in `mosaic_audit_1024/figures/`, with selection and crop metad
 - 4 MST-vs-Translation absolute mosaic-difference maps.
 
 The difference maps are explicitly diagnostic only: they remain sensitive to radiometry and warp interpolation and are not geometric ground-truth error maps.
+
+## Task 9 — MST versus Translation-L2 deltas
+
+`mosaic_audit_1024/04_mst_translation_mosaic_delta.csv` contains 4 matcher summary rows and 40 aligned edge rows. Every delta uses `Translation-L2 minus MST`; therefore positive correlation deltas mean higher Translation-L2 correlation, while negative auxiliary MAE deltas mean lower Translation-L2 intensity mismatch. The table keeps overlap correlation, gradient correlation, seam gradient correlation, auxiliary MAE, common-valid counts, and mosaic absolute-difference statistics as separate fields; no scalar winner is produced. Mosaic absolute differences are explicitly radiometry/warp-interpolation sensitive.
