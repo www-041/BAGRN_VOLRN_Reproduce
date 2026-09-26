@@ -57,3 +57,7 @@ The sequential batch completed all eight frozen combinations with status `PASS`.
 ## Task 5 — contributor and coverage audit
 
 `mosaic_audit_1024/01_run_inventory.csv` contains all eight rows. Every row has the same denominator, `31,381,544` canonical-grid pixels, and the same maximum contributor count of 5. Invalid weight-sum pixels are zero for all runs. The SIFT runs have 22,166,642 and 22,166,580 valid pixels; the other six runs have 22,167,910 valid pixels. Contributor-count maps are in `mosaic_audit_1024/contributor_maps/` and use one shared display maximum (`5`) and the same raster extent/shape.
+
+## Task 6 — overlap structural metrics
+
+`mosaic_audit_1024/02_overlap_structural_metrics.csv` contains the expected 80 rows (4 matchers × 2 Global methods × 10 accepted pairs). All rows are `PASS` with finite primary structural metrics and shared-valid overlap masks. The primary fields are intensity ZNCC, gradient-magnitude NCC, and gradient-orientation cosine. The auxiliary intensity MAE/RMSE/mean-bias fields are explicitly labeled `RADIOMETRY_SENSITIVE`; they are descriptive and are not used as geometry scores. The synthetic tests confirm that a 1–2 pixel displacement lowers structural scores, while a constant brightness offset preserves ZNCC but changes MAE. No insufficient-overlap row occurred under the fixed minimum sample rule for this dataset.
