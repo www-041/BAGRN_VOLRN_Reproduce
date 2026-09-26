@@ -8,6 +8,7 @@ import hashlib
 import json
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -108,18 +109,46 @@ def _source_dtype(source_config: Path) -> str:
         return src.dtypes[0]
 
 
-def _verify_protocol(protocol_path: Path, repo_root: Path) -> None:
+def _verify_protocol(
+    protocol_path: Path,
+    repo_root: Path,
+    source_config_path: str | Path | None = None,
+) -> None:
     protocol = _load_json(protocol_path)
     if protocol.get("dataset") != "B9" or protocol.get("manifest_indices") != [2, 3, 5, 8, 10]:
         raise ValueError("protocol is not the frozen B9 five-scene selection")
     if float(protocol.get("pixel_size_m")) != 14.0 or protocol.get("radiometric_normalization") != "NONE":
         raise ValueError("protocol pixel size or radiometric policy changed")
+    source_ref = protocol.get("source_config")
+    source_hash = protocol.get("source_config_sha256")
+    if not source_ref or not source_hash:
+        raise ValueError("protocol is missing frozen source config hash")
+    source_path = Path(source_ref)
+    if not source_path.is_absolute():
+        source_path = repo_root / source_path
+    if not source_path.exists() or _sha256(source_path) != source_hash:
+        raise ValueError(f"source config hash mismatch: {source_path}")
+    if source_config_path is not None:
+        actual_source = Path(source_config_path)
+        if not actual_source.exists() or _sha256(actual_source) != source_hash:
+            raise ValueError(f"source config hash mismatch: {actual_source}")
     for item in protocol.get("global_transform_hashes", []):
         path = Path(item["path"])
         if not path.is_absolute():
             path = repo_root / path
         if not path.exists() or _sha256(path) != item["sha256"]:
             raise ValueError(f"persisted transform hash mismatch: {path}")
+
+
+def prepare_output_dir(output_dir: str | Path) -> Path:
+    """Move a non-empty partial output aside, preserving it for inspection."""
+    output_dir = Path(output_dir)
+    if not output_dir.exists() or not any(output_dir.iterdir()):
+        return output_dir
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    renamed = output_dir.with_name(f"{output_dir.name}_incomplete_{stamp}")
+    output_dir.rename(renamed)
+    return renamed
 
 
 def run_batch(
@@ -139,7 +168,7 @@ def run_batch(
     audit_dir = Path(audit_dir)
     protocol_path = Path(protocol_path)
     repo_root = Path(__file__).resolve().parents[1]
-    _verify_protocol(protocol_path, repo_root)
+    _verify_protocol(protocol_path, repo_root, source_config)
     grid = _load_json(output_grid)
     status = _load_json(status_path)
     if list(status.get("rows", {})) != list(RUN_KEYS):
@@ -166,9 +195,12 @@ def run_batch(
         row["status"] = "RUNNING"
         status_path.write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
         try:
+            incomplete_dir = prepare_output_dir(output_dir)
             with log_path.open("w", encoding="utf-8") as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
                 print(f"run={run_key}")
                 print(f"global_run_dir={global_root / matcher / method}")
+                if incomplete_dir != output_dir:
+                    print(f"renamed_partial_output={incomplete_dir}")
                 run_weighted_mosaic(
                     source_config,
                     global_root / matcher / method,

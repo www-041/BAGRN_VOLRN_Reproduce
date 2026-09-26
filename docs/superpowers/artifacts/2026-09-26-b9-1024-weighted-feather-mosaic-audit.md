@@ -99,3 +99,17 @@ No BAGRN/VOLRN or radiometric normalization was run, and the report does not inf
 The summary reports structural medians separately for MST and Translation-L2. For example, median gradient-magnitude NCC is SIFT `0.8328/0.8324`, LoFTR `0.8239/0.8249`, EfficientLoFTR `0.8180/0.8180`, and LightGlue+DISK `0.8083/0.8114` (MST/Translation-L2). These are descriptive fixed-protocol values, not a final method ranking.
 
 This stage supports comparison of final warp/mosaic structural behavior under fixed blending, localization of overlap/seam misalignment, and checking whether Global-transform differences survive into the final mosaic. It does not support radiometric quality superiority, absolute geolocation accuracy, final algorithm superiority, or seamline-optimization quality.
+
+## Task 12 — verification and stop point
+
+- Task 9 focused suite: `36 passed, 13 warnings`.
+- Registration/Global-focused regression suite: `134 passed, 69 warnings`.
+- `py_compile` for all Task 9 scripts/modules: passed.
+- `git diff --check`: passed.
+- Full repository pytest: `746 passed, 13 failed, 2 skipped, 4565 warnings`.
+
+The 12 known baseline failures remain the radiometric/cloud-mask failures previously recorded: three synthetic full-pipeline tests lack `*_MTL.txt` fixtures, and nine radiometric-adapter tests use the older `normalize_registered_band(..., reference_idx=...)` interface. The additional `gen_report_figures` import failure is environmental: module import writes to the protected repository-external `data/report_figures/code_distribution.png` and receives WinError 13. None of these failures touches the Task 9 mosaic path, and no full-suite-green claim is made.
+
+The final reliability fixes were also covered by the focused suite: non-empty partial output directories are renamed to `_incomplete_<timestamp>` before retry, and the frozen `source_config_sha256` is checked both for the protocol-referenced file and the actual `--source-config` argument. No matcher, RANSAC, Global, BAGRN, VOLRN, radiometric-normalization, seamline, or push operation was performed.
+
+Task 9 stops here pending user review.

@@ -115,7 +115,7 @@ def test_runner_writes_exact_grid_union_and_frozen_weighted_result(tmp_path):
         np.testing.assert_array_equal(actual.read(), expected.read())
 
     assert result["mosaic_path"].name == "mosaic.tif"
-    summary = json.loads((output_dir / "run_summary.json").read_text())
+    summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["blend_mode"] == "weighted"
     assert summary["radiometric_normalization"] == "NONE"
 
