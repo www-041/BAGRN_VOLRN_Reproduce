@@ -143,7 +143,14 @@ def load_global_ready_run(
                 or metadata.get("accepted") != (status == "OK")
             ):
                 raise _provenance(f"bundle metadata mismatch for pair {pair}")
-            expected_scene_names = [scenes[pair[0]].name, scenes[pair[1]].name]
+            row_order = (int(row["idx_i"]), int(row["idx_j"]))
+            metadata_order = (
+                int(metadata["pair"]["idx_i"]),
+                int(metadata["pair"]["idx_j"]),
+            )
+            if metadata_order != row_order:
+                raise _provenance(f"bundle pair orientation mismatch for pair {pair}")
+            expected_scene_names = [scenes[index].name for index in row_order]
             actual_scene_names = [metadata["pair"]["scene_i"], metadata["pair"]["scene_j"]]
             if actual_scene_names != expected_scene_names:
                 raise _provenance(f"bundle scene identity mismatch for pair {pair}")

@@ -91,3 +91,17 @@ def test_pair_geometry_bundle_does_not_overwrite_existing_files(tmp_path):
 
     with pytest.raises(FileExistsError):
         _save(tmp_path)
+
+
+def test_pair_geometry_bundle_rejects_npz_content_hash_mismatch(tmp_path):
+    sidecar = _save(tmp_path)
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    npz_path = sidecar.parent / payload["npz_path"]
+    with np.load(npz_path, allow_pickle=False) as arrays:
+        ref = arrays["inlier_ref_xy"].copy()
+        tgt = arrays["inlier_tgt_xy"].copy()
+    ref[0, 0] += 1.0
+    np.savez(npz_path, inlier_ref_xy=ref, inlier_tgt_xy=tgt)
+
+    with pytest.raises(ValueError, match="SHA256"):
+        validate_pair_geometry_bundle(sidecar)

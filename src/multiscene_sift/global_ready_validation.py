@@ -28,8 +28,12 @@ def _read(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _pair(row: dict[str, Any]) -> tuple[int, int]:
-    return tuple(sorted((int(row["idx_i"]), int(row["idx_j"]))))
+def _pair(row: Any) -> tuple[int, int]:
+    if isinstance(row, dict):
+        values = (row["idx_i"], row["idx_j"])
+    else:
+        values = (row.idx_i, row.idx_j)
+    return tuple(sorted((int(values[0]), int(values[1]))))
 
 
 def _accepted_edges(graph: dict[str, Any]) -> set[tuple[int, int]]:
@@ -71,10 +75,7 @@ def _replay_report(
     old_summary = _read(old_summary_path)
     old_graph = _read(old_graph_path)
     old_rows = {_pair(row): row for row in old_summary.get("results", [])}
-    new_rows = {
-        (result.idx_i, result.idx_j): result
-        for result in results
-    }
+    new_rows = {_pair(result): result for result in results}
     new_edges = _accepted_edges(accepted_graph)
     old_edges = _accepted_edges(old_graph)
     pair_set_same = set(new_rows) == set(old_rows)

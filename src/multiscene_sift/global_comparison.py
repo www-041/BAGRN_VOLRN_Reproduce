@@ -51,11 +51,26 @@ def _graph_metrics(path: Path) -> dict[str, Any]:
 def _world_metrics(path: Path) -> dict[str, Any]:
     payload = _read(path / "global_edge_consistency.json") or {}
     rows = payload.get("results", [])
-    counts = np.asarray([float(row.get("n_points", 0)) for row in rows], dtype=float)
-    rmse = np.asarray([float(row["global_rmse_world_m"]) for row in rows if row.get("global_rmse_world_m") is not None], dtype=float)
-    p95 = np.asarray([float(row["global_p95_world_m"]) for row in rows if row.get("global_p95_world_m") is not None], dtype=float)
+    rmse_pairs = [
+        (float(row["global_rmse_world_m"]), float(row.get("n_points", 0)))
+        for row in rows
+        if row.get("global_rmse_world_m") is not None
+        and np.isfinite(float(row["global_rmse_world_m"]))
+        and float(row.get("n_points", 0)) > 0
+    ]
+    p95 = np.asarray(
+        [
+            float(row["global_p95_world_m"])
+            for row in rows
+            if row.get("global_p95_world_m") is not None
+            and np.isfinite(float(row["global_p95_world_m"]))
+        ],
+        dtype=float,
+    )
+    rmse = np.asarray([value for value, _ in rmse_pairs], dtype=float)
+    counts = np.asarray([count for _, count in rmse_pairs], dtype=float)
     return {
-        "global_rmse_world_m": float(np.sqrt(np.average(rmse ** 2, weights=counts[:len(rmse)]))) if len(rmse) and len(counts) == len(rmse) else None,
+        "global_rmse_world_m": float(np.sqrt(np.average(rmse ** 2, weights=counts))) if len(rmse) else None,
         "mean_edge_p95_world_m": float(np.mean(p95)) if len(p95) else None,
         "max_edge_p95_world_m": float(np.max(p95)) if len(p95) else None,
     }

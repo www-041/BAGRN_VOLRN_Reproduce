@@ -337,7 +337,9 @@ def _residual_stats(rows: list[dict]) -> dict:
     }
 
 
-def summarize_network_residuals(point_residuals) -> dict:
+def summarize_network_residuals(
+    point_residuals, *, metric_frame: str = "mst_global_frame"
+) -> dict:
     """Return point-weighted, edge-balanced, and explicitly split aggregates."""
     rows = point_residuals.to_dict(orient="records")
     grouped: dict[tuple[int, int], list[dict]] = {}
@@ -370,7 +372,7 @@ def summarize_network_residuals(point_residuals) -> dict:
                 if not edge_rows[0]["is_tree_edge"]]
     zero_one = grouped.get((0, 1), [])
     return {
-        "metric_frame": "mst_global_frame",
+        "metric_frame": str(metric_frame),
         "point_weighted": _residual_stats(rows),
         "edge_balanced": aggregate(list(grouped.values())),
         "zero_one": _residual_stats(zero_one),
@@ -420,6 +422,7 @@ def load_frozen_edge_observations(
     inliers_csv: str | Path,
     spanning_tree_json: str | Path,
     dataset_manifest: str | Path | None = None,
+    registration_band: str = "B14",
 ) -> dict:
     tree_payload = json.loads(Path(spanning_tree_json).read_text(encoding="utf-8"))
     tree_edges = {tuple(sorted((int(item["parent"]), int(item["child"]))))
@@ -427,9 +430,11 @@ def load_frozen_edge_observations(
     pair_transforms = {}
     if dataset_manifest is not None:
         manifest = json.loads(Path(dataset_manifest).read_text(encoding="utf-8"))
-        bounds = {int(scene["index"]): scene["bands"]["B14"]["bounds"]
+        bounds = {int(scene["index"]): scene["bands"][registration_band]["bounds"]
                   for scene in manifest["scenes"]}
-        resolution = float(manifest["scenes"][0]["bands"]["B14"]["resolution"][0])
+        resolution = float(
+            manifest["scenes"][0]["bands"][registration_band]["resolution"][0]
+        )
         for i, j in {tuple(sorted((int(row["edge_i"]), int(row["edge_j"]))))
                      for row in csv.DictReader(Path(inliers_csv).open(encoding="utf-8"))}:
             left = min(bounds[i][0], bounds[j][0])

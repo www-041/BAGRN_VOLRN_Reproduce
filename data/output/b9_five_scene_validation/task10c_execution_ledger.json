@@ -103,9 +103,10 @@
       "git_head": "d9f229a",
       "commands": [
         ".venv-registration/Scripts/python.exe -m pytest tests/registration_benchmark/test_geometry_hard_fail.py tests/multiscene_sift/test_global_hard_fail.py -q",
-        ".venv-registration/Scripts/python.exe -m pytest tests/registration_benchmark/test_geometry_hard_fail.py tests/multiscene_sift/test_global_hard_fail.py tests/registration_benchmark/test_geometry.py tests/multiscene_sift/test_global_registration.py tests/multiscene_sift/test_global_execution.py tests/multiscene_sift/test_global_ready.py tests/multiscene_sift/test_b9_runner.py -q"
+        ".venv-registration/Scripts/python.exe -m pytest tests/registration_benchmark/test_geometry_hard_fail.py tests/multiscene_sift/test_global_hard_fail.py tests/registration_benchmark/test_geometry.py tests/multiscene_sift/test_global_registration.py tests/multiscene_sift/test_global_execution.py tests/multiscene_sift/test_global_ready.py tests/multiscene_sift/test_b9_runner.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest -q"
       ],
-      "exit_codes": [1, 0],
+      "exit_codes": [1, 0, 0],
       "artifacts": [
         "tests/registration_benchmark/test_geometry_hard_fail.py",
         "tests/multiscene_sift/test_global_hard_fail.py",
@@ -119,7 +120,37 @@
       "scientific_status": "GLOBAL_GEOMETRY_HARD_FAIL_PASS",
       "exceptions": [
         "The first focused run intentionally failed before implementation as required by TDD.",
-        "Pytest emitted existing scikit-image/rasterio deprecation warnings; focused exit code after repair was 0."
+        "Full pytest after Task3: 779 passed, 4 skipped, 9208 warnings in 116.61s.",
+        "Pytest emitted existing scikit-image/rasterio deprecation warnings; exit codes after repair were 0."
+      ]
+    },
+    "4": {
+      "status": "complete",
+      "started_at": "2026-09-26",
+      "ended_at": "2026-09-26",
+      "git_head": "e534840",
+      "commands": [
+        ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_geometry_artifacts.py tests/multiscene_sift/test_task4_provenance.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_geometry_artifacts.py tests/multiscene_sift/test_task4_provenance.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_global_ready.py tests/multiscene_sift/test_global_ready_validation.py tests/multiscene_sift/test_global_geometric_adjustment.py tests/multiscene_sift/test_global_comparison.py tests/multiscene_sift/test_global_execution.py tests/multiscene_sift/test_modern_matcher_benchmark.py tests/multiscene_sift/test_phase_validation_audit.py -q"
+      ],
+      "exit_codes": [1, 0, 0],
+      "artifacts": [
+        "tests/multiscene_sift/test_geometry_artifacts.py",
+        "tests/multiscene_sift/test_task4_provenance.py",
+        "src/multiscene_sift/geometry_artifacts.py",
+        "src/multiscene_sift/global_ready.py",
+        "src/multiscene_sift/global_ready_validation.py",
+        "src/multiscene_sift/global_geometric_adjustment.py",
+        "src/multiscene_sift/global_comparison.py",
+        "src/multiscene_sift/global_execution.py"
+      ],
+      "scientific_status": "GEOMETRY_PROVENANCE_PASS",
+      "exceptions": [
+        "The first focused run initially hit the system Python without pandas; the test was kept dependency-light and rerun with the repository .venv-registration interpreter.",
+        "The first repository-environment focused run intentionally failed before implementation as required by TDD.",
+        "Existing pre-Task4 legacy bundles without npz_sha256 remain untouched; newly saved bundles are content-hashed and validation rejects missing or mismatched hashes.",
+        "Pytest emitted existing deprecation/cache warnings; post-repair focused exit codes were 0."
       ]
     }
   },

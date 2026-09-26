@@ -116,7 +116,9 @@ def run_global_connections(
     observations = _observations(accepted, tree_edges, pixel_size_m)
     mst_dict = {index: matrix for index, matrix in enumerate(transforms_list)}
     mst_points = evaluate_edge_point_residuals(mst_dict, observations)
-    mst_summary = summarize_network_residuals(mst_points)
+    mst_summary = summarize_network_residuals(
+        mst_points, metric_frame="mst_global_frame"
+    )
     write_mst_residual_artifacts(mst_points, mst_summary, mst_out)
     mst_report = {
         "status": "PASS",
@@ -146,7 +148,9 @@ def run_global_connections(
     )
     save_consistency_diagnostics(translation_consistency, translation_out)
     translation_points = evaluate_edge_point_residuals(adjusted, observations)
-    translation_summary = summarize_network_residuals(translation_points)
+    translation_summary = summarize_network_residuals(
+        translation_points, metric_frame="translation_l2_global_frame"
+    )
     write_translation_residual_artifacts(translation_points, translation_summary, translation_out)
     translation_status = "PASS" if solution["status"] == "OK" else "FAILED"
     translation_report = {

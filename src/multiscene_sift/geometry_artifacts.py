@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 from pathlib import Path
@@ -104,6 +105,14 @@ def _atomic_npz_write(
         raise
 
 
+def _sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def save_pair_geometry_bundle(
     output_dir: str | Path,
     *,
@@ -195,6 +204,7 @@ def save_pair_geometry_bundle(
         inlier_ref_xy=ref,
         inlier_tgt_xy=tgt,
     )
+    metadata["npz_sha256"] = _sha256(npz_path)
     try:
         _atomic_json_write(metadata, sidecar_path)
     except Exception:
@@ -224,6 +234,15 @@ def validate_pair_geometry_bundle(sidecar_path: str | Path) -> dict[str, Any]:
     npz_path = sidecar.parent / str(metadata.get("npz_path", ""))
     if not npz_path.is_file():
         raise FileNotFoundError(f"NPZ geometry bundle not found: {npz_path}")
+    expected_sha256 = metadata.get("npz_sha256")
+    if not expected_sha256:
+        raise ValueError("geometry bundle NPZ SHA256 is missing")
+    actual_sha256 = _sha256(npz_path)
+    if str(expected_sha256).lower() != actual_sha256:
+        raise ValueError(
+            f"geometry bundle NPZ SHA256 mismatch: expected {expected_sha256}, "
+            f"got {actual_sha256}"
+        )
 
     with np.load(npz_path, allow_pickle=False) as arrays:
         required = {"inlier_ref_xy", "inlier_tgt_xy"}
