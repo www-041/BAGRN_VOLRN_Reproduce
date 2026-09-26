@@ -158,13 +158,14 @@
       "status": "complete",
       "started_at": "2026-09-26",
       "ended_at": "2026-09-26",
-      "git_head": "7232942",
+      "git_head": "2caf7be",
       "commands": [
         ".venv-registration/Scripts/python.exe -m pytest tests/test_bagrn_valid_overlap.py -q",
         ".venv-registration/Scripts/python.exe -m pytest tests/test_bagrn_valid_overlap.py tests/test_bagrn.py tests/test_cloud_aware_bagrn.py tests/test_bagrn_regressions.py -q",
         ".venv-registration/Scripts/python.exe -m pytest tests/test_bagrn.py tests/test_cloud_aware_bagrn.py tests/test_bagrn_regressions.py tests/test_synthetic_end_to_end_smoke.py tests/test_main.py tests/test_multiband_pipeline_regressions.py tests/test_cloud_pipeline_integration.py -q"
+        ,".venv-registration/Scripts/python.exe -m pytest -q"
       ],
-      "exit_codes": [1, 0, 0],
+      "exit_codes": [1, 0, 0, 0],
       "artifacts": [
         "tests/test_bagrn_valid_overlap.py",
         "src/bagrn.py"
@@ -174,6 +175,28 @@
         "The first focused run intentionally failed before implementation as required by TDD.",
         "BAGRN regression/endpoint suite: 22 passed, 1095 warnings.",
         "Geometric overlap pixel weighting remains the WLS weight; clear-valid counts are recorded separately per band and invalid edges are removed before solving."
+      ]
+    },
+    "6": {
+      "status": "complete",
+      "started_at": "2026-09-26",
+      "ended_at": "2026-09-26",
+      "git_head": "2caf7be",
+      "commands": [
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_volrn_solver_diagnostics.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_volrn_solver_diagnostics.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_volrn.py tests/test_cloud_aware_volrn.py -q"
+      ],
+      "exit_codes": [1, 0, 0],
+      "artifacts": [
+        "tests/test_volrn_solver_diagnostics.py",
+        "src/volrn.py"
+      ],
+      "scientific_status": "VOLRN_DIAGNOSTICS_PASS",
+      "exceptions": [
+        "The first focused run intentionally failed before implementation as required by TDD.",
+        "ADMM now requires primal and dual residual thresholds, propagates CG failures, records finite solver traces, and preserves the last finite iterate on nonconvergence.",
+        "The undocumented 1%-99% common rescaling was removed; the strict solver objective is evaluated in original radiometric units."
       ]
     }
   },

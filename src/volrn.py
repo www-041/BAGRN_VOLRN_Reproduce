@@ -357,10 +357,23 @@ def _admm_solver(
     max_iter: int = 200,
     tol: float = 1e-4,
     verbose: bool = False,
+    return_diagnostics: bool = False,
 ) -> Tuple[np.ndarray, bool, int]:
     """
     用 ADMM 求解变分模型（Eq.30-33）。
+
+    ``tol`` is used as both the absolute and relative residual tolerance in
+    the standard ADMM stopping rules.  The legacy three-value return is kept
+    for callers that do not request diagnostics; the VOLRN public pipeline
+    requests the fourth diagnostics value explicitly.
     """
+    if rho <= 0:
+        raise ValueError("rho must be > 0")
+    if lambda_param < 0:
+        raise ValueError("lambda_param must be >= 0")
+    if tol <= 0:
+        raise ValueError("tol must be > 0")
+
     n_vars = B.shape[1]
     n_eqs_A = A.shape[0]
 
@@ -376,25 +389,89 @@ def _admm_solver(
     M = M.tocsr()
 
     converged = False
+    cg_failed = False
+    finite_state = True
+    failure_reason = None
+    cg_status_history = []
+    primal_history = []
+    dual_history = []
+    objective_history = []
+    x_change_history = []
+    primal_residual = np.inf
+    dual_residual = np.inf
+    primal_tolerance = np.inf
+    dual_tolerance = np.inf
+    x_relative_change = np.inf
+    n_iters = 0
+
     for it in range(max_iter):
         rhs = rho * (At @ (z - u + b))
         x_new, cg_info = cg(M, rhs, x0=x, rtol=1e-6, maxiter=500, atol=1e-10)
+        cg_info = int(cg_info)
+        cg_status_history.append(cg_info)
+        if cg_info != 0:
+            cg_failed = True
         if cg_info != 0 and verbose:
             print(f"  [警告] CG 未收敛 (info={cg_info})，迭代 {it+1}")
+
+        if not np.isfinite(x_new).all():
+            finite_state = False
+            failure_reason = "NONFINITE_X"
+            if verbose:
+                print(f"  [警告] ADMM 产生非有限 x，保留上一个有限迭代，迭代 {it+1}")
+            n_iters = it + 1
+            break
 
         Az_minus_b = A @ x_new - b
         z_new = _soft_threshold(Az_minus_b + u, lambda_param / rho)
         u_new = u + Az_minus_b - z_new
 
         x_diff = np.linalg.norm(x_new - x) / (np.linalg.norm(x) + 1e-12)
-        if x_diff < tol:
+        primal_vec = Az_minus_b - z_new
+        dual_vec = rho * (At @ (z_new - z))
+        primal_residual = float(np.linalg.norm(primal_vec))
+        dual_residual = float(np.linalg.norm(dual_vec))
+        primal_tolerance = float(
+            np.sqrt(n_eqs_A) * tol
+            + tol * max(np.linalg.norm(Az_minus_b), np.linalg.norm(z_new))
+        )
+        dual_tolerance = float(
+            np.sqrt(n_vars) * tol + tol * np.linalg.norm(rho * (At @ u_new))
+        )
+        objective = float(
+            0.5 * np.linalg.norm(B @ x_new) ** 2
+            + lambda_param * np.linalg.norm(A @ x_new - b, ord=1)
+        )
+        if not np.isfinite(
+            [primal_residual, dual_residual, primal_tolerance, dual_tolerance, objective, x_diff]
+        ).all():
+            finite_state = False
+            failure_reason = "NONFINITE_DIAGNOSTICS"
+            n_iters = it + 1
+            break
+
+        primal_history.append(primal_residual)
+        dual_history.append(dual_residual)
+        objective_history.append(objective)
+        x_change_history.append(float(x_diff))
+        n_iters = it + 1
+
+        # ADMM convergence requires both standard primal and dual residuals;
+        # x-relative-change alone is not a valid stopping rule.
+        if (
+            primal_residual <= primal_tolerance
+            and dual_residual <= dual_tolerance
+            and not cg_failed
+        ):
             if verbose:
-                print(f"ADMM 收敛于迭代 {it + 1}, rel_diff={x_diff:.2e}")
+                print(
+                    f"ADMM 收敛于迭代 {it + 1}, "
+                    f"r={primal_residual:.2e}, s={dual_residual:.2e}"
+                )
             x = x_new
             z = z_new
             u = u_new
             converged = True
-            n_iters = it + 1
             break
 
         x = x_new
@@ -403,8 +480,39 @@ def _admm_solver(
     else:
         if verbose:
             print(f"ADMM 达到最大迭代 {max_iter}")
-        n_iters = max_iter
 
+    if n_iters > 0 and x_change_history:
+        x_relative_change = x_change_history[-1]
+    elif max_iter == 0:
+        x_relative_change = 0.0
+
+    diagnostics = {
+        "iterations": int(n_iters),
+        "primal_residual": float(primal_residual),
+        "dual_residual": float(dual_residual),
+        "primal_tolerance": float(primal_tolerance),
+        "dual_tolerance": float(dual_tolerance),
+        "objective": float(objective_history[-1]) if objective_history else float(
+            0.5 * np.linalg.norm(B @ x) ** 2
+            + lambda_param * np.linalg.norm(A @ x - b, ord=1)
+        ),
+        "x_relative_change": float(x_relative_change),
+        "primal_residual_history": primal_history,
+        "dual_residual_history": dual_history,
+        "objective_history": objective_history,
+        "x_relative_change_history": x_change_history,
+        "cg_status_history": cg_status_history,
+        "cg_failed": bool(cg_failed),
+        "finite_state": bool(finite_state and np.isfinite(x).all()),
+        "failure_reason": failure_reason,
+        "converged": bool(converged),
+        "science_pass": bool(
+            converged and not cg_failed and finite_state and np.isfinite(x).all()
+        ),
+    }
+
+    if return_diagnostics:
+        return x, converged, n_iters, diagnostics
     return x, converged, n_iters
 
 
@@ -718,40 +826,14 @@ def volrn_normalize(
     n_bands = arrays[0].shape[0]
     bands = list(range(n_bands))
 
-    # ---- Step 0: 同波段共同缩放归一化 ----
-    # 关键修复：所有影像的同一波段使用相同的 vmin 和 scale，
-    # 不能逐影像各自计算，否则会破坏 BAGRN 已建立的共同辐射尺度。
-    common_ranges = []  # 每个波段的 (vmin, scale)
-    for b_idx in range(n_bands):
-        all_valid_vals = []
-        for img_idx, arr in enumerate(arrays):
-            nd = nodata_values[img_idx]
-            patch = arr[b_idx]
-            if nd is not None:
-                valid = (patch != nd) & np.isfinite(patch)
-            else:
-                valid = np.isfinite(patch)
-            if cloud_masks is not None:
-                valid &= ~np.asarray(cloud_masks[img_idx], dtype=bool)
-            if valid.any():
-                all_valid_vals.append(patch[valid])
-        if all_valid_vals:
-            all_vals = np.concatenate(all_valid_vals)
-            vmin = float(np.percentile(all_vals, 1))
-            vmax = float(np.percentile(all_vals, 99))
-            scale = vmax - vmin
-            if scale < 1e-10:
-                scale = 1.0
-        else:
-            vmin, scale = 0.0, 1.0
-        common_ranges.append((vmin, scale))
+    # ---- Step 0: 保持论文目标函数的原始辐射单位 ----
+    # 目标函数是 0.5||Bx||_2^2 + lambda||Ax-b||_1。此前的 1%--99%
+    # 公共缩放会分别改变二次项和 L1 项的相对权重；在没有同步推导
+    # lambda/rho 变换时不能宣称与该目标函数等价，因此严格 baseline
+    # 不做全局百分位缩放。保留单位范围结构仅用于兼容后面的输出代码。
+    common_ranges = [(0.0, 1.0) for _ in range(n_bands)]
 
-    if verbose:
-        for b_idx in range(n_bands):
-            vmin, scale = common_ranges[b_idx]
-            print(f"  波段 {b_idx}: 公共范围 [{vmin:.1f}, {vmin+scale:.1f}], scale={scale:.1f}")
-
-    # 归一化所有影像，同时保护 NoData
+    # 转为 float64 求解，同时保护 NoData；有效 DN 值保持原始数值。
     norm_arrays = []
     nodata_masks = []  # 保存每幅影像每个波段的有效掩膜
     for img_idx, arr in enumerate(arrays):
@@ -766,8 +848,8 @@ def volrn_normalize(
             else:
                 valid = np.isfinite(patch)
             img_masks[b_idx] = valid
-            # 有效像素归一化，无效像素设为 0（后续不参与计算）
-            arr_norm[b_idx, valid] = (patch[valid] - vmin) / scale
+            # 有效像素保持原始辐射单位，无效像素设为 NaN（不参与统计）
+            arr_norm[b_idx, valid] = patch[valid]
             arr_norm[b_idx, ~valid] = np.nan
         norm_arrays.append(arr_norm)
         nodata_masks.append(img_masks)
@@ -802,22 +884,30 @@ def volrn_normalize(
     all_x = np.zeros((n_bands, n_coeffs))
     band_converged = np.zeros(n_bands, dtype=bool)
     band_iterations = np.zeros(n_bands, dtype=int)
+    solver_diagnostics = []
 
     for b_idx, band in enumerate(bands):
         B, A, b_vec, mu_scale = _build_volrn_system(blocks, pairs, b_idx)
 
         if verbose:
-            print(f"  波段 {band}: μ_scale={mu_scale:.3f} (归一化后), λ={lambda_param}, ρ={rho}")
+            print(f"  波段 {band}: μ_scale={mu_scale:.3f} (原始单位), λ={lambda_param}, ρ={rho}")
 
-        x, converged, n_iters = _admm_solver(B, A, b_vec, lambda_param, rho, max_iter, tol, verbose)
+        x, converged, n_iters, solver_diag = _admm_solver(
+            B,
+            A,
+            b_vec,
+            lambda_param,
+            rho,
+            max_iter,
+            tol,
+            verbose,
+            return_diagnostics=True,
+        )
         band_converged[b_idx] = converged
         band_iterations[b_idx] = n_iters
-        if not converged:
-            if verbose:
-                print(f"  波段 {band}: ADMM 未收敛，使用单位变换")
-            x = np.zeros(n_coeffs)
-            x[0::2] = 1.0
-            x[1::2] = 0.0
+        # 非收敛时保留最后有限解，供诊断和诚实的 COMPLETED_NONCONVERGED
+        # 状态传播；绝不静默替换为 identity。
+        solver_diagnostics.append(solver_diag)
         all_x[b_idx, :] = x
 
     all_converged = bool(band_converged.all())
@@ -830,7 +920,7 @@ def volrn_normalize(
         block_size_pixels, transforms, bounds_list, bands,
     )
 
-    # ---- Step 6: 反归一化回原始数据范围 ----
+    # ---- Step 6: 输出仍处于原始辐射单位 ----
     for img_idx in range(len(results)):
         for b_idx in range(n_bands):
             vmin, scale = common_ranges[b_idx]
@@ -892,6 +982,7 @@ def volrn_normalize(
             'all_converged': all_converged,
             'band_converged': band_converged.tolist(),
             'band_iterations': band_iterations.tolist(),
+            'band_solver_diagnostics': solver_diagnostics,
             'block_details': diag_blocks,
         }
         return results, block_coeffs, diagnostics
