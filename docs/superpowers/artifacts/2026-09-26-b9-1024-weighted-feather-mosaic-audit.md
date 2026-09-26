@@ -80,3 +80,14 @@ The difference maps are explicitly diagnostic only: they remain sensitive to rad
 ## Task 9 — MST versus Translation-L2 deltas
 
 `mosaic_audit_1024/04_mst_translation_mosaic_delta.csv` contains 4 matcher summary rows and 40 aligned edge rows. Every delta uses `Translation-L2 minus MST`; therefore positive correlation deltas mean higher Translation-L2 correlation, while negative auxiliary MAE deltas mean lower Translation-L2 intensity mismatch. The table keeps overlap correlation, gradient correlation, seam gradient correlation, auxiliary MAE, common-valid counts, and mosaic absolute-difference statistics as separate fields; no scalar winner is produced. Mosaic absolute differences are explicitly radiometry/warp-interpolation sensitive.
+
+## Task 10 — cross-reference with Task 8C geometry
+
+The cross-reference is descriptive, not causal:
+
+- Across the 80 joined edge/mosaic rows, geometric edge P95 versus overlap gradient-magnitude NCC had Pearson correlation `0.0135`, i.e. no clear linear relationship in this fixed dataset. Larger geometric P95 therefore does not by itself predict weaker gradient alignment here.
+- The Task8C Translation-L2 residual changes are small and redistributed by edge. The Task9 mosaic differences are measurable but remain radiometry/warp-interpolation sensitive; they are not independent geometric ground truth. The residual-P95 delta versus gradient-NCC delta correlation was `-0.296`, which is not sufficient for a causal claim.
+- LightGlue+DISK pair `1-3` remains the explicit high-tail geometry edge: P95 `2.2422 px` (MST) and `2.1622 px` (Translation-L2), with maximum `2.2422/2.3222 px`. It is retained in the checkerboard selection metadata, but “dominant visible tail” is not asserted without a human visual interpretation.
+- EfficientLoFTR has the broadest mean geometry-audit coverage among the four methods (`0.9219`) and the lowest mean geometric P95 (`0.6045 px`) in the joined Task8C table. Its mean overlap gradient-magnitude NCC (`0.8257`) is close to the other methods, so broad coverage is compatible with stable overlap structure but does not prove causation or superiority.
+
+No BAGRN/VOLRN or radiometric normalization was run, and the report does not infer radiometric causes from the auxiliary intensity fields.
