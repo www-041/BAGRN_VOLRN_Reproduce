@@ -34,3 +34,7 @@ All eight runs use the immutable grid in `mosaic_runs_1024/protocol/canonical_ou
 - transform: `[14.0, 0.0, 641676.0, 0.0, -14.0, 3342710.0]`
 
 The transformed corner union is `[641687.7387459544, 3256841.409535937, 713300.0, 3342701.619884489]`; relative to the raw source union, the largest transform-induced edge movement is about 6.6 m and the deterministic 14 m snapping margin stays within the expected one-pixel safety margin. No raster resampling was used to construct this grid, and all eight transform sets resolve to the same grid identity.
+
+## Task 3 — deterministic single-run runner
+
+`scripts/run_b9_weighted_mosaic.py` accepts one frozen source config, one persisted Global-run directory, the canonical grid, and an output directory. It loads only source rasters and persisted transforms; it performs no matching, RANSAC, Global optimization, radiometric normalization, or transform inference. The official `mosaic.tif` is produced by the existing `src.mosaic.create_mosaic(mode="weighted")` implementation. The companion `valid_mask.tif`, `contributor_count.tif`, and `weight_sum.tif` use the same bilinear projection and distance-transform weight definition for auditability. `preview.png` is display-only percentile stretch, with its limits recorded in `run_summary.json`. A non-empty output directory is rejected to prevent accidental overwrite.
