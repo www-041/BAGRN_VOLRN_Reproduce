@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 def build_accepted_graph(
     pairwise_results: list[PairwiseRegistration],
     matcher_name: str = "matcher",
+    n_scenes: int | None = None,
 ) -> tuple[dict[int, set[int]], list[PairwiseRegistration]]:
     """Build adjacency dict of pairs with ``status == "OK"``.
 
@@ -32,12 +33,23 @@ def build_accepted_graph(
         RuntimeError: If the accepted graph is disconnected.
     """
     accepted = [r for r in pairwise_results if r.status == "OK"]
-    n = max(
-        max(r.idx_i, r.idx_j) for r in pairwise_results
-    ) + 1 if pairwise_results else 0
+    inferred_n = (
+        max(max(r.idx_i, r.idx_j) for r in pairwise_results) + 1
+        if pairwise_results
+        else 0
+    )
+    n = inferred_n if n_scenes is None else int(n_scenes)
+    if n < inferred_n or n < 0:
+        raise ValueError(
+            f"n_scenes={n} cannot represent pairwise scene indices up to {inferred_n - 1}"
+        )
 
     adj: dict[int, set[int]] = {i: set() for i in range(n)}
     for r in accepted:
+        if not (0 <= r.idx_i < n and 0 <= r.idx_j < n):
+            raise ValueError(
+                f"pair ({r.idx_i}, {r.idx_j}) is outside n_scenes={n}"
+            )
         adj[r.idx_i].add(r.idx_j)
         adj[r.idx_j].add(r.idx_i)
 
@@ -53,9 +65,12 @@ def build_accepted_graph(
 
 def build_accepted_sift_graph(
     pairwise_results: list[PairwiseRegistration],
+    n_scenes: int | None = None,
 ) -> tuple[dict[int, set[int]], list[PairwiseRegistration]]:
     """Backward-compatible alias for legacy SIFT callers."""
-    return build_accepted_graph(pairwise_results, matcher_name="SIFT")
+    return build_accepted_graph(
+        pairwise_results, matcher_name="SIFT", n_scenes=n_scenes
+    )
 
 
 def _is_connected(n: int, adj: dict[int, set[int]]) -> bool:
@@ -245,6 +260,8 @@ def compose_global_transforms(
         List of 3×3 numpy arrays, ``G[i]`` for each scene.
     """
     n = len(scenes)
+    if not (0 <= ref_idx < n):
+        raise ValueError(f"reference scene index {ref_idx} is outside 0..{n - 1}")
     G: list[np.ndarray | None] = [None] * n
     G[ref_idx] = np.eye(3, dtype=np.float64)
 
@@ -277,16 +294,18 @@ def compose_global_transforms(
             )
             A = np.linalg.inv(A_inv)
         else:
-            logger.warning("No pair registration found for edge %d→%d", p, c)
-            A = np.eye(3)
+            raise RuntimeError(
+                f"No pair registration found for edge {p}→{c}"
+            )
 
+        if G[p] is None:
+            raise RuntimeError(f"Parent scene {p} has no global transform")
         G[c] = G[p] @ A
 
     # Ensure all scenes have transforms
     for i in range(n):
         if G[i] is None:
-            logger.warning("Scene %d has no global transform, using identity", i)
-            G[i] = np.eye(3)
+            raise RuntimeError(f"Scene {i} has no global transform")
 
     return G
 

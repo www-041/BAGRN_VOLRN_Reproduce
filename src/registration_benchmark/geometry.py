@@ -157,6 +157,28 @@ class _MemorySafeAffineRansacModel:
         return np.sqrt(np.sum((predicted - dst) ** 2, axis=1))
 
 
+def _invalid_geometry_result(n_raw: int, residual_threshold: float) -> GeometryResult:
+    """Return a structured failure for unusable affine point geometry."""
+    return GeometryResult(
+        model=None,
+        status=STATUS_INVALID_GEOMETRY,
+        inlier_mask=np.zeros(n_raw, dtype=bool),
+        n_raw=n_raw,
+        n_inlier=0,
+        inlier_ratio=0.0,
+        residual_median=float("nan"),
+        residual_rmse=float("nan"),
+        residual_p90=float("nan"),
+        residual_p95=float("nan"),
+        residual_max=float("nan"),
+        affine_scale_x=float("nan"),
+        affine_scale_y=float("nan"),
+        affine_rotation_deg=float("nan"),
+        affine_shear_deg=float("nan"),
+        residual_threshold=residual_threshold,
+    )
+
+
 def fit_affine_ransac(
     matches: MatchSet,
     residual_threshold: float = RANSAC_RESIDUAL_THRESHOLD,
@@ -184,6 +206,17 @@ def fit_affine_ransac(
 
     n_raw = len(src)
 
+    if (
+        src.ndim != 2
+        or dst.ndim != 2
+        or src.shape != dst.shape
+        or src.shape[1:] != (2,)
+        or not np.isfinite(src).all()
+        or not np.isfinite(dst).all()
+    ):
+        logger.warning("Geometry: invalid affine point arrays")
+        return _invalid_geometry_result(n_raw, residual_threshold)
+
     # Edge case: too few points for RANSAC (need ≥ 3 for affine)
     if n_raw < 3:
         logger.warning("Geometry: only %d raw matches (need ≥ 3)", n_raw)
@@ -207,18 +240,26 @@ def fit_affine_ransac(
         )
 
     # --- RANSAC ------------------------------------------------------------------
-    model, inliers = ransac(
-        (src, dst),
-        _MemorySafeAffineRansacModel,
-        min_samples=3,
-        residual_threshold=residual_threshold,
-        max_trials=max_trials,
-        **(
-            {"rng": random_seed}
-            if "rng" in inspect.signature(ransac).parameters
-            else {"random_state": random_seed}
-        ),
-    )
+    try:
+        model, inliers = ransac(
+            (src, dst),
+            _MemorySafeAffineRansacModel,
+            min_samples=3,
+            residual_threshold=residual_threshold,
+            max_trials=max_trials,
+            **(
+                {"rng": random_seed}
+                if "rng" in inspect.signature(ransac).parameters
+                else {"random_state": random_seed}
+            ),
+        )
+    except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
+        logger.warning("Geometry: affine RANSAC failed: %s", exc)
+        return _invalid_geometry_result(n_raw, residual_threshold)
+
+    if model is None or inliers is None:
+        logger.warning("Geometry: affine RANSAC produced no valid model")
+        return _invalid_geometry_result(n_raw, residual_threshold)
 
     inlier_mask = inliers.astype(bool)
     n_inlier = int(inlier_mask.sum())

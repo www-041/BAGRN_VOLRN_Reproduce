@@ -200,7 +200,7 @@ def run_five_scene_mosaic(
     logger.info("=== Step 4: Accepted %s Graph ===", matcher_tag)
     try:
         adj, accepted = build_accepted_graph(
-            pairwise_results, matcher_name=matcher_tag
+            pairwise_results, matcher_name=matcher_tag, n_scenes=len(scenes)
         )
     except RuntimeError as exc:
         logger.error("STOP: %s", exc)

@@ -309,7 +309,7 @@ def _write_accepted_graph(
         error = forced_status
     else:
         try:
-            build_accepted_graph(results, matcher_name=matcher)
+            build_accepted_graph(results, matcher_name=matcher, n_scenes=n_scenes)
             status = "CONNECTED" if len(components) <= 1 else "NETWORK_DISCONNECTED"
             error = None
         except RuntimeError as exc:

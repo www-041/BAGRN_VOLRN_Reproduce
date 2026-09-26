@@ -175,7 +175,9 @@ def _evaluate_network(
     registration_band: str,
 ) -> dict:
     try:
-        adj, accepted = build_accepted_graph(pairwise_results, matcher_name=matcher)
+        adj, accepted = build_accepted_graph(
+            pairwise_results, matcher_name=matcher, n_scenes=len(scenes)
+        )
     except RuntimeError as exc:
         accepted_count = sum(1 for result in pairwise_results if result.status == "OK")
         summary = collect_registration_summary(

@@ -94,7 +94,9 @@ def run_global_connections(
     out.mkdir(parents=True, exist_ok=True)
     results = list(context["results"])
     scenes = context["scenes"]
-    adj, accepted = build_accepted_graph(results, matcher_name=matcher)
+    adj, accepted = build_accepted_graph(
+        results, matcher_name=matcher, n_scenes=len(scenes)
+    )
     ref_info = select_reference_scene(adj, accepted)
     ref_idx = int(ref_info["reference_index"])
     ref_info["reference_name"] = scenes[ref_idx].name

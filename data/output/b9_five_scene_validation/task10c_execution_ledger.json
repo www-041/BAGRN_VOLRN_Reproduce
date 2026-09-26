@@ -74,9 +74,10 @@
       "commands": [
         ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_matcher_sessions.py tests/registration_benchmark/test_shared_valid_mask_contract.py -q",
         ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_pairwise.py tests/multiscene_sift/test_b9_runner.py tests/registration_benchmark/test_runner.py tests/registration_benchmark/test_sift_matcher.py tests/registration_benchmark/test_efficient_loftr_adapter.py tests/registration_benchmark/test_lightglue_disk_adapter.py -q",
-        ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_matcher_sessions.py tests/multiscene_sift/test_pairwise.py tests/multiscene_sift/test_b9_runner.py tests/registration_benchmark/test_runner.py tests/registration_benchmark/test_sift_matcher.py tests/registration_benchmark/test_efficient_loftr_adapter.py tests/registration_benchmark/test_lightglue_disk_adapter.py tests/registration_benchmark/test_shared_valid_mask_contract.py -q"
+        ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_matcher_sessions.py tests/multiscene_sift/test_pairwise.py tests/multiscene_sift/test_b9_runner.py tests/registration_benchmark/test_runner.py tests/registration_benchmark/test_sift_matcher.py tests/registration_benchmark/test_efficient_loftr_adapter.py tests/registration_benchmark/test_lightglue_disk_adapter.py tests/registration_benchmark/test_shared_valid_mask_contract.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest -q"
       ],
-      "exit_codes": [0, 0, 0],
+      "exit_codes": [0, 0, 0, 0],
       "artifacts": [
         "tests/multiscene_sift/test_matcher_sessions.py",
         "src/registration_benchmark/matchers/loftr.py",
@@ -91,7 +92,34 @@
       "scientific_status": "MATCHER_SESSION_TIMING_PASS",
       "exceptions": [
         "Initial focused collection used the system Python and lacked rasterio; reran with the repository .venv-registration interpreter.",
-        "Pytest emitted existing deprecation/cache warnings; focused exit codes were 0."
+        "Full pytest: 774 passed, 4 skipped, 9205 warnings in 112.60s.",
+        "Pytest emitted existing deprecation/cache warnings; exit codes were 0."
+      ]
+    },
+    "3": {
+      "status": "complete",
+      "started_at": "2026-09-26",
+      "ended_at": "2026-09-26",
+      "git_head": "d9f229a",
+      "commands": [
+        ".venv-registration/Scripts/python.exe -m pytest tests/registration_benchmark/test_geometry_hard_fail.py tests/multiscene_sift/test_global_hard_fail.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/registration_benchmark/test_geometry_hard_fail.py tests/multiscene_sift/test_global_hard_fail.py tests/registration_benchmark/test_geometry.py tests/multiscene_sift/test_global_registration.py tests/multiscene_sift/test_global_execution.py tests/multiscene_sift/test_global_ready.py tests/multiscene_sift/test_b9_runner.py -q"
+      ],
+      "exit_codes": [1, 0],
+      "artifacts": [
+        "tests/registration_benchmark/test_geometry_hard_fail.py",
+        "tests/multiscene_sift/test_global_hard_fail.py",
+        "src/registration_benchmark/geometry.py",
+        "src/multiscene_sift/global_registration.py",
+        "src/multiscene_sift/global_execution.py",
+        "src/multiscene_sift/runner.py",
+        "src/multiscene_sift/modern_matcher_benchmark.py",
+        "src/multiscene_sift/b9_runner.py"
+      ],
+      "scientific_status": "GLOBAL_GEOMETRY_HARD_FAIL_PASS",
+      "exceptions": [
+        "The first focused run intentionally failed before implementation as required by TDD.",
+        "Pytest emitted existing scikit-image/rasterio deprecation warnings; focused exit code after repair was 0."
       ]
     }
   },
