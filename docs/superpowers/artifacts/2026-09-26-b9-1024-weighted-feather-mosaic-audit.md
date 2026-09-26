@@ -108,7 +108,7 @@ This stage supports comparison of final warp/mosaic structural behavior under fi
 - `git diff --check`: passed.
 - Full repository pytest: `746 passed, 13 failed, 2 skipped, 4565 warnings`.
 
-The 12 known baseline failures remain the radiometric/cloud-mask failures previously recorded: three synthetic full-pipeline tests lack `*_MTL.txt` fixtures, and nine radiometric-adapter tests use the older `normalize_registered_band(..., reference_idx=...)` interface. The additional `gen_report_figures` import failure is environmental: module import writes to the protected repository-external `data/report_figures/code_distribution.png` and receives WinError 13. None of these failures touches the Task 9 mosaic path, and no full-suite-green claim is made.
+The known baseline failures remain in the existing radiometric/cloud-mask and missing-input paths: synthetic tests lack `*_MTL.txt` fixtures, some radiometric-adapter tests use the older `normalize_registered_band(..., reference_idx=...)` interface, and one configured-data test references unavailable sample rasters. The additional `gen_report_figures` import failure is environmental: module import writes to the protected repository-external `data/report_figures/code_distribution.png` and receives WinError 13. None of these failures touches the Task 9 mosaic path, and no full-suite-green claim is made.
 
 The final reliability fixes were also covered by the focused suite: non-empty partial output directories are renamed to `_incomplete_<timestamp>` before retry, and the frozen `source_config_sha256` is checked both for the protocol-referenced file and the actual `--source-config` argument. No matcher, RANSAC, Global, BAGRN, VOLRN, radiometric-normalization, seamline, or push operation was performed.
 
