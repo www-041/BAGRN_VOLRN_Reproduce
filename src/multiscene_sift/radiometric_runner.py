@@ -267,6 +267,10 @@ def run_fixed_geometry_radiometric(
     processing_arrays, processing_transforms, processing_bounds, crop_slices = _crop_registered_footprints(
         registered, valid_masks, transforms[0]
     )
+    processing_valid_masks = [
+        valid[r0:r1, c0:c1]
+        for valid, (r0, r1, c0, c1) in zip(valid_masks, crop_slices)
+    ]
     processing_nodata = [None] * len(processing_arrays)
     if not 0 <= radiometric_control_idx < len(registered):
         raise ValueError("radiometric_control_idx is out of range")
@@ -301,7 +305,7 @@ def run_fixed_geometry_radiometric(
             bagrn_result, processing_transforms, processing_bounds, processing_nodata,
             block_size_pixels=block_size_pixels, lambda_param=lambda_param,
             rho=rho, max_iter=max_iter, tol=tol, verbose=False,
-            return_diagnostics=True,
+            return_diagnostics=True, valid_masks=processing_valid_masks,
         )
         volrn_runtime = time.perf_counter() - start
         final_arrays = volrn_result

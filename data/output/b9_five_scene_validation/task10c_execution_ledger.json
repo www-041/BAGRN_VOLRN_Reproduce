@@ -185,9 +185,10 @@
       "commands": [
         ".venv-registration/Scripts/python.exe -m pytest tests/test_volrn_solver_diagnostics.py -q",
         ".venv-registration/Scripts/python.exe -m pytest tests/test_volrn_solver_diagnostics.py -q",
-        ".venv-registration/Scripts/python.exe -m pytest tests/test_volrn.py tests/test_cloud_aware_volrn.py -q"
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_volrn.py tests/test_cloud_aware_volrn.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest -q"
       ],
-      "exit_codes": [1, 0, 0],
+      "exit_codes": [1, 0, 0, 0],
       "artifacts": [
         "tests/test_volrn_solver_diagnostics.py",
         "src/volrn.py"
@@ -196,7 +197,30 @@
       "exceptions": [
         "The first focused run intentionally failed before implementation as required by TDD.",
         "ADMM now requires primal and dual residual thresholds, propagates CG failures, records finite solver traces, and preserves the last finite iterate on nonconvergence.",
-        "The undocumented 1%-99% common rescaling was removed; the strict solver objective is evaluated in original radiometric units."
+        "The undocumented 1%-99% common rescaling was removed; the strict solver objective is evaluated in original radiometric units.",
+        "Full pytest after Task6: 791 passed, 4 skipped, 9368 warnings in 114.48s."
+      ]
+    },
+    "7": {
+      "status": "complete",
+      "started_at": "2026-09-26",
+      "ended_at": "2026-09-26",
+      "git_head": "fc4c07e",
+      "commands": [
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_volrn_valid_masks.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/test_volrn_valid_masks.py tests/test_volrn.py tests/test_volrn_regressions.py tests/test_cloud_aware_volrn.py tests/multiscene_sift/test_fixed_radiometric_runner.py tests/test_cloud_pipeline_integration.py -q"
+      ],
+      "exit_codes": [1, 0],
+      "artifacts": [
+        "tests/test_volrn_valid_masks.py",
+        "src/volrn.py",
+        "src/multiscene_sift/radiometric_runner.py"
+      ],
+      "scientific_status": "VOLRN_VALID_MASK_PASS",
+      "exceptions": [
+        "The first focused run intentionally failed before implementation as required by TDD.",
+        "Explicit finite valid masks now govern block statistics and output validity; cloud exclusion is copied before mutation and remains estimation-only.",
+        "Focused VOLRN/cloud/radiometric runner suite: 24 passed, 1631 warnings."
       ]
     }
   },

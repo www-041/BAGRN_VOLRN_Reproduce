@@ -146,6 +146,7 @@ def image_blocking(
     block_size: int,
     bands: List[int],
     cloud_masks: Optional[List[np.ndarray]] = None,
+    valid_masks: Optional[List[np.ndarray]] = None,
 ) -> Tuple[List[BlockInfo], List[BlockPairInfo]]:
     """
     对所有影像进行规则网格分块（Section 2.3.1）。
@@ -157,6 +158,16 @@ def image_blocking(
             if np.asarray(cm).shape != arr.shape[1:]:
                 raise ValueError(
                     f"cloud mask {idx} shape {np.asarray(cm).shape} != "
+                    f"array spatial shape {arr.shape[1:]}"
+                )
+
+    if valid_masks is not None:
+        if len(valid_masks) != len(arrays):
+            raise ValueError("valid_masks length must match arrays length")
+        for idx, (arr, vm) in enumerate(zip(arrays, valid_masks)):
+            if np.asarray(vm).shape not in (arr.shape[1:], arr.shape):
+                raise ValueError(
+                    f"valid mask {idx} shape {np.asarray(vm).shape} != "
                     f"array spatial shape {arr.shape[1:]}"
                 )
 
@@ -217,7 +228,15 @@ def image_blocking(
 
                 for b_idx, band in enumerate(bands):
                     patch = arr[band, r_s:r_e, c_s:c_e]
-                    if nd is not None:
+                    if valid_masks is not None:
+                        mask = np.asarray(valid_masks[img_idx], dtype=bool)
+                        if mask.ndim == 3:
+                            mask = mask[band]
+                        # Copy before applying the cloud exclusion so the
+                        # scientific output-valid mask is not mutated.
+                        valid = mask[r_s:r_e, c_s:c_e].copy()
+                        valid &= np.isfinite(patch)
+                    elif nd is not None:
                         valid = (patch != nd) & np.isfinite(patch)
                     else:
                         valid = np.isfinite(patch)
@@ -676,6 +695,7 @@ def _interpolate_and_apply(
     transforms: List,
     bounds_list: List[Tuple[float, float, float, float]],
     bands: List[int],
+    valid_masks: Optional[List[np.ndarray]] = None,
 ) -> List[np.ndarray]:
     """
     逐波段 IDW 插值并应用 f' = a*f + b。
@@ -751,7 +771,12 @@ def _interpolate_and_apply(
 
             # 应用 f' = a*f + b，仅对有效像素
             val = result[band]
-            if nd is not None:
+            if valid_masks is not None:
+                mask = np.asarray(valid_masks[img_idx], dtype=bool)
+                if mask.ndim == 3:
+                    mask = mask[b_idx]
+                valid = mask & np.isfinite(val)
+            elif nd is not None:
                 valid = (val != nd) & np.isfinite(val)
             else:
                 valid = np.isfinite(val)
@@ -781,6 +806,7 @@ def volrn_normalize(
     verbose: bool = False,
     return_diagnostics: bool = False,
     cloud_masks: Optional[List[np.ndarray]] = None,
+    valid_masks: Optional[List[np.ndarray]] = None,
 ) -> Tuple[List[np.ndarray], np.ndarray]:
     """
     VOLRN 局部辐射归一化主函数。
@@ -821,6 +847,16 @@ def volrn_normalize(
                 raise ValueError(
                     f"cloud mask {idx} shape {np.asarray(cm).shape} != "
                     f"array spatial shape {arr.shape[1:]}"
+                    )
+
+    if valid_masks is not None:
+        if len(valid_masks) != len(arrays):
+            raise ValueError("valid_masks length must match arrays length")
+        for idx, (arr, vm) in enumerate(zip(arrays, valid_masks)):
+            if np.asarray(vm).shape != arr.shape[1:]:
+                raise ValueError(
+                    f"valid mask {idx} shape {np.asarray(vm).shape} != "
+                    f"array spatial shape {arr.shape[1:]}"
                 )
 
     n_bands = arrays[0].shape[0]
@@ -836,14 +872,16 @@ def volrn_normalize(
     # 转为 float64 求解，同时保护 NoData；有效 DN 值保持原始数值。
     norm_arrays = []
     nodata_masks = []  # 保存每幅影像每个波段的有效掩膜
+    explicit_valid_masks = []
     for img_idx, arr in enumerate(arrays):
         nd = nodata_values[img_idx]
         arr_norm = np.zeros_like(arr, dtype=np.float64)
         img_masks = np.zeros((n_bands, arr.shape[1], arr.shape[2]), dtype=bool)
         for b_idx in range(n_bands):
-            vmin, scale = common_ranges[b_idx]
             patch = arr[b_idx].astype(np.float64)
-            if nd is not None:
+            if valid_masks is not None:
+                valid = np.asarray(valid_masks[img_idx], dtype=bool) & np.isfinite(patch)
+            elif nd is not None:
                 valid = (patch != nd) & np.isfinite(patch)
             else:
                 valid = np.isfinite(patch)
@@ -853,11 +891,13 @@ def volrn_normalize(
             arr_norm[b_idx, ~valid] = np.nan
         norm_arrays.append(arr_norm)
         nodata_masks.append(img_masks)
+        explicit_valid_masks.append(img_masks)
 
     # ---- Step 1: 图像分块 ----
     blocks, pairs = image_blocking(
-        norm_arrays, transforms, bounds_list, nodata_values,
+        norm_arrays, transforms, bounds_list, [None] * len(norm_arrays),
         block_size_pixels, bands, cloud_masks=cloud_masks,
+        valid_masks=explicit_valid_masks,
     )
 
     if len(blocks) == 0 or len(pairs) == 0:
@@ -918,6 +958,7 @@ def volrn_normalize(
     results = _interpolate_and_apply(
         norm_arrays, nodata_values, blocks, all_x,
         block_size_pixels, transforms, bounds_list, bands,
+        valid_masks=explicit_valid_masks,
     )
 
     # ---- Step 6: 输出仍处于原始辐射单位 ----
