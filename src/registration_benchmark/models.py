@@ -289,11 +289,15 @@ def make_matchset_from_view(
             "feature_runtime_sec": 0.0,
             "matcher_runtime_sec": float(runtime_sec),
         }
-    meta["runtime_breakdown"] = {
+    breakdown = {
         "feature_runtime_sec": float(runtime_breakdown.get("feature_runtime_sec", 0.0)),
         "matcher_runtime_sec": float(runtime_breakdown.get("matcher_runtime_sec", 0.0)),
         "total_runtime_sec": float(runtime_sec),
     }
+    for key in ("model_init_runtime_sec", "pair_inference_runtime_sec"):
+        if key in runtime_breakdown:
+            breakdown[key] = float(runtime_breakdown[key])
+    meta["runtime_breakdown"] = breakdown
     return MatchSet(
         method=method,
         ref_xy=view.to_common_grid(ref_xy_view),

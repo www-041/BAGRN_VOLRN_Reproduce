@@ -41,6 +41,9 @@ def match_loftr(
     device: str = "auto",
     confidence_threshold: float = 0.2,
     max_matches: int = 5000,
+    *,
+    _matcher=None,
+    _model_init_runtime_sec: float = 0.0,
 ) -> MatchSet:
     """Run LoFTR (outdoor) on a :class:`MatchView`.
 
@@ -68,7 +71,13 @@ def match_loftr(
     _device = _resolve_device(device)
 
     # --- Model ---------------------------------------------------------------
-    matcher = KF.LoFTR(pretrained="outdoor").eval().to(_device)
+    model_init_runtime_sec = float(_model_init_runtime_sec)
+    if _matcher is None:
+        model_t0 = time.perf_counter()
+        _matcher = KF.LoFTR(pretrained="outdoor").eval().to(_device)
+        model_init_runtime_sec = time.perf_counter() - model_t0
+
+    pair_inference_t0 = time.perf_counter()
 
     # --- Prepare input tensors (1×1×H×W, float32) ---------------------------
     ref_t = torch.from_numpy(view.ref).float().unsqueeze(0).unsqueeze(0).to(_device)
@@ -77,7 +86,7 @@ def match_loftr(
     # --- Inference -----------------------------------------------------------
     with torch.inference_mode():
         # Kornia LoFTR input format: {"image0": ..., "image1": ...}
-        output = matcher({"image0": ref_t, "image1": tgt_t})
+        output = _matcher({"image0": ref_t, "image1": tgt_t})
 
     # --- Parse output ---------------------------------------------------------
     # kornia LoFTR returns:
@@ -104,6 +113,7 @@ def match_loftr(
     kpts0, kpts1, conf, valid_keep = filter_matches_by_valid_mask(
         kpts0, kpts1, conf, view
     )
+    pair_inference_runtime_sec = time.perf_counter() - pair_inference_t0
 
     elapsed = time.perf_counter() - t0
 
@@ -115,6 +125,12 @@ def match_loftr(
             tgt_xy_view=np.empty((0, 2)),
             confidence=np.empty(0),
             runtime_sec=elapsed,
+            runtime_breakdown={
+                "feature_runtime_sec": 0.0,
+                "matcher_runtime_sec": pair_inference_runtime_sec,
+                "model_init_runtime_sec": model_init_runtime_sec,
+                "pair_inference_runtime_sec": pair_inference_runtime_sec,
+            },
             metadata={
                 "confidence_threshold": confidence_threshold,
                 "max_matches": max_matches,
@@ -131,6 +147,12 @@ def match_loftr(
         tgt_xy_view=kpts1,
         confidence=conf,
         runtime_sec=elapsed,
+        runtime_breakdown={
+            "feature_runtime_sec": 0.0,
+            "matcher_runtime_sec": pair_inference_runtime_sec,
+            "model_init_runtime_sec": model_init_runtime_sec,
+            "pair_inference_runtime_sec": pair_inference_runtime_sec,
+        },
         metadata={
             "confidence_threshold": confidence_threshold,
             "max_matches": max_matches,
@@ -144,6 +166,45 @@ def match_loftr(
 def is_loftr_available() -> bool:
     """Return ``True`` if kornia LoFTR is importable."""
     return _LOFTR_AVAILABLE
+
+
+class LoFTRMatcherSession:
+    """Reuse one LoFTR model across all pairs in a matcher run."""
+
+    def __init__(self, device: str = "auto") -> None:
+        if not _LOFTR_AVAILABLE:
+            raise RuntimeError(
+                f"LoFTR (kornia) is not available. Import error: {_LOFTR_IMPORT_ERROR}"
+            )
+        self.device = _resolve_device(device)
+        t0 = time.perf_counter()
+        self.matcher = KF.LoFTR(pretrained="outdoor").eval().to(self.device)
+        self.model_init_runtime_sec = time.perf_counter() - t0
+        self._pending_model_init_runtime_sec = self.model_init_runtime_sec
+        self._closed = False
+
+    def match(self, view: MatchView) -> MatchSet:
+        if self._closed:
+            raise RuntimeError("LoFTR matcher session is closed")
+        init_runtime = self._pending_model_init_runtime_sec
+        self._pending_model_init_runtime_sec = 0.0
+        return match_loftr(
+            view,
+            device=self.device,
+            _matcher=self.matcher,
+            _model_init_runtime_sec=init_runtime,
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.matcher = None
+        try:
+            if self.device.startswith("cuda") and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except (NameError, RuntimeError):
+            pass
 
 
 # ---------------------------------------------------------------------------

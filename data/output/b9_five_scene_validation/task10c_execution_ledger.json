@@ -65,6 +65,34 @@
       ],
       "scientific_status": "VALID_MASK_CONTRACT_PASS",
       "exceptions": []
+    },
+    "2": {
+      "status": "complete",
+      "started_at": "2026-09-26",
+      "ended_at": "2026-09-26",
+      "git_head": "dd8f5d8",
+      "commands": [
+        ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_matcher_sessions.py tests/registration_benchmark/test_shared_valid_mask_contract.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_pairwise.py tests/multiscene_sift/test_b9_runner.py tests/registration_benchmark/test_runner.py tests/registration_benchmark/test_sift_matcher.py tests/registration_benchmark/test_efficient_loftr_adapter.py tests/registration_benchmark/test_lightglue_disk_adapter.py -q",
+        ".venv-registration/Scripts/python.exe -m pytest tests/multiscene_sift/test_matcher_sessions.py tests/multiscene_sift/test_pairwise.py tests/multiscene_sift/test_b9_runner.py tests/registration_benchmark/test_runner.py tests/registration_benchmark/test_sift_matcher.py tests/registration_benchmark/test_efficient_loftr_adapter.py tests/registration_benchmark/test_lightglue_disk_adapter.py tests/registration_benchmark/test_shared_valid_mask_contract.py -q"
+      ],
+      "exit_codes": [0, 0, 0],
+      "artifacts": [
+        "tests/multiscene_sift/test_matcher_sessions.py",
+        "src/registration_benchmark/matchers/loftr.py",
+        "src/registration_benchmark/matchers/efficient_loftr.py",
+        "src/registration_benchmark/matchers/lightglue_disk.py",
+        "src/registration_benchmark/matchers/sift.py",
+        "src/registration_benchmark/models.py",
+        "src/multiscene_sift/models.py",
+        "src/multiscene_sift/pairwise.py",
+        "src/multiscene_sift/b9_runner.py"
+      ],
+      "scientific_status": "MATCHER_SESSION_TIMING_PASS",
+      "exceptions": [
+        "Initial focused collection used the system Python and lacked rasterio; reran with the repository .venv-registration interpreter.",
+        "Pytest emitted existing deprecation/cache warnings; focused exit codes were 0."
+      ]
     }
   },
   "real_experiments": [],

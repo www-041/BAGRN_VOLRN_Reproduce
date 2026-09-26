@@ -60,6 +60,8 @@ class PairwiseRegistration:
     matcher_runtime_sec: float = 0.0
     geometry_runtime_sec: float = 0.0
     peak_gpu_memory_mb: float | None = None
+    model_init_runtime_sec: float = 0.0
+    pair_inference_runtime_sec: float = 0.0
 
 
 @dataclass

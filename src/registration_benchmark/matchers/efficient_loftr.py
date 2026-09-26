@@ -60,6 +60,9 @@ def match_efficient_loftr(
     weights_path: str | os.PathLike[str] | None = None,
     model_type: str = "full",
     precision: str = "fp32",
+    *,
+    _model=None,
+    _model_init_runtime_sec: float = 0.0,
 ):
     """Run official EfficientLoFTR and return common-grid correspondences.
 
@@ -74,15 +77,21 @@ def match_efficient_loftr(
 
     t0 = time.perf_counter()
     resolved_device = _resolve_device(device)
-    model = _load_model(
-        device=resolved_device,
-        repo_dir=repo_dir,
-        weights_path=weights_path,
-        model_type=model_type,
-        precision=precision,
-    )
+    model_init_runtime_sec = float(_model_init_runtime_sec)
+    if _model is None:
+        model_t0 = time.perf_counter()
+        _model = _load_model(
+            device=resolved_device,
+            repo_dir=repo_dir,
+            weights_path=weights_path,
+            model_type=model_type,
+            precision=precision,
+        )
+        model_init_runtime_sec = time.perf_counter() - model_t0
 
     import torch
+
+    pair_inference_t0 = time.perf_counter()
 
     ref_model, ref_transform = _prepare_model_input(view.ref)
     tgt_model, tgt_transform = _prepare_model_input(view.tgt)
@@ -96,9 +105,9 @@ def match_efficient_loftr(
     with torch.no_grad():
         if precision == "mp" and resolved_device.startswith("cuda"):
             with torch.autocast(device_type="cuda"):
-                returned = model(batch)
+                returned = _model(batch)
         else:
-            returned = model(batch)
+            returned = _model(batch)
 
     output = returned if isinstance(returned, dict) else batch
     try:
@@ -137,6 +146,7 @@ def match_efficient_loftr(
     ref_view, tgt_view, confidence, valid_keep = filter_matches_by_valid_mask(
         ref_view, tgt_view, confidence, view
     )
+    pair_inference_runtime_sec = time.perf_counter() - pair_inference_t0
 
     elapsed = time.perf_counter() - t0
     metadata = {
@@ -167,9 +177,69 @@ def match_efficient_loftr(
         metadata=metadata,
         runtime_breakdown={
             "feature_runtime_sec": 0.0,
-            "matcher_runtime_sec": elapsed,
+            "matcher_runtime_sec": pair_inference_runtime_sec,
+            "model_init_runtime_sec": model_init_runtime_sec,
+            "pair_inference_runtime_sec": pair_inference_runtime_sec,
         },
     )
+
+
+class EfficientLoFTRMatcherSession:
+    """Reuse one official EfficientLoFTR model across all pairs."""
+
+    def __init__(
+        self,
+        device: str = "auto",
+        repo_dir: str | os.PathLike[str] | None = None,
+        weights_path: str | os.PathLike[str] | None = None,
+        model_type: str = "full",
+        precision: str = "fp32",
+    ) -> None:
+        self.device = _resolve_device(device)
+        t0 = time.perf_counter()
+        self.model = _load_model(
+            device=self.device,
+            repo_dir=repo_dir,
+            weights_path=weights_path,
+            model_type=model_type,
+            precision=precision,
+        )
+        self.model_init_runtime_sec = time.perf_counter() - t0
+        self._pending_model_init_runtime_sec = self.model_init_runtime_sec
+        self._repo_dir = repo_dir
+        self._weights_path = weights_path
+        self._model_type = model_type
+        self._precision = precision
+        self._closed = False
+
+    def match(self, view: MatchView) -> MatchSet:
+        if self._closed:
+            raise RuntimeError("EfficientLoFTR matcher session is closed")
+        init_runtime = self._pending_model_init_runtime_sec
+        self._pending_model_init_runtime_sec = 0.0
+        return match_efficient_loftr(
+            view,
+            device=self.device,
+            repo_dir=self._repo_dir,
+            weights_path=self._weights_path,
+            model_type=self._model_type,
+            precision=self._precision,
+            _model=self.model,
+            _model_init_runtime_sec=init_runtime,
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.model = None
+        try:
+            if self.device.startswith("cuda"):
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        except (ImportError, RuntimeError):
+            pass
 
 
 def _model_to_view_coordinates(

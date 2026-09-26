@@ -18,9 +18,15 @@ from src.registration_benchmark.common_grid import (
     load_pair_to_common_grid,
     build_match_view,
 )
-from src.registration_benchmark.matchers.sift import match_sift
-from src.registration_benchmark.matchers.efficient_loftr import match_efficient_loftr
-from src.registration_benchmark.matchers.lightglue_disk import match_lightglue_disk
+from src.registration_benchmark.matchers.sift import SIFTMatcherSession, match_sift
+from src.registration_benchmark.matchers.efficient_loftr import (
+    EfficientLoFTRMatcherSession,
+    match_efficient_loftr,
+)
+from src.registration_benchmark.matchers.lightglue_disk import (
+    LightGlueDiskMatcherSession,
+    match_lightglue_disk,
+)
 from src.registration_benchmark.geometry import fit_affine_ransac, STATUS_OK
 from src.registration_benchmark.metrics import spatial_coverage_ratio
 
@@ -47,9 +53,24 @@ def _normalize_matcher_name(matcher: str) -> str:
     return name
 
 
-def _run_matcher(view, matcher: str, device: str = "auto"):
+def _create_matcher_session(matcher: str, device: str = "auto"):
+    """Construct one reusable matcher session for a multi-pair run."""
+    matcher = _normalize_matcher_name(matcher)
+    if matcher == "sift":
+        return SIFTMatcherSession()
+    if matcher == "efficient_loftr":
+        return EfficientLoFTRMatcherSession(device=device)
+    if matcher == "lightglue_disk":
+        return LightGlueDiskMatcherSession(device=device)
+    from src.registration_benchmark.matchers.loftr import LoFTRMatcherSession
+    return LoFTRMatcherSession(device=device)
+
+
+def _run_matcher(view, matcher: str, device: str = "auto", matcher_session=None):
     """Run exactly one matcher and return a unified MatchSet."""
     matcher = _normalize_matcher_name(matcher)
+    if matcher_session is not None:
+        return matcher_session.match(view)
     if matcher == "sift":
         return match_sift(
             view,
@@ -65,6 +86,19 @@ def _run_matcher(view, matcher: str, device: str = "auto"):
     # Lazy import keeps the SIFT-only path usable when torch/kornia is absent.
     from src.registration_benchmark.matchers.loftr import match_loftr
     return match_loftr(view, device=device)
+
+
+def _reset_peak_gpu_memory_stats(device: str) -> None:
+    """Reset CUDA peak allocation counters before one pair inference."""
+    try:
+        import torch
+        use_cuda = device == "cuda" or str(device).startswith("cuda")
+        if device == "auto":
+            use_cuda = torch.cuda.is_available()
+        if use_cuda and torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except (ImportError, RuntimeError):
+        return None
 
 
 def _peak_gpu_memory_mb(device: str) -> float | None:
@@ -91,6 +125,7 @@ def register_pair(
     matcher: str = "sift",
     device: str = "auto",
     diagnostic_capture=None,
+    matcher_session=None,
 ) -> PairwiseRegistration:
     """Register scene_j onto scene_i using the requested matcher + shared RANSAC."""
     matcher = _normalize_matcher_name(matcher)
@@ -133,7 +168,10 @@ def register_pair(
     view = build_match_view(pair, max_side=match_max_side)
 
     # 3. Tie-point matching -- the only matcher-specific branch
-    matches = _run_matcher(view, matcher, device=device)
+    _reset_peak_gpu_memory_stats(device)
+    matches = _run_matcher(
+        view, matcher, device=device, matcher_session=matcher_session
+    )
     matches.validate_for_geometry()
 
     # 4. Shared RANSAC Affine
@@ -285,6 +323,16 @@ def _make_result(
         peak_gpu_memory_mb=peak_gpu_memory_mb,
         inlier_ref_xy=inlier_ref,
         inlier_tgt_xy=inlier_tgt,
+        model_init_runtime_sec=float(
+            getattr(matches, "metadata", {})
+            .get("runtime_breakdown", {})
+            .get("model_init_runtime_sec", 0.0)
+        ),
+        pair_inference_runtime_sec=float(
+            getattr(matches, "metadata", {})
+            .get("runtime_breakdown", {})
+            .get("pair_inference_runtime_sec", getattr(matches, "runtime_sec", 0.0))
+        ),
     )
 
 
@@ -305,55 +353,59 @@ def run_all_pairs(
     (out / "pairwise").mkdir(parents=True, exist_ok=True)
 
     results: list[PairwiseRegistration] = []
-
-    for edge in edges:
-        pair_start = time.perf_counter()
-        logger.info(
-            "Registering scene %d -> %d with %s (%s -> %s)",
-            edge.idx_j,
-            edge.idx_i,
-            matcher.upper(),
-            scenes[edge.idx_j].name,
-            scenes[edge.idx_i].name,
-        )
-        try:
-            reg = register_pair(
-                scenes[edge.idx_i],
-                scenes[edge.idx_j],
-                band=band,
-                match_max_side=match_max_side,
-                ransac_threshold=ransac_threshold,
-                random_seed=random_seed,
-                matcher=matcher,
-                device=device,
-            )
-        except Exception as exc:
-            logger.exception(
-                "Pair (%d, %d) failed with exception: %s",
-                edge.idx_i,
+    matcher_session = _create_matcher_session(matcher, device=device)
+    try:
+        for edge in edges:
+            pair_start = time.perf_counter()
+            logger.info(
+                "Registering scene %d -> %d with %s (%s -> %s)",
                 edge.idx_j,
-                exc,
+                edge.idx_i,
+                matcher.upper(),
+                scenes[edge.idx_j].name,
+                scenes[edge.idx_i].name,
             )
-            reg = PairwiseRegistration(
-                idx_i=edge.idx_i,
-                idx_j=edge.idx_j,
-                status="FAILED",
-                raw_matches=0,
-                inliers=0,
-                inlier_ratio=0.0,
-                coverage=0.0,
-                residual_median=float("nan"),
-                residual_rmse=float("nan"),
-                residual_p95=float("nan"),
-                pair_pixel_matrix=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-                pair_common_transform=None,
-                runtime_sec=time.perf_counter() - pair_start,
-                matcher=matcher,
-                matcher_runtime_sec=0.0,
-                geometry_runtime_sec=0.0,
-                peak_gpu_memory_mb=None,
-            )
-        results.append(reg)
+            try:
+                reg = register_pair(
+                    scenes[edge.idx_i],
+                    scenes[edge.idx_j],
+                    band=band,
+                    match_max_side=match_max_side,
+                    ransac_threshold=ransac_threshold,
+                    random_seed=random_seed,
+                    matcher=matcher,
+                    device=device,
+                    matcher_session=matcher_session,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Pair (%d, %d) failed with exception: %s",
+                    edge.idx_i,
+                    edge.idx_j,
+                    exc,
+                )
+                reg = PairwiseRegistration(
+                    idx_i=edge.idx_i,
+                    idx_j=edge.idx_j,
+                    status="FAILED",
+                    raw_matches=0,
+                    inliers=0,
+                    inlier_ratio=0.0,
+                    coverage=0.0,
+                    residual_median=float("nan"),
+                    residual_rmse=float("nan"),
+                    residual_p95=float("nan"),
+                    pair_pixel_matrix=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                    pair_common_transform=None,
+                    runtime_sec=time.perf_counter() - pair_start,
+                    matcher=matcher,
+                    matcher_runtime_sec=0.0,
+                    geometry_runtime_sec=0.0,
+                    peak_gpu_memory_mb=None,
+                )
+            results.append(reg)
+    finally:
+        matcher_session.close()
 
     save_pairwise_summary(results, out)
     return results
@@ -370,7 +422,7 @@ def save_pairwise_summary(
             "idx_i,idx_j,status,raw_matches,inliers,inlier_ratio,"
             "coverage,residual_median,residual_rmse,residual_p95,"
             "runtime_sec,matcher,matcher_runtime_sec,geometry_runtime_sec,"
-            "peak_gpu_memory_mb\n"
+            "peak_gpu_memory_mb,model_init_runtime_sec,pair_inference_runtime_sec\n"
         )
         for r in results:
             f.write(
@@ -379,7 +431,8 @@ def save_pairwise_summary(
                 f"{r.residual_median},{r.residual_rmse},{r.residual_p95},"
                 f"{r.runtime_sec:.6f},{r.matcher},"
                 f"{r.matcher_runtime_sec:.6f},{r.geometry_runtime_sec:.6f},"
-                f"{r.peak_gpu_memory_mb}\n"
+                f"{r.peak_gpu_memory_mb},{getattr(r, 'model_init_runtime_sec', 0.0):.6f},"
+                f"{getattr(r, 'pair_inference_runtime_sec', 0.0):.6f}\n"
             )
 
     json_path = out_dir / "pairwise_summary.json"
@@ -400,8 +453,10 @@ def save_pairwise_summary(
                 "pixel_matrix": r.pair_pixel_matrix,
                 "matcher_runtime_sec": r.matcher_runtime_sec,
                 "geometry_runtime_sec": r.geometry_runtime_sec,
-                "peak_gpu_memory_mb": r.peak_gpu_memory_mb,
-                "runtime_sec": r.runtime_sec,
+            "peak_gpu_memory_mb": r.peak_gpu_memory_mb,
+            "model_init_runtime_sec": getattr(r, "model_init_runtime_sec", 0.0),
+            "pair_inference_runtime_sec": getattr(r, "pair_inference_runtime_sec", 0.0),
+            "runtime_sec": r.runtime_sec,
             }
             for r in results
         ],

@@ -346,6 +346,12 @@ def _write_runtime(
         "device": device,
         "status": status,
         "matcher_runtime_sec": sum(float(r.matcher_runtime_sec) for r in results),
+        "model_init_runtime_sec": sum(
+            float(getattr(r, "model_init_runtime_sec", 0.0)) for r in results
+        ),
+        "pair_inference_runtime_sec": sum(
+            float(getattr(r, "pair_inference_runtime_sec", 0.0)) for r in results
+        ),
         "geometry_runtime_sec": sum(float(r.geometry_runtime_sec) for r in results),
         "total_runtime_sec": sum(float(r.runtime_sec) for r in results),
         "runner_wall_runtime_sec": time.perf_counter() - started,

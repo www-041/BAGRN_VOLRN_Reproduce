@@ -201,3 +201,13 @@ def match_sift(
 def _to_uint8(img: np.ndarray) -> np.ndarray:
     """Convert float32 [0, 1] image to uint8 [0, 255]."""
     return (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
+
+
+class SIFTMatcherSession:
+    """Stateless session interface for the shared pairwise runner."""
+
+    def match(self, view: MatchView, **kwargs):
+        return match_sift(view, **kwargs)
+
+    def close(self) -> None:
+        return None

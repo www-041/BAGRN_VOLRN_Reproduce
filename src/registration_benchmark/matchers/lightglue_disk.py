@@ -51,6 +51,10 @@ def match_lightglue_disk(
     max_num_keypoints: int = 2048,
     min_confidence: float = 0.0,
     disk_resize: int = DISK_INTERNAL_RESIZE,
+    *,
+    _extractor=None,
+    _matcher=None,
+    _model_init_runtime_sec: float = 0.0,
 ) :
     """Run official DISK feature extraction followed by LightGlue matching."""
     if not _LIGHTGLUE_DISK_AVAILABLE:
@@ -64,19 +68,23 @@ def match_lightglue_disk(
     resolved_device = _resolve_device(device)
 
     try:
+        model_init_runtime_sec = float(_model_init_runtime_sec)
+        if _extractor is None or _matcher is None:
+            model_t0 = time.perf_counter()
+            _extractor = DISK(max_num_keypoints=max_num_keypoints).eval().to(resolved_device)
+            _matcher = LightGlue(features="disk").eval().to(resolved_device)
+            model_init_runtime_sec = time.perf_counter() - model_t0
         feature_t0 = time.perf_counter()
-        extractor = DISK(max_num_keypoints=max_num_keypoints).eval().to(resolved_device)
         ref_t = torch.from_numpy(view.ref).float().unsqueeze(0).unsqueeze(0).to(resolved_device)
         tgt_t = torch.from_numpy(view.tgt).float().unsqueeze(0).unsqueeze(0).to(resolved_device)
         with torch.inference_mode():
-            feats0 = extractor.extract(ref_t, resize=disk_resize)
-            feats1 = extractor.extract(tgt_t, resize=disk_resize)
+            feats0 = _extractor.extract(ref_t, resize=disk_resize)
+            feats1 = _extractor.extract(tgt_t, resize=disk_resize)
         feature_runtime = time.perf_counter() - feature_t0
 
         matcher_t0 = time.perf_counter()
-        matcher = LightGlue(features="disk").eval().to(resolved_device)
         with torch.inference_mode():
-            matches01 = matcher({"image0": feats0, "image1": feats1})
+            matches01 = _matcher({"image0": feats0, "image1": feats1})
         matcher_runtime = time.perf_counter() - matcher_t0
 
         feats0, feats1, matches01 = [
@@ -120,8 +128,58 @@ def match_lightglue_disk(
         runtime_breakdown={
             "feature_runtime_sec": feature_runtime,
             "matcher_runtime_sec": matcher_runtime,
+            "model_init_runtime_sec": model_init_runtime_sec,
+            "pair_inference_runtime_sec": feature_runtime + matcher_runtime,
         },
     )
+
+
+class LightGlueDiskMatcherSession:
+    """Reuse DISK and LightGlue models across all pairs."""
+
+    def __init__(
+        self,
+        device: str = "auto",
+        max_num_keypoints: int = 2048,
+    ) -> None:
+        if not _LIGHTGLUE_DISK_AVAILABLE:
+            raise RuntimeError(
+                f"{LIGHTGLUE_DISK_UNAVAILABLE}: {_LIGHTGLUE_DISK_IMPORT_ERROR}"
+            )
+        self.device = _resolve_device(device)
+        self.max_num_keypoints = max_num_keypoints
+        t0 = time.perf_counter()
+        self.extractor = DISK(max_num_keypoints=max_num_keypoints).eval().to(self.device)
+        self.matcher = LightGlue(features="disk").eval().to(self.device)
+        self.model_init_runtime_sec = time.perf_counter() - t0
+        self._pending_model_init_runtime_sec = self.model_init_runtime_sec
+        self._closed = False
+
+    def match(self, view: MatchView) -> MatchSet:
+        if self._closed:
+            raise RuntimeError("LightGlue-DISK matcher session is closed")
+        init_runtime = self._pending_model_init_runtime_sec
+        self._pending_model_init_runtime_sec = 0.0
+        return match_lightglue_disk(
+            view,
+            device=self.device,
+            max_num_keypoints=self.max_num_keypoints,
+            _extractor=self.extractor,
+            _matcher=self.matcher,
+            _model_init_runtime_sec=init_runtime,
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.extractor = None
+        self.matcher = None
+        try:
+            if self.device.startswith("cuda") and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except (NameError, RuntimeError):
+            pass
 
 
 def _extract_matches(
