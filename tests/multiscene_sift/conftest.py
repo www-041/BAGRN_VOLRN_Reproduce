@@ -154,9 +154,23 @@ def make_five_scene_dataset(root: Path) -> list[str]:
     for name, (ox, oy) in zip(scene_names, offsets):
         scene_dir = root / name
         scene_dir.mkdir(parents=True)
-        for band in ("B14", "B8", "B5"):
+        for band in ("B2", "B5", "B7", "B8", "B14"):
             path = scene_dir / f"{name}_{band}.TIF"
             _make_band(path, origin_x=base_x + ox, origin_y=base_y + oy)
+        (scene_dir / f"{name}_MTL.txt").write_text(
+            "\n".join([
+                "RADIANCE_MULT_BAND_2 = 1.0",
+                "RADIANCE_MULT_BAND_5 = 1.0",
+                "RADIANCE_MULT_BAND_7 = 1.0",
+                "RADIANCE_MULT_BAND_14 = 1.0",
+                "RADIANCE_ADD_BAND_2 = 0.0",
+                "RADIANCE_ADD_BAND_5 = 0.0",
+                "RADIANCE_ADD_BAND_7 = 0.0",
+                "RADIANCE_ADD_BAND_14 = 0.0",
+                "CLOUD_COVER = 0.0",
+            ]) + "\n",
+            encoding="utf-8",
+        )
 
     return scene_names
 

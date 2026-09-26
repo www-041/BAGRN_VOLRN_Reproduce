@@ -52,7 +52,7 @@ def normalize_registered_band(
     scenes,
     world_transforms: list[np.ndarray],
     band: str,
-    radiometric_control_idx: int,
+    radiometric_control_idx: int | None = None,
     registration_grid=None,
     block_size_pixels: int = 200,
     lambda_param: float = 0.1,
@@ -60,6 +60,7 @@ def normalize_registered_band(
     max_iter: int = 200,
     tol: float = 1e-4,
     cloud_masks=None,
+    reference_idx: int | None = None,
 ) -> BandRadiometricResult:
     """Run full radiometric normalization pipeline for one band.
 
@@ -90,6 +91,12 @@ def normalize_registered_band(
     Returns:
         :class:`BandRadiometricResult`.
     """
+    if radiometric_control_idx is None:
+        radiometric_control_idx = reference_idx if reference_idx is not None else 0
+    elif reference_idx is not None and radiometric_control_idx != reference_idx:
+        raise ValueError(
+            "radiometric_control_idx and reference_idx must identify the same scene"
+        )
     n = len(scenes)
 
     # ---- 1. Geometric warp to one shared north-up pixel lattice -------------
@@ -183,6 +190,22 @@ def normalize_registered_band(
             shared_height=grid_height,
             dst_crs=grid_crs,
         )
+
+        # Direct callers that omit ``registration_grid`` historically receive
+        # one result per source footprint with the source shape preserved.  A
+        # fractional source origin can make the snapped local window one pixel
+        # wider/taller; normalize only that compatibility path by crop/padding
+        # with NaN.  Task 10 always supplies the canonical fixed grid, so its
+        # arrays are never altered here.
+        if registration_grid is None and aligned.shape != data.shape:
+            shape_preserved = np.full(data.shape, np.nan, dtype=np.float64)
+            copy_height = min(shape_preserved.shape[0], aligned.shape[0])
+            copy_width = min(shape_preserved.shape[1], aligned.shape[1])
+            shape_preserved[:copy_height, :copy_width] = aligned[:copy_height, :copy_width]
+            aligned = shape_preserved
+            left, top = aligned_tf * (0, 0)
+            right, bottom = aligned_tf * (copy_width, copy_height)
+            bounds = (min(left, right), min(bottom, top), max(left, right), max(bottom, top))
 
         arrays_registered.append(aligned[np.newaxis, :, :])
         nodata_values.append(nd)
