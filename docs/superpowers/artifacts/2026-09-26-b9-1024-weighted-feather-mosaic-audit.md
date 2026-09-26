@@ -53,3 +53,7 @@ The sequential batch completed all eight frozen combinations with status `PASS`.
 | EfficientLoFTR | Translation-L2 | 22,167,910 | uint16 |
 | LightGlue+DISK | MST | 22,167,910 | uint16 |
 | LightGlue+DISK | Translation-L2 | 22,167,910 | uint16 |
+
+## Task 5 — contributor and coverage audit
+
+`mosaic_audit_1024/01_run_inventory.csv` contains all eight rows. Every row has the same denominator, `31,381,544` canonical-grid pixels, and the same maximum contributor count of 5. Invalid weight-sum pixels are zero for all runs. The SIFT runs have 22,166,642 and 22,166,580 valid pixels; the other six runs have 22,167,910 valid pixels. Contributor-count maps are in `mosaic_audit_1024/contributor_maps/` and use one shared display maximum (`5`) and the same raster extent/shape.
