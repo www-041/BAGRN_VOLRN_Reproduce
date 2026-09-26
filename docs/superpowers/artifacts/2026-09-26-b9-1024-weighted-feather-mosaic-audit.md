@@ -61,3 +61,7 @@ The sequential batch completed all eight frozen combinations with status `PASS`.
 ## Task 6 — overlap structural metrics
 
 `mosaic_audit_1024/02_overlap_structural_metrics.csv` contains the expected 80 rows (4 matchers × 2 Global methods × 10 accepted pairs). All rows are `PASS` with finite primary structural metrics and shared-valid overlap masks. The primary fields are intensity ZNCC, gradient-magnitude NCC, and gradient-orientation cosine. The auxiliary intensity MAE/RMSE/mean-bias fields are explicitly labeled `RADIOMETRY_SENSITIVE`; they are descriptive and are not used as geometry scores. The synthetic tests confirm that a 1–2 pixel displacement lowers structural scores, while a constant brightness offset preserves ZNCC but changes MAE. No insufficient-overlap row occurred under the fixed minimum sample rule for this dataset.
+
+## Task 7 — fixed feather seam-zone diagnostics
+
+`mosaic_audit_1024/03_seam_zone_metrics.csv` contains 80 `PASS` rows. The seam diagnostic is not an optimized seamline: for each accepted pair it is the shared-valid region where pairwise normalized fixed-feather weights satisfy `min(w_i_norm, w_j_norm) >= 0.25`. The threshold is identical for all eight runs and is recorded in every row. Seam-zone pixel counts range from 1,675,636 to 8,732,548. Seam gradient metrics are structural; auxiliary seam intensity MAE/RMSE/bias fields remain labeled `RADIOMETRY_SENSITIVE`, so no geometry-only seam claim is made.

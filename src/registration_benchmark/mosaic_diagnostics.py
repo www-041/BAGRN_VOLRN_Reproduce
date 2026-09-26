@@ -93,3 +93,27 @@ def write_overlap_metrics_csv(rows: list[dict], path: str | Path) -> Path:
         writer.writeheader()
         writer.writerows(rows)
     return path
+
+
+def build_seam_zone_mask(
+    valid_a: np.ndarray,
+    valid_b: np.ndarray,
+    weight_a: np.ndarray,
+    weight_b: np.ndarray,
+    *,
+    balance_threshold: float = 0.25,
+) -> np.ndarray:
+    """Return the fixed pairwise feather-balance seam diagnostic zone."""
+    valid_a = np.asarray(valid_a, dtype=bool)
+    valid_b = np.asarray(valid_b, dtype=bool)
+    weight_a = np.asarray(weight_a, dtype=np.float64)
+    weight_b = np.asarray(weight_b, dtype=np.float64)
+    if not (valid_a.shape == valid_b.shape == weight_a.shape == weight_b.shape):
+        raise ValueError("seam-zone inputs must share one shape")
+    if not 0.0 < balance_threshold <= 0.5:
+        raise ValueError("balance_threshold must be in (0, 0.5]")
+    overlap = valid_a & valid_b
+    pair_weight = weight_a + weight_b
+    normalized_a = np.divide(weight_a, pair_weight, out=np.zeros_like(weight_a), where=pair_weight > 0)
+    normalized_b = np.divide(weight_b, pair_weight, out=np.zeros_like(weight_b), where=pair_weight > 0)
+    return overlap & (np.minimum(normalized_a, normalized_b) >= balance_threshold)

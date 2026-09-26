@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
-from src.registration_benchmark.mosaic_diagnostics import compute_overlap_metrics, write_overlap_metrics_csv
+from src.registration_benchmark.mosaic_diagnostics import (
+    build_seam_zone_mask,
+    compute_overlap_metrics,
+    write_overlap_metrics_csv,
+)
 
 
 def _textured_image(size=64):
@@ -85,3 +89,13 @@ def test_overlap_csv_labels_auxiliary_radiometry_metrics(tmp_path):
     )
 
     assert "RADIOMETRY_SENSITIVE" in path.read_text(encoding="utf-8")
+
+
+def test_seam_zone_uses_fixed_pairwise_weight_balance_threshold():
+    valid = np.ones((1, 4), dtype=bool)
+    weight_a = np.array([[1.0, 2.0, 3.0, 4.0]])
+    weight_b = np.array([[4.0, 3.0, 2.0, 1.0]])
+
+    seam = build_seam_zone_mask(valid, valid, weight_a, weight_b, balance_threshold=0.25)
+
+    np.testing.assert_array_equal(seam, np.array([[False, True, True, False]]))
