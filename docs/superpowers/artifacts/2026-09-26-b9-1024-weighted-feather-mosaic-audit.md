@@ -38,3 +38,18 @@ The transformed corner union is `[641687.7387459544, 3256841.409535937, 713300.0
 ## Task 3 — deterministic single-run runner
 
 `scripts/run_b9_weighted_mosaic.py` accepts one frozen source config, one persisted Global-run directory, the canonical grid, and an output directory. It loads only source rasters and persisted transforms; it performs no matching, RANSAC, Global optimization, radiometric normalization, or transform inference. The official `mosaic.tif` is produced by the existing `src.mosaic.create_mosaic(mode="weighted")` implementation. The companion `valid_mask.tif`, `contributor_count.tif`, and `weight_sum.tif` use the same bilinear projection and distance-transform weight definition for auditability. `preview.png` is display-only percentile stretch, with its limits recorded in `run_summary.json`. A non-empty output directory is rejected to prevent accidental overwrite.
+
+## Task 4 — eight-run execution
+
+The sequential batch completed all eight frozen combinations with status `PASS`. Each row has its own log under `mosaic_audit_1024/logs/`, and every output was validated against the canonical transform, dimensions, CRS, 14 m resolution, finite valid pixels, and source dtype policy.
+
+| matcher | Global method | valid pixels | mosaic dtype |
+|---|---|---:|---|
+| SIFT | MST | 22,166,642 | uint16 |
+| SIFT | Translation-L2 | 22,166,580 | uint16 |
+| LoFTR | MST | 22,167,910 | uint16 |
+| LoFTR | Translation-L2 | 22,167,910 | uint16 |
+| EfficientLoFTR | MST | 22,167,910 | uint16 |
+| EfficientLoFTR | Translation-L2 | 22,167,910 | uint16 |
+| LightGlue+DISK | MST | 22,167,910 | uint16 |
+| LightGlue+DISK | Translation-L2 | 22,167,910 | uint16 |
