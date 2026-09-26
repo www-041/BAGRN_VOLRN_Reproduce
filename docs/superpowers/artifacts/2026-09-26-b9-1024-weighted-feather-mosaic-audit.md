@@ -22,3 +22,15 @@ The official mosaic path is `src.mosaic.create_mosaic`, called with `mode="weigh
 For each projected valid mask, the existing weight is `distance_transform_edt(mask)` cast to float64, with `1e-6` added on valid pixels. The weighted result is `sum(value * weight) / sum(weight)`, valid where `sum(weight) > 1e-12`. Outside the union and invalid results use the first declared nodata value; with these B9 uint16 rasters that value is `0.0` and the output dtype remains uint16. The output GeoTIFF uses LZW compression and preserves the supplied canonical transform, CRS, width, and height. No rounding or clipping beyond the final cast is introduced.
 
 The runner's contributor/weight diagnostics reproduce only this projection and weight calculation for audit fields; the official `mosaic.tif` is still written by the existing weighted-feather core. No seamline, radiometric, graph-cut, multiband, or Poisson blending is introduced.
+
+## Task 2 — canonical output grid
+
+All eight runs use the immutable grid in `mosaic_runs_1024/protocol/canonical_output_grid.json`:
+
+- CRS: EPSG:32650
+- pixel size: 14 m
+- width × height: 5116 × 6134
+- bounds: `[641676.0, 3256834.0, 713300.0, 3342710.0]`
+- transform: `[14.0, 0.0, 641676.0, 0.0, -14.0, 3342710.0]`
+
+The transformed corner union is `[641687.7387459544, 3256841.409535937, 713300.0, 3342701.619884489]`; relative to the raw source union, the largest transform-induced edge movement is about 6.6 m and the deterministic 14 m snapping margin stays within the expected one-pixel safety margin. No raster resampling was used to construct this grid, and all eight transform sets resolve to the same grid identity.
