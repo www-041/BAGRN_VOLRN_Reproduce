@@ -19,7 +19,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.run_b9_radiometric import run_fixed_geometry_radiometric
-from src.multiscene_sift.radiometric_protocol import GEOMETRY_SPECS, RADIOMETRIC_METHODS
+from src.multiscene_sift.radiometric_protocol import (
+    GEOMETRY_SPECS,
+    RADIOMETRIC_METHODS,
+    SCIENCE_STATUSES,
+)
 
 
 RUN_KEYS = tuple(
@@ -47,7 +51,7 @@ def _resolve_repo_path(repo_root: Path, value: str | Path) -> Path:
     return path if path.is_absolute() else repo_root / path
 
 
-def _verify_protocol(protocol_path: str | Path, source_config: str | Path, repo_root: Path = REPO_ROOT) -> None:
+def _verify_protocol(protocol_path: str | Path, source_config: str | Path, repo_root: Path = REPO_ROOT) -> dict:
     protocol = _load_json(Path(protocol_path))
     if protocol.get("dataset") != "B9" or protocol.get("manifest_indices") != [2, 3, 5, 8, 10]:
         raise ValueError("protocol is not the frozen B9 five-scene selection")
@@ -78,6 +82,66 @@ def _verify_protocol(protocol_path: str | Path, source_config: str | Path, repo_
         observed.add(key)
     if observed != required:
         raise ValueError("protocol does not freeze both Task 10 geometry transform hashes")
+    return protocol
+
+
+def _merge_success(row: dict, validation: dict) -> None:
+    """Merge a successful validation and remove stale failure state."""
+    row.pop("error", None)
+    row.update(validation)
+
+
+def resume_provenance_matches(
+    run_dir: str | Path,
+    source_config: str | Path,
+    output_grid: str | Path,
+    global_transforms: str | Path,
+    protocol: str | Path,
+    geometry_run: str,
+    method: str,
+) -> bool:
+    """Return whether an existing run belongs to the exact frozen inputs."""
+    try:
+        run_dir = Path(run_dir)
+        geometry = _load_json(run_dir / "geometry_source.json")
+        config = _load_json(run_dir / "run_config.json")
+        radiometric = _load_json(run_dir / "radiometric_method.json")
+        return (
+            geometry.get("source_config_sha256") == _sha256(Path(source_config))
+            and geometry.get("output_grid_sha256") == _sha256(Path(output_grid))
+            and geometry.get("global_transforms_sha256") == _sha256(Path(global_transforms))
+            and config.get("protocol_sha256") == _sha256(Path(protocol))
+            and geometry.get("geometry_run") == geometry_run
+            and radiometric.get("method") == method
+        )
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _validate_strict_runtime(protocol: dict, *, block_size_pixels: int, lambda_param: float,
+                             rho: float, max_iter: int, tol: float) -> None:
+    params = protocol.get("volrn_params")
+    if not isinstance(params, dict):
+        raise ValueError("strict protocol is missing volrn_params")
+    expected = {
+        "block_size_pixels": 400,
+        "lambda": 0.5,
+        "rho": 1.0,
+        "max_iter": 200,
+        "tol": 1e-4,
+    }
+    actual = {
+        "block_size_pixels": block_size_pixels,
+        "lambda": lambda_param,
+        "rho": rho,
+        "max_iter": max_iter,
+        "tol": tol,
+    }
+    for key, value in expected.items():
+        if float(params.get(key)) != float(value) or float(actual[key]) != float(value):
+            raise ValueError(f"strict protocol mismatch for volrn_params.{key}")
+    if int(protocol.get("radiometric_control_idx", 0)) != 0:
+        raise ValueError("strict protocol radiometric_control_idx must be 0")
 
 
 def prepare_output_dir(output_dir: str | Path) -> Path:
@@ -114,8 +178,11 @@ def validate_run_outputs(output_dir: str | Path, grid: dict) -> dict:
     method = _load_json(output_dir / "radiometric_method.json")
     if summary.get("radiometric_method") != method.get("method"):
         raise ValueError("radiometric method provenance mismatch")
+    science_status = summary.get("science_status")
+    if science_status not in SCIENCE_STATUSES:
+        raise ValueError(f"invalid or missing science_status: {science_status}")
     return {
-        "status": "PASS",
+        "status": science_status,
         "radiometric_method": method.get("method"),
         "valid_pixels": int(_load_json(output_dir / "radiometric_summary.json").get("mosaic", {}).get("diagnostics", {}).get("valid_pixels", 0)),
     }
@@ -129,10 +196,10 @@ def run_batch(
     protocol_path: str | Path,
     *,
     status_path: str | Path | None = None,
-    block_size_pixels: int = 800,
-    lambda_param: float = 0.1,
+    block_size_pixels: int = 400,
+    lambda_param: float = 0.5,
     rho: float = 1.0,
-    max_iter: int = 20,
+    max_iter: int = 200,
     tol: float = 1e-4,
 ) -> dict:
     source_config = Path(source_config)
@@ -140,7 +207,15 @@ def run_batch(
     output_grid = Path(output_grid)
     output_root = Path(output_root)
     status_path = Path(status_path) if status_path is not None else output_root / "radiometric_status.json"
-    _verify_protocol(protocol_path, source_config)
+    protocol = _verify_protocol(protocol_path, source_config)
+    _validate_strict_runtime(
+        protocol,
+        block_size_pixels=block_size_pixels,
+        lambda_param=lambda_param,
+        rho=rho,
+        max_iter=max_iter,
+        tol=tol,
+    )
     grid = _load_json(output_grid)
     output_root.mkdir(parents=True, exist_ok=True)
     logs = output_root / "logs"
@@ -148,7 +223,7 @@ def run_batch(
     if status_path.is_file():
         status = _load_json(status_path)
     else:
-        status = {"schema_version": 1, "rows": {key: {"status": "PENDING"} for key in RUN_KEYS}}
+        status = {"schema_version": 2, "rows": {key: {"status": "PENDING"} for key in RUN_KEYS}}
     if list(status.get("rows", {})) != list(RUN_KEYS):
         raise ValueError("status ledger does not contain the six Task 10 runs in frozen order")
 
@@ -158,14 +233,21 @@ def run_batch(
         run_dir = output_root / geometry_run / method
         row = status["rows"][run_key]
         row["output_dir"] = str(run_dir)
-        if row.get("status") == "PASS":
-            try:
-                validation = validate_run_outputs(run_dir, grid)
-            except Exception:
-                row["status"] = "PENDING"
+        if row.get("status") in set(SCIENCE_STATUSES) | {"PASS"}:
+            global_transforms = global_root / spec["matcher"] / spec["global_method"] / "global_transforms.json"
+            if resume_provenance_matches(
+                run_dir, source_config, output_grid, global_transforms,
+                protocol_path, geometry_run, method,
+            ):
+                try:
+                    validation = validate_run_outputs(run_dir, grid)
+                except Exception:
+                    row["status"] = "PENDING"
+                else:
+                    _merge_success(row, validation)
+                    continue
             else:
-                row.update(validation)
-                continue
+                row.update({"status": "PENDING", "error": "FAILED_PROVENANCE: frozen run identity mismatch"})
         row["status"] = "RUNNING"
         status_path.write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
         log_path = logs / f"{geometry_run}_{method}.log"
@@ -180,15 +262,15 @@ def run_batch(
                     output_grid, run_dir, method=method, geometry_run=geometry_run,
                     block_size_pixels=block_size_pixels, lambda_param=lambda_param,
                     rho=rho, max_iter=max_iter, tol=tol,
+                    protocol_path=protocol_path, strict_protocol=True,
                 )
                 validation = validate_run_outputs(run_dir, grid)
                 print(json.dumps({"result": result, "validation": validation}, indent=2, ensure_ascii=False, default=str))
-            row.update(validation)
-            row["status"] = "PASS"
+            _merge_success(row, validation)
         except Exception as exc:
             with log_path.open("a", encoding="utf-8") as log:
                 traceback.print_exc(file=log)
-            row.update({"status": "FAILED", "error": f"{type(exc).__name__}: {exc}"})
+            row.update({"status": "FAILED_RUNTIME", "error": f"{type(exc).__name__}: {exc}"})
         status_path.write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
     return status
 
@@ -201,10 +283,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--protocol", required=True, type=Path)
     parser.add_argument("--status", default=None, type=Path)
-    parser.add_argument("--block-size-pixels", type=int, default=800)
-    parser.add_argument("--lambda-param", type=float, default=0.1)
+    parser.add_argument("--block-size-pixels", type=int, default=400)
+    parser.add_argument("--lambda-param", type=float, default=0.5)
     parser.add_argument("--rho", type=float, default=1.0)
-    parser.add_argument("--max-iter", type=int, default=20)
+    parser.add_argument("--max-iter", type=int, default=200)
     parser.add_argument("--tol", type=float, default=1e-4)
     args = parser.parse_args(argv)
     run_batch(

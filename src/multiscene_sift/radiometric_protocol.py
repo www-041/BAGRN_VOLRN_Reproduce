@@ -8,6 +8,16 @@ from typing import Mapping
 
 
 RADIOMETRIC_METHODS = ("RAW", "BAGRN", "BAGRN_VOLRN")
+SCIENCE_STATUSES = (
+    "PASS_CONVERGED",
+    "PASS_RAW",
+    "PASS_BAGRN",
+    "COMPLETED_NONCONVERGED",
+    "FAILED_INPUT",
+    "FAILED_PROVENANCE",
+    "FAILED_SCIENCE_GATE",
+    "FAILED_RUNTIME",
+)
 GEOMETRY_SPECS = {
     "efficient_loftr_translation_l2": {
         "matcher": "efficient_loftr",
@@ -27,7 +37,7 @@ def build_task10_config(repo_root: str | Path) -> dict:
     root = Path(repo_root)
     validation_root = root / "data" / "output" / "b9_five_scene_validation"
     config = {
-        "schema_version": 1,
+        "schema_version": 2,
         "task": "Task 10",
         "dataset": "B9",
         "manifest_indices": [2, 3, 5, 8, 10],
@@ -43,11 +53,17 @@ def build_task10_config(repo_root: str | Path) -> dict:
         "cloud_mask_enabled": False,
         "geometry_mutable": False,
         "seamline_optimization": False,
+        "strict_protocol": True,
+        "radiometric_control_idx": 0,
+        "radiometric_control_rationale": (
+            "predeclared reference for reproducibility; not selected from "
+            "outcome metrics; independent of geometry reference."
+        ),
         "volrn_params": {
-            "block_size_pixels": 800,
-            "lambda": 0.1,
+            "block_size_pixels": 400,
+            "lambda": 0.5,
             "rho": 1.0,
-            "max_iter": 20,
+            "max_iter": 200,
             "tol": 1e-4,
         },
     }
@@ -72,6 +88,14 @@ def validate_task10_config(config: Mapping) -> None:
     for key in ("geometry_mutable", "seamline_optimization"):
         if config.get(key) is not False:
             raise ValueError(f"{key} must remain false for fixed-geometry Task 10")
+    if config.get("strict_protocol", True):
+        if int(config.get("radiometric_control_idx", -1)) != 0:
+            raise ValueError("radiometric_control_idx must be frozen to 0")
+        expected = {"block_size_pixels": 400, "lambda": 0.5, "rho": 1.0, "max_iter": 200, "tol": 1e-4}
+        params = config.get("volrn_params", {})
+        for key, value in expected.items():
+            if float(params.get(key)) != float(value):
+                raise ValueError(f"volrn_params.{key} is not frozen to {value}")
 
 
 def write_run_metadata(
