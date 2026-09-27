@@ -305,6 +305,26 @@ def _write_pairwise_metrics(artifact: ReplayArtifact, destination: Path) -> None
         writer.writeheader()
 
 
+def _pairwise_numeric_summary(artifact: ReplayArtifact) -> dict[str, float | int | None]:
+    fields = {"matches": "raw_matches", "inliers": "inliers", "rmse": "residual_rmse", "p95": "residual_p95", "coverage": "coverage", "ncc": "inlier_ratio"}
+    rows = []
+    source = artifact.spec.pairwise_summary_csv
+    if source is not None and source.is_file():
+        with source.open(newline="", encoding="utf-8") as stream:
+            for row in csv.DictReader(stream):
+                rows.append(row)
+    result: dict[str, float | int | None] = {"pairs": len(rows)}
+    for field, source_field in fields.items():
+        values = []
+        for row in rows:
+            try:
+                values.append(float(row[source_field]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        result[field] = float(np.mean(values)) if values else None
+    return result
+
+
 def _global_metrics(artifact: ReplayArtifact) -> dict:
     path = artifact.spec.global_run_dir / "global_connection_summary.json"
     if path.is_file():
@@ -413,12 +433,18 @@ def materialize_final_results(
         summary["raw_mamd"] = metric_payload["raw"]["task10d"]["mamd"]["weighted_mean"]
         summary["raw_msdd"] = metric_payload["raw"]["task10d"]["msdd"]["weighted_mean"]
         summary["raw_rdd"] = metric_payload["raw"]["task10d"]["rdd"]["weighted_mean"]
+    main_geometry = _pairwise_numeric_summary(main)
+    traditional_geometry = _pairwise_numeric_summary(traditional)
     (output_root / "paper_tables.md").write_text(
         "# Paper baseline tables\n\n"
         "| Method | Geometry run | Mosaic SHA-256 | RAW MAMD | BAGRN MAMD | RAW MSDD | BAGRN MSDD | RAW RDD | BAGRN RDD |\n|---|---|---|---:|---:|---:|---:|---:|---:|\n"
         f"| EfficientLoFTR + Translation-L2 + BAGRN | {main.spec.geometry_run} | {main.mosaic_sha256} | {main_summary['raw_mamd']} | {main_summary['bagrn_mamd']} | {main_summary['raw_msdd']} | {main_summary['bagrn_msdd']} | {main_summary['raw_rdd']} | {main_summary['bagrn_rdd']} |\n"
         f"| SIFT + MST + BAGRN | {traditional.spec.geometry_run} | {traditional.mosaic_sha256} | {traditional_summary['raw_mamd']} | {traditional_summary['bagrn_mamd']} | {traditional_summary['raw_msdd']} | {traditional_summary['bagrn_msdd']} | {traditional_summary['raw_rdd']} | {traditional_summary['bagrn_rdd']} |\n\n"
-        "All radiometric values are frozen Task10D snapshots; they do not resolve the separate paper CD/GL formula ambiguity.\n",
+        "All radiometric values are frozen Task10D snapshots; they do not resolve the separate paper CD/GL formula ambiguity.\n\n"
+        "## Frozen geometry comparison\n\n"
+        "| Method | Pair count | Mean raw matches | Mean inliers | Mean RMSE | Mean p95 | Mean coverage | Mean inlier ratio |\n|---|---:|---:|---:|---:|---:|---:|---:|\n"
+        f"| EfficientLoFTR + Translation-L2 | {main_geometry['pairs']} | {main_geometry['matches']} | {main_geometry['inliers']} | {main_geometry['rmse']} | {main_geometry['p95']} | {main_geometry['coverage']} | {main_geometry['ncc']} |\n"
+        f"| SIFT + MST | {traditional_geometry['pairs']} | {traditional_geometry['matches']} | {traditional_geometry['inliers']} | {traditional_geometry['rmse']} | {traditional_geometry['p95']} | {traditional_geometry['coverage']} | {traditional_geometry['ncc']} |\n",
         encoding="utf-8",
     )
     manifest = {
