@@ -18,6 +18,7 @@ from scipy.ndimage import distance_transform_edt
 from scripts.run_b9_weighted_mosaic import (
     _load_global_transforms,
     _load_sources,
+    _scene_path,
     _project_scene,
 )
 from src.bagrn import bagrn_normalize
@@ -85,9 +86,10 @@ def _persist_normalized_scenes(
     method: str,
     radiometric_control_idx: int,
     scene_ids: list[str],
+    source_scene_sha256: list[str],
 ) -> str:
     """Persist canonical-grid final scene rasters for a replayable BAGRN run."""
-    if len(local_arrays) != len(crop_slices) or len(local_arrays) != len(scene_ids):
+    if len(local_arrays) != len(crop_slices) or len(local_arrays) != len(scene_ids) or len(scene_ids) != len(source_scene_sha256):
         raise ValueError("normalized-scene cache inputs must have matching scene counts")
     height, width = (int(full_shape[0]), int(full_shape[1]))
     scene_dir = output_dir / "normalized_scenes"
@@ -105,6 +107,7 @@ def _persist_normalized_scenes(
         scene_rows.append({
             "scene_index": index,
             "scene_id": scene_id,
+            "source_sha256": source_scene_sha256[index],
             "path": filename,
             "valid_pixels": int(np.count_nonzero(np.isfinite(full))),
             "sha256": _sha256_stream(path),
@@ -117,6 +120,8 @@ def _persist_normalized_scenes(
         "source_config_sha256": _sha256(source_config),
         "global_transforms_sha256": _sha256(global_run_dir / "global_transforms.json"),
         "output_grid_sha256": _sha256(output_grid),
+        "scene_ids": list(scene_ids),
+        "source_scene_sha256": list(source_scene_sha256),
         "grid": {
             "crs": str(grid["crs"]),
             "width": width,
@@ -550,6 +555,13 @@ def run_fixed_geometry_radiometric(
         for valid, (r0, r1, c0, c1) in zip(valid_masks, crop_slices)
     ]
     processing_nodata = [None] * len(processing_arrays)
+    source_config_payload = json.loads(source_config.read_text(encoding="utf-8"))
+    source_scene_sha256 = [
+        _sha256(_scene_path(source_config, record))
+        for record in source_config_payload.get("scenes", [])
+    ]
+    if len(source_scene_sha256) != len(scene_ids):
+        raise ValueError("source config scene provenance does not match loaded scenes")
     if not 0 <= radiometric_control_idx < len(registered):
         raise ValueError("radiometric_control_idx is out of range")
     overlaps = detect_multi_overlap(processing_bounds, processing_transforms, min_pixels=100)
@@ -629,6 +641,7 @@ def run_fixed_geometry_radiometric(
             method=method,
             radiometric_control_idx=radiometric_control_idx,
             scene_ids=scene_ids,
+            source_scene_sha256=source_scene_sha256,
         )
     overlap_metrics = _pair_metrics(metric_before, metric_after, valid_masks)
     if method == "RAW":
@@ -637,6 +650,9 @@ def run_fixed_geometry_radiometric(
         registered_metrics = _pair_metrics(registered, registered, valid_masks)
     task10d_primary_metrics, task10d_diagnostic_values = _task10d_metrics(
         metric_before, metric_after, valid_masks, scene_ids
+    )
+    raw_task10d_primary_metrics, _ = _task10d_metrics(
+        metric_before, metric_before, valid_masks, scene_ids
     )
     diagnostics = dict(overlap_metrics["summary"])
     diagnostics.update(task10d_diagnostic_values)
@@ -735,6 +751,7 @@ def run_fixed_geometry_radiometric(
         "paper_metric_source_lock_status": "AMBIGUOUS",
         "task10d_metric_protocol_sha256": protocol_sha256,
         "task10d_primary_metrics": task10d_primary_metrics,
+        "task10d_raw_primary_metrics": raw_task10d_primary_metrics,
         "diagnostics": diagnostics,
         "additional_diagnostics": overlap_metrics,
         "overlap_count": len(overlaps), "overlaps": overlaps,

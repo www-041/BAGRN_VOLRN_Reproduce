@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 import rasterio
 
 from src.multiscene_sift.radiometric_runner import run_fixed_geometry_radiometric
@@ -97,8 +98,51 @@ def test_replay_regenerates_missing_cache_then_reuses_verified_cache(tmp_path):
 
     second = replay_baseline(spec)
     assert second.cache_status == "REUSED"
-    assert second.mosaic_path == first.mosaic_path
+    assert second.mosaic_path.parent.name == "weighted_feather"
     assert second.mosaic_sha256 == first.mosaic_sha256
+
+
+def test_replay_rejects_stale_cache_and_preserves_it_before_bagrn_fallback(tmp_path):
+    """An invalid cache is retained while BAGRN writes a fresh replay cache."""
+    from src.multiscene_sift.final_baseline_replay import BaselineReplaySpec, replay_baseline
+
+    source, global_dir, grid = _inputs(tmp_path)
+    spec = BaselineReplaySpec(
+        name="stale", geometry_run="sift_mst", source_config=source,
+        global_run_dir=global_dir, output_grid=grid, replay_root=tmp_path / "replay",
+    )
+    first = replay_baseline(spec)
+    manifest = json.loads(first.normalized_scenes_manifest.read_text(encoding="utf-8"))
+    manifest["geometry_run"] = "wrong_geometry"
+    first.normalized_scenes_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    regenerated = replay_baseline(spec)
+
+    assert regenerated.cache_status == "REGENERATED"
+    assert regenerated.run_dir != first.run_dir
+    assert first.run_dir.is_dir()
+    assert regenerated.run_dir.name.startswith("stale__regen_")
+
+
+def test_replay_rejects_relative_grid_shift_and_mosaic_holes(tmp_path):
+    """Grid and support validation must not accept plausible-but-wrong rasters."""
+    from src.multiscene_sift.final_baseline_replay import _validate_mosaic
+
+    source, global_dir, grid = _inputs(tmp_path)
+    run_dir = tmp_path / "mosaic"
+    run_dir.mkdir()
+    path = run_dir / "mosaic.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", width=24, height=16, count=1, dtype="float32",
+        crs="EPSG:32650", transform=rasterio.Affine(1, 0, 0, 0, -1, 46), nodata=np.nan,
+    ) as dst:
+        values = np.full((16, 24), np.nan, dtype=np.float32)
+        values[0, 0] = np.inf
+        dst.write(values, 1)
+    spec = type("Spec", (), {"output_grid": grid})()
+
+    with pytest.raises(ValueError):
+        _validate_mosaic(spec, path, np.ones((16, 24), dtype=bool))
 
 
 def test_final_package_keeps_main_and_traditional_artifacts_distinct(tmp_path):

@@ -16,21 +16,17 @@ from src.multiscene_sift.final_baseline_replay import (
     _sha256,
     materialize_final_results,
     replay_baseline,
+    verify_final_results,
 )
 
 
-def _verify(output_root: Path) -> None:
-    manifest = json.loads((output_root / "manifest.json").read_text(encoding="utf-8"))
-    mapping = {
-        "main": "EfficientLoFTR_Translation_BAGRN",
-        "traditional": "SIFT_MST_BAGRN",
-    }
-    for key, directory in mapping.items():
-        mosaic = output_root / directory / "03_mosaic" / "final_mosaic.tif"
-        expected = manifest["baselines"][key]["mosaic_sha256"]
-        if not mosaic.is_file() or _sha256(mosaic) != expected:
-            raise ValueError(f"verification failed for {key} final mosaic")
-    print(f"status=PASS verified={output_root}")
+def _verify(args) -> None:
+    specs = (
+        BaselineReplaySpec("efficient_loftr_translation_l2_bagrn", "efficient_loftr_translation_l2", args.frozen_config, args.main_global_run_dir, args.output_grid, args.replay_root, args.main_pairwise_summary),
+        BaselineReplaySpec("sift_mst_bagrn", "sift_mst", args.frozen_config, args.traditional_global_run_dir, args.output_grid, args.replay_root, args.traditional_pairwise_summary),
+    )
+    verify_final_results(args.output_root, specs)
+    print(f"status=PASS verified={args.output_root}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -46,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verify", action="store_true")
     args = parser.parse_args(argv)
     if args.verify:
-        _verify(args.output_root)
+        _verify(args)
         return 0
     main_artifact = replay_baseline(BaselineReplaySpec(
         name="efficient_loftr_translation_l2_bagrn",
