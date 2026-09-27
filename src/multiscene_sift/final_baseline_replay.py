@@ -294,7 +294,9 @@ def replay_baseline(spec: BaselineReplaySpec) -> ReplayArtifact:
 def _write_pairwise_metrics(artifact: ReplayArtifact, destination: Path) -> None:
     """Copy frozen pairwise measurements, retaining a usable empty schema in tests."""
     source = artifact.spec.pairwise_summary_csv
-    if source is not None and source.is_file():
+    if source is not None:
+        if not source.is_file():
+            raise FileNotFoundError(f"frozen pairwise summary is missing: {source}")
         shutil.copy2(source, destination)
         return
     with destination.open("w", newline="", encoding="utf-8") as stream:
@@ -415,6 +417,8 @@ def materialize_final_results(
             raise FileNotFoundError(f"replay preview is missing: {artifact.mosaic_path.parent / 'preview.png'}")
         if not (artifact.run_dir / "bagrn_parameters.npz").is_file():
             raise FileNotFoundError(f"BAGRN parameters are missing: {artifact.run_dir / 'bagrn_parameters.npz'}")
+        if artifact.spec.pairwise_summary_csv is None and (artifact.spec.global_run_dir / "global_connection_summary.json").is_file():
+            raise FileNotFoundError(f"frozen pairwise summary is required for {artifact.spec.geometry_run}")
     output_root.mkdir(parents=True, exist_ok=True)
     main_summary = _write_baseline_package(
         output_root / "EfficientLoFTR_Translation_BAGRN", "EfficientLoFTR + Translation-L2 + BAGRN", main
