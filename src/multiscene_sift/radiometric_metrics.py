@@ -172,6 +172,33 @@ def compute_local_pair_metrics(
     }
 
 
+def compute_seam_zone_metrics(
+    image_a: np.ndarray,
+    image_b: np.ndarray,
+    seam_zone_mask: np.ndarray,
+) -> dict[str, Any]:
+    """Compute discrepancy metrics on a seam zone built by the Task9 helper."""
+
+    values_a, values_b = _shared_values(image_a, image_b, seam_zone_mask)
+    valid_pixels = int(values_a.size)
+    if valid_pixels == 0:
+        return {
+            "status": "INSUFFICIENT_SUPPORT",
+            "valid_pixels": 0,
+            "seam_mae": None,
+            "seam_rmse": None,
+            "seam_rdd": None,
+        }
+    difference = values_a - values_b
+    return {
+        "status": "PASS",
+        "valid_pixels": valid_pixels,
+        "seam_mae": float(np.mean(np.abs(difference))),
+        "seam_rmse": float(np.sqrt(np.mean(np.square(difference)))),
+        "seam_rdd": float(wasserstein_distance(values_a, values_b)),
+    }
+
+
 def _summarize_local_rows(rows: Sequence[Mapping[str, Any]], value_key: str) -> dict[str, Any]:
     if not rows:
         return {"median": None, "mean": None, "p95": None, "worst_tile": None}
