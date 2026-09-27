@@ -29,6 +29,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _mask_digest(mask: np.ndarray) -> str:
+    return hashlib.sha256(np.packbits(np.asarray(mask, dtype=np.uint8), bitorder="little").tobytes()).hexdigest()
+
+
 @dataclass(frozen=True)
 class BaselineReplaySpec:
     """Immutable inputs for one BAGRN replay with already-frozen geometry."""
@@ -87,7 +91,8 @@ def _validate_scene_cache(spec: BaselineReplaySpec, run_dir: Path) -> tuple[Path
     """Return a verified cache manifest, or ``None`` if it cannot be reused."""
     manifest_path = run_dir / "normalized_scenes_manifest.json"
     summary_path = run_dir / "radiometric_summary.json"
-    if not (manifest_path.is_file() and summary_path.is_file()):
+    params_path = run_dir / "bagrn_parameters.npz"
+    if not (manifest_path.is_file() and summary_path.is_file() and params_path.is_file()):
         return None
     grid = _load_json(spec.output_grid)
     manifest = _load_json(manifest_path)
@@ -114,14 +119,53 @@ def _validate_scene_cache(spec: BaselineReplaySpec, run_dir: Path) -> tuple[Path
                 return None
             data = dataset.read(1)
             finite = np.isfinite(data)
-            if int(np.count_nonzero(finite)) != int(scene.get("valid_pixels", -1)):
-                return None
-            if scene.get("source_sha256") != expected["source_scene_sha256"][index]:
-                return None
+        if int(np.count_nonzero(finite)) != int(scene.get("valid_pixels", -1)):
+            return None
+        if scene.get("source_sha256") != expected["source_scene_sha256"][index]:
+            return None
+        support_path = run_dir / "normalized_scenes" / str(scene.get("input_valid_mask_path", ""))
+        if not support_path.is_file() or scene.get("input_valid_mask_sha256") != _sha256(support_path):
+            return None
+        with rasterio.open(support_path) as support_dataset:
+            support = support_dataset.read(1).astype(bool)
+        if support.shape != finite.shape or not np.array_equal(finite, support) or scene.get("input_valid_mask_digest") != _mask_digest(support):
+            return None
     summary = _load_json(summary_path)
-    if summary.get("radiometric_method") != "BAGRN" or not isinstance(summary.get("task10d_primary_metrics"), dict):
+    required_metrics = {"mamd", "msdd", "rdd", "local_mamd", "local_rdd", "seam_mae", "seam_rmse", "seam_rdd", "cgl_rad"}
+    if (
+        summary.get("radiometric_method") != "BAGRN"
+        or summary.get("geometry_run") != spec.geometry_run
+        or summary.get("radiometric_control_idx") != 0
+        or summary.get("scene_ids") != expected["scene_ids"]
+        or not isinstance(summary.get("task10d_primary_metrics"), dict)
+        or set(summary["task10d_primary_metrics"]) != required_metrics
+        or not isinstance(summary.get("task10d_raw_primary_metrics"), dict)
+        or set(summary["task10d_raw_primary_metrics"]) != required_metrics
+    ):
+        return None
+    if (
+        manifest.get("radiometric_summary_sha256") != _sha256(summary_path)
+        or manifest.get("bagrn_parameters_sha256") != _sha256(params_path)
+    ):
         return None
     return manifest_path, summary
+
+
+def _find_valid_cache(spec: BaselineReplaySpec, base_dir: Path) -> tuple[Path, tuple[Path, dict]] | None:
+    """Find the base cache or the newest valid preserved regeneration."""
+    candidates = [base_dir]
+    if spec.replay_root.is_dir():
+        candidates.extend(sorted(spec.replay_root.glob(f"{spec.name}__regen_*"), reverse=True))
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        try:
+            cache = _validate_scene_cache(spec, candidate)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            cache = None
+        if cache is not None:
+            return candidate, cache
+    return None
 
 
 def _validate_mosaic(spec: BaselineReplaySpec, mosaic_path: Path, expected_support: np.ndarray | None = None) -> None:
@@ -204,11 +248,9 @@ def replay_baseline(spec: BaselineReplaySpec) -> ReplayArtifact:
     if not (spec.global_run_dir / "global_transforms.json").is_file():
         raise FileNotFoundError("frozen global_transforms.json is missing")
     run_dir = spec.replay_root / spec.name
-    if run_dir.exists():
-        try:
-            cache = _validate_scene_cache(spec, run_dir)
-        except (OSError, ValueError, KeyError, json.JSONDecodeError):
-            cache = None
+    found = _find_valid_cache(spec, run_dir)
+    if found is not None:
+        run_dir, cache = found
     else:
         cache = None
     if cache is None:
@@ -341,6 +383,18 @@ def materialize_final_results(
     output_root = Path(output_root)
     if output_root.exists() and any(output_root.iterdir()):
         raise FileExistsError(f"final results directory is non-empty: {output_root}")
+    for artifact in (main, traditional):
+        if not artifact.mosaic_path.is_file() or _sha256(artifact.mosaic_path) != artifact.mosaic_sha256:
+            raise ValueError(f"replay mosaic changed after validation: {artifact.mosaic_path}")
+        cache = _validate_scene_cache(artifact.spec, artifact.run_dir)
+        if cache is None:
+            raise ValueError(f"replay cache changed after validation: {artifact.run_dir}")
+        manifest_path, _ = cache
+        _validate_mosaic(artifact.spec, artifact.mosaic_path, _cache_support(artifact.run_dir, _load_json(manifest_path)))
+        if not (artifact.mosaic_path.parent / "preview.png").is_file():
+            raise FileNotFoundError(f"replay preview is missing: {artifact.mosaic_path.parent / 'preview.png'}")
+        if not (artifact.run_dir / "bagrn_parameters.npz").is_file():
+            raise FileNotFoundError(f"BAGRN parameters are missing: {artifact.run_dir / 'bagrn_parameters.npz'}")
     output_root.mkdir(parents=True, exist_ok=True)
     main_summary = _write_baseline_package(
         output_root / "EfficientLoFTR_Translation_BAGRN", "EfficientLoFTR + Translation-L2 + BAGRN", main
@@ -356,11 +410,14 @@ def materialize_final_results(
         summary["bagrn_mamd"] = metric_payload["bagrn"]["mamd"]["weighted_mean"]
         summary["bagrn_msdd"] = metric_payload["bagrn"]["msdd"]["weighted_mean"]
         summary["bagrn_rdd"] = metric_payload["bagrn"]["rdd"]["weighted_mean"]
+        summary["raw_mamd"] = metric_payload["raw"]["task10d"]["mamd"]["weighted_mean"]
+        summary["raw_msdd"] = metric_payload["raw"]["task10d"]["msdd"]["weighted_mean"]
+        summary["raw_rdd"] = metric_payload["raw"]["task10d"]["rdd"]["weighted_mean"]
     (output_root / "paper_tables.md").write_text(
         "# Paper baseline tables\n\n"
-        "| Method | Geometry run | Mosaic SHA-256 | BAGRN MAMD | BAGRN MSDD | BAGRN RDD |\n|---|---|---|---:|---:|---:|\n"
-        f"| EfficientLoFTR + Translation-L2 + BAGRN | {main.spec.geometry_run} | {main.mosaic_sha256} | {main_summary['bagrn_mamd']} | {main_summary['bagrn_msdd']} | {main_summary['bagrn_rdd']} |\n"
-        f"| SIFT + MST + BAGRN | {traditional.spec.geometry_run} | {traditional.mosaic_sha256} | {traditional_summary['bagrn_mamd']} | {traditional_summary['bagrn_msdd']} | {traditional_summary['bagrn_rdd']} |\n\n"
+        "| Method | Geometry run | Mosaic SHA-256 | RAW MAMD | BAGRN MAMD | RAW MSDD | BAGRN MSDD | RAW RDD | BAGRN RDD |\n|---|---|---|---:|---:|---:|---:|---:|---:|\n"
+        f"| EfficientLoFTR + Translation-L2 + BAGRN | {main.spec.geometry_run} | {main.mosaic_sha256} | {main_summary['raw_mamd']} | {main_summary['bagrn_mamd']} | {main_summary['raw_msdd']} | {main_summary['bagrn_msdd']} | {main_summary['raw_rdd']} | {main_summary['bagrn_rdd']} |\n"
+        f"| SIFT + MST + BAGRN | {traditional.spec.geometry_run} | {traditional.mosaic_sha256} | {traditional_summary['raw_mamd']} | {traditional_summary['bagrn_mamd']} | {traditional_summary['raw_msdd']} | {traditional_summary['bagrn_msdd']} | {traditional_summary['raw_rdd']} | {traditional_summary['bagrn_rdd']} |\n\n"
         "All radiometric values are frozen Task10D snapshots; they do not resolve the separate paper CD/GL formula ambiguity.\n",
         encoding="utf-8",
     )
@@ -408,6 +465,9 @@ def verify_final_results(
         support = _cache_support(run_dir, _load_json(manifest_path))
         mosaic_path = run_dir / "weighted_feather" / "mosaic.tif"
         _validate_mosaic(spec, mosaic_path, support)
+        replay_sha = _sha256(mosaic_path)
+        if replay_sha != info["mosaic_sha256"]:
+            raise ValueError(f"{key}: replay/final mosaic checksum mismatch")
         final_mosaic = output_root / directory / "03_mosaic" / "final_mosaic.tif"
         if not final_mosaic.is_file() or _sha256(final_mosaic) != info["mosaic_sha256"]:
             raise ValueError(f"{key}: final mosaic checksum mismatch")

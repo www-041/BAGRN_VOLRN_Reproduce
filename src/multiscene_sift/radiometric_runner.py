@@ -72,6 +72,10 @@ def _sha256_stream(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _mask_sha256(mask: np.ndarray) -> str:
+    return hashlib.sha256(np.packbits(np.asarray(mask, dtype=np.uint8), bitorder="little").tobytes()).hexdigest()
+
+
 def _persist_normalized_scenes(
     output_dir: Path,
     local_arrays: list[np.ndarray],
@@ -87,13 +91,16 @@ def _persist_normalized_scenes(
     radiometric_control_idx: int,
     scene_ids: list[str],
     source_scene_sha256: list[str],
+    input_valid_masks: list[np.ndarray],
 ) -> str:
     """Persist canonical-grid final scene rasters for a replayable BAGRN run."""
-    if len(local_arrays) != len(crop_slices) or len(local_arrays) != len(scene_ids) or len(scene_ids) != len(source_scene_sha256):
+    if len(local_arrays) != len(crop_slices) or len(local_arrays) != len(scene_ids) or len(scene_ids) != len(source_scene_sha256) or len(scene_ids) != len(input_valid_masks):
         raise ValueError("normalized-scene cache inputs must have matching scene counts")
     height, width = (int(full_shape[0]), int(full_shape[1]))
     scene_dir = output_dir / "normalized_scenes"
     scene_dir.mkdir(exist_ok=False)
+    support_dir = scene_dir / "input_valid_masks"
+    support_dir.mkdir(exist_ok=False)
     transform = grid_transform(grid)
     scene_rows = []
     for index, (array, (r0, r1, c0, c1), scene_id) in enumerate(
@@ -104,10 +111,15 @@ def _persist_normalized_scenes(
         filename = f"scene_{index:03d}.tif"
         path = scene_dir / filename
         _write_single_band(path, full, transform, grid["crs"], np.nan, "float32")
+        support_path = support_dir / filename
+        _write_single_band(support_path, np.asarray(input_valid_masks[index], dtype=np.uint8), transform, grid["crs"], 0, "uint8")
         scene_rows.append({
             "scene_index": index,
             "scene_id": scene_id,
             "source_sha256": source_scene_sha256[index],
+            "input_valid_mask_path": f"input_valid_masks/{filename}",
+            "input_valid_mask_sha256": _sha256_stream(support_path),
+            "input_valid_mask_digest": _mask_sha256(input_valid_masks[index]),
             "path": filename,
             "valid_pixels": int(np.count_nonzero(np.isfinite(full))),
             "sha256": _sha256_stream(path),
@@ -642,6 +654,7 @@ def run_fixed_geometry_radiometric(
             radiometric_control_idx=radiometric_control_idx,
             scene_ids=scene_ids,
             source_scene_sha256=source_scene_sha256,
+            input_valid_masks=valid_masks,
         )
     overlap_metrics = _pair_metrics(metric_before, metric_after, valid_masks)
     if method == "RAW":
@@ -778,6 +791,12 @@ def run_fixed_geometry_radiometric(
     (output_dir / "radiometric_summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8"
     )
+    if normalized_scenes_manifest is not None:
+        manifest_path = output_dir / normalized_scenes_manifest
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["radiometric_summary_sha256"] = _sha256_stream(output_dir / "radiometric_summary.json")
+        manifest["bagrn_parameters_sha256"] = _sha256_stream(output_dir / "bagrn_parameters.npz")
+        manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return summary
 
 

@@ -122,6 +122,9 @@ def test_replay_rejects_stale_cache_and_preserves_it_before_bagrn_fallback(tmp_p
     assert regenerated.run_dir != first.run_dir
     assert first.run_dir.is_dir()
     assert regenerated.run_dir.name.startswith("stale__regen_")
+    reused = replay_baseline(spec)
+    assert reused.cache_status == "REUSED"
+    assert reused.run_dir == regenerated.run_dir
 
 
 def test_replay_rejects_relative_grid_shift_and_mosaic_holes(tmp_path):
@@ -177,3 +180,18 @@ def test_final_package_keeps_main_and_traditional_artifacts_distinct(tmp_path):
         assert (root / "03_mosaic" / "mosaic_summary.json").is_file()
         assert (root / "experiment_summary.md").is_file()
     assert (tmp_path / "final_results" / "paper_tables.md").is_file()
+
+
+def test_materialize_revalidates_replay_mosaic_before_publishing(tmp_path):
+    """A replay artifact cannot be published after its source mosaic is mutated."""
+    from src.multiscene_sift.final_baseline_replay import BaselineReplaySpec, materialize_final_results, replay_baseline
+
+    source, global_dir, grid = _inputs(tmp_path)
+    spec = BaselineReplaySpec("main", "sift_mst", source, global_dir, grid, tmp_path / "replay")
+    main = replay_baseline(spec)
+    traditional = replay_baseline(BaselineReplaySpec("traditional", "sift_mst", source, global_dir, grid, tmp_path / "replay"))
+    with main.mosaic_path.open("ab") as stream:
+        stream.write(b"tampered")
+
+    with pytest.raises(ValueError):
+        materialize_final_results(main, traditional, tmp_path / "final_results")
