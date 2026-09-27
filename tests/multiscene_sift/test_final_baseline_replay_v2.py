@@ -66,3 +66,70 @@ def test_default_bagrn_run_does_not_write_scene_cache(tmp_path):
 
     assert not (tmp_path / "bagrn" / "normalized_scenes").exists()
     assert not (tmp_path / "bagrn" / "normalized_scenes_manifest.json").exists()
+
+
+def test_replay_regenerates_missing_cache_then_reuses_verified_cache(tmp_path):
+    """A replay must produce BAGRN artifacts once, then consume the cache."""
+    from src.multiscene_sift.final_baseline_replay import (
+        BaselineReplaySpec,
+        replay_baseline,
+    )
+
+    source, global_dir, grid = _inputs(tmp_path)
+    spec = BaselineReplaySpec(
+        name="synthetic_main",
+        geometry_run="sift_mst",
+        source_config=source,
+        global_run_dir=global_dir,
+        output_grid=grid,
+        replay_root=tmp_path / "replay",
+    )
+
+    first = replay_baseline(spec)
+    assert first.cache_status == "REGENERATED"
+    assert first.normalized_scenes_manifest.is_file()
+    assert first.mosaic_path.is_file()
+    assert first.summary["radiometric_method"] == "BAGRN"
+    assert set(first.summary["task10d_primary_metrics"]) == {
+        "mamd", "msdd", "rdd", "local_mamd", "local_rdd",
+        "seam_mae", "seam_rmse", "seam_rdd", "cgl_rad",
+    }
+
+    second = replay_baseline(spec)
+    assert second.cache_status == "REUSED"
+    assert second.mosaic_path == first.mosaic_path
+    assert second.mosaic_sha256 == first.mosaic_sha256
+
+
+def test_final_package_keeps_main_and_traditional_artifacts_distinct(tmp_path):
+    """Swapping a baseline's geometry or mosaic must be visible in the package."""
+    from src.multiscene_sift.final_baseline_replay import (
+        BaselineReplaySpec,
+        materialize_final_results,
+        replay_baseline,
+    )
+
+    source, global_dir, grid = _inputs(tmp_path)
+    main = replay_baseline(BaselineReplaySpec(
+        name="main", geometry_run="sift_mst", source_config=source,
+        global_run_dir=global_dir, output_grid=grid, replay_root=tmp_path / "replay",
+    ))
+    traditional = replay_baseline(BaselineReplaySpec(
+        name="traditional", geometry_run="sift_mst", source_config=source,
+        global_run_dir=global_dir, output_grid=grid, replay_root=tmp_path / "replay",
+    ))
+
+    manifest = materialize_final_results(main, traditional, tmp_path / "final_results")
+
+    assert manifest["baselines"]["main"]["mosaic_sha256"] == main.mosaic_sha256
+    assert manifest["baselines"]["traditional"]["mosaic_sha256"] == traditional.mosaic_sha256
+    for name in ("EfficientLoFTR_Translation_BAGRN", "SIFT_MST_BAGRN"):
+        root = tmp_path / "final_results" / name
+        assert (root / "01_registration" / "pairwise_metrics.csv").is_file()
+        assert (root / "01_registration" / "global_metrics.json").is_file()
+        assert (root / "02_radiometric" / "radiometric_metrics.json").is_file()
+        assert (root / "03_mosaic" / "final_mosaic.tif").is_file()
+        assert (root / "03_mosaic" / "preview.png").is_file()
+        assert (root / "03_mosaic" / "mosaic_summary.json").is_file()
+        assert (root / "experiment_summary.md").is_file()
+    assert (tmp_path / "final_results" / "paper_tables.md").is_file()
