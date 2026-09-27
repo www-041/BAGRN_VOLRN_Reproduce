@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
+from scipy.ndimage import binary_erosion, sobel
 from scipy.stats import wasserstein_distance
 
 
@@ -196,6 +197,67 @@ def compute_seam_zone_metrics(
         "seam_mae": float(np.mean(np.abs(difference))),
         "seam_rmse": float(np.sqrt(np.mean(np.square(difference)))),
         "seam_rdd": float(wasserstein_distance(values_a, values_b)),
+    }
+
+
+def circular_angle_difference(angle_a: np.ndarray | float, angle_b: np.ndarray | float) -> np.ndarray | float:
+    """Return the shortest absolute circular difference in radians."""
+
+    delta = np.asarray(angle_b) - np.asarray(angle_a)
+    result = np.abs(np.arctan2(np.sin(delta), np.cos(delta)))
+    if result.ndim == 0:
+        return float(result)
+    return result
+
+
+def compute_cgl(
+    raw_image: np.ndarray,
+    normalized_image: np.ndarray,
+    valid_mask: np.ndarray,
+) -> dict[str, Any]:
+    """Compute Task10D Circular Gradient Orientation Loss (CGL)."""
+
+    raw = np.asarray(raw_image, dtype=np.float64)
+    normalized = np.asarray(normalized_image, dtype=np.float64)
+    valid = np.asarray(valid_mask, dtype=bool)
+    if raw.shape != normalized.shape or raw.shape != valid.shape:
+        raise ValueError("CGL arrays and valid_mask must have identical shapes")
+    if raw.ndim != 2:
+        raise ValueError("CGL requires two-dimensional arrays")
+    finite_raw = valid & np.isfinite(raw)
+    finite_normalized = valid & np.isfinite(normalized)
+    stencil = np.ones((3, 3), dtype=bool)
+    eligible_stencil = binary_erosion(finite_raw, structure=stencil) & binary_erosion(
+        finite_normalized, structure=stencil
+    )
+    raw_gx = sobel(raw, axis=1, mode="nearest")
+    raw_gy = sobel(raw, axis=0, mode="nearest")
+    normalized_gx = sobel(normalized, axis=1, mode="nearest")
+    normalized_gy = sobel(normalized, axis=0, mode="nearest")
+    raw_magnitude = np.hypot(raw_gx, raw_gy)
+    normalized_magnitude = np.hypot(normalized_gx, normalized_gy)
+    eligible = (
+        eligible_stencil
+        & (raw_magnitude > 1e-12)
+        & (normalized_magnitude > 1e-12)
+    )
+    valid_pixels = int(np.count_nonzero(eligible))
+    if valid_pixels == 0:
+        return {
+            "status": "INSUFFICIENT_SUPPORT",
+            "valid_pixels": 0,
+            "cgl_rad": None,
+            "cgl_deg": None,
+        }
+    raw_theta = np.arctan2(raw_gy, raw_gx)
+    normalized_theta = np.arctan2(normalized_gy, normalized_gx)
+    loss = circular_angle_difference(raw_theta, normalized_theta)
+    cgl_rad = float(np.mean(np.asarray(loss)[eligible]))
+    return {
+        "status": "PASS",
+        "valid_pixels": valid_pixels,
+        "cgl_rad": cgl_rad,
+        "cgl_deg": float(np.rad2deg(cgl_rad)),
     }
 
 
