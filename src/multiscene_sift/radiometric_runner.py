@@ -99,6 +99,42 @@ def _write_volrn_solver_history(output_dir: Path, diagnostics: Mapping) -> None:
                 writer.writerow({"band": band["band"], **record})
 
 
+def build_volrn_application_audit(
+    before_arrays: list[np.ndarray],
+    after_arrays: list[np.ndarray],
+    valid_masks: list[np.ndarray],
+    coefficients: np.ndarray,
+) -> dict:
+    """Summarize the solver-coefficient-to-image application for each scene."""
+    scenes = []
+    for scene_idx, (before, after, valid_mask) in enumerate(zip(before_arrays, after_arrays, valid_masks)):
+        valid = np.asarray(valid_mask, dtype=bool) & np.isfinite(before[0]) & np.isfinite(after[0])
+        difference = np.abs(after[0] - before[0])
+        values = difference[valid]
+        scenes.append({
+            "scene_index": int(scene_idx),
+            "valid_pixels": int(values.size),
+            "mean_abs_difference": float(np.mean(values)) if values.size else None,
+            "max_difference": float(np.max(values)) if values.size else None,
+            "changed_fraction": float(np.count_nonzero(values > 1e-12) / values.size) if values.size else None,
+        })
+    finite_coefficients = np.asarray(coefficients, dtype=np.float64)[np.isfinite(coefficients)]
+    a_values = np.asarray(coefficients, dtype=np.float64)[..., 0]
+    b_values = np.asarray(coefficients, dtype=np.float64)[..., 1]
+    a_values = a_values[np.isfinite(a_values)]
+    b_values = b_values[np.isfinite(b_values)]
+    return {
+        "scenes": scenes,
+        "coefficient_range": {
+            "a_min": float(np.min(a_values)) if a_values.size else None,
+            "a_max": float(np.max(a_values)) if a_values.size else None,
+            "b_min": float(np.min(b_values)) if b_values.size else None,
+            "b_max": float(np.max(b_values)) if b_values.size else None,
+            "finite_count": int(finite_coefficients.size),
+        },
+    }
+
+
 def _histogram_distance(values_a: np.ndarray, values_b: np.ndarray, bins: int = 256) -> float:
     if values_a.size < 2 or values_b.size < 2:
         return 0.0
@@ -540,6 +576,12 @@ def run_fixed_geometry_radiometric(
     if method == "BAGRN_VOLRN":
         np.savez_compressed(output_dir / "volrn_parameters.npz", block_coefficients=volrn_coeffs)
         _write_volrn_solver_history(output_dir, volrn_diag)
+        volrn_application_audit = build_volrn_application_audit(
+            registered, metric_after, valid_masks, volrn_coeffs
+        )
+        (output_dir / "volrn_application_audit.json").write_text(
+            json.dumps(volrn_application_audit, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     root = repository_root
     config = build_task10_config(root)
@@ -624,6 +666,7 @@ def run_fixed_geometry_radiometric(
         summary["outputs"].update({
             "volrn_solver_history.json": "volrn_solver_history.json",
             "volrn_solver_history.csv": "volrn_solver_history.csv",
+            "volrn_application_audit.json": "volrn_application_audit.json",
         })
     (output_dir / "radiometric_summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8"
