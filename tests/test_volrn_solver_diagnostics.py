@@ -41,6 +41,64 @@ def test_max_iter_returns_last_finite_iterate_and_diagnostics():
         assert key in diagnostics
 
 
+def test_admm_history_records_requested_iteration_fields_at_cap():
+    B = sparse.csr_matrix(np.diag([2.0, 2.0]))
+    A = sparse.identity(2, format="csr")
+    b = np.array([2.0, 0.0])
+
+    _, converged, iterations, diagnostics = volrn._admm_solver(
+        B,
+        A,
+        b,
+        lambda_param=0.5,
+        rho=1.0,
+        max_iter=3,
+        tol=1e-12,
+        return_diagnostics=True,
+    )
+
+    assert not converged
+    assert iterations == 3
+    history = diagnostics["history"]
+    assert len(history) == iterations
+    expected = {
+        "iteration",
+        "objective",
+        "primal_residual",
+        "dual_residual",
+        "x_update_norm",
+        "z_update_norm",
+        "dual_update_norm",
+        "cg_iterations",
+        "cg_residual",
+        "relative_change",
+    }
+    assert all(expected <= set(record) for record in history)
+    assert [record["iteration"] for record in history] == [1, 2, 3]
+
+
+def test_fixed_runner_persists_volrn_solver_history_files(tmp_path):
+    from tests.multiscene_sift.test_fixed_radiometric_runner import _inputs
+    from src.multiscene_sift.radiometric_runner import run_fixed_geometry_radiometric
+
+    source, global_dir, grid = _inputs(tmp_path)
+    result = run_fixed_geometry_radiometric(
+        source, global_dir, grid, tmp_path / "run", method="BAGRN_VOLRN",
+        geometry_run="efficient_loftr_translation_l2", block_size_pixels=8,
+        max_iter=2,
+    )
+
+    run_dir = tmp_path / "run"
+    history_path = run_dir / "volrn_solver_history.json"
+    csv_path = run_dir / "volrn_solver_history.csv"
+    assert history_path.exists()
+    assert csv_path.exists()
+    payload = __import__("json").loads(history_path.read_text(encoding="utf-8"))
+    assert payload["bands"]
+    assert len(payload["bands"][0]["history"]) == 2
+    assert "volrn_solver_history.json" in result["outputs"]
+
+
 def test_x_change_alone_cannot_declare_admm_convergence(monkeypatch):
     B = sparse.csr_matrix((1, 2))
     A = sparse.csr_matrix([[1.0, 0.0]])

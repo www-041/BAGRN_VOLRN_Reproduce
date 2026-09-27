@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import csv
 from pathlib import Path
 from typing import Mapping
 
@@ -74,6 +75,28 @@ def _write_preview(path: Path, mosaic_path: Path, valid_mask: np.ndarray) -> Non
     stretched = np.clip((image - lower) / max(float(upper - lower), 1e-12) * 255.0, 0, 255)
     stretched[~valid_mask] = 0
     Image.fromarray(stretched.astype(np.uint8), mode="L").save(path)
+
+
+def _write_volrn_solver_history(output_dir: Path, diagnostics: Mapping) -> None:
+    """Persist per-band ADMM iteration history without changing the solver protocol."""
+    bands = []
+    for band_idx, solver_diag in enumerate(diagnostics.get("band_solver_diagnostics", [])):
+        bands.append({"band": int(band_idx), "history": solver_diag.get("history", [])})
+    payload = {"schema_version": 1, "n_bands": len(bands), "bands": bands}
+    (output_dir / "volrn_solver_history.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    fieldnames = [
+        "band", "iteration", "objective", "primal_residual", "dual_residual",
+        "x_update_norm", "z_update_norm", "dual_update_norm", "cg_iterations",
+        "cg_residual", "relative_change",
+    ]
+    with (output_dir / "volrn_solver_history.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for band in bands:
+            for record in band["history"]:
+                writer.writerow({"band": band["band"], **record})
 
 
 def _histogram_distance(values_a: np.ndarray, values_b: np.ndarray, bins: int = 256) -> float:
@@ -516,6 +539,7 @@ def run_fixed_geometry_radiometric(
         np.savez_compressed(output_dir / "bagrn_parameters.npz", theta_mu=theta_mu, theta_sigma=theta_sigma)
     if method == "BAGRN_VOLRN":
         np.savez_compressed(output_dir / "volrn_parameters.npz", block_coefficients=volrn_coeffs)
+        _write_volrn_solver_history(output_dir, volrn_diag)
 
     root = repository_root
     config = build_task10_config(root)
@@ -596,6 +620,11 @@ def run_fixed_geometry_radiometric(
             "weight_sum.tif", "run_config.json", "geometry_source.json", "radiometric_method.json",
         )},
     }
+    if method == "BAGRN_VOLRN":
+        summary["outputs"].update({
+            "volrn_solver_history.json": "volrn_solver_history.json",
+            "volrn_solver_history.csv": "volrn_solver_history.csv",
+        })
     (output_dir / "radiometric_summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8"
     )

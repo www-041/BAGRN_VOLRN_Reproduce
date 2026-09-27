@@ -416,6 +416,7 @@ def _admm_solver(
     dual_history = []
     objective_history = []
     x_change_history = []
+    history = []
     primal_residual = np.inf
     dual_residual = np.inf
     primal_tolerance = np.inf
@@ -425,7 +426,21 @@ def _admm_solver(
 
     for it in range(max_iter):
         rhs = rho * (At @ (z - u + b))
-        x_new, cg_info = cg(M, rhs, x0=x, rtol=1e-6, maxiter=500, atol=1e-10)
+        cg_iterations = 0
+
+        def _count_cg_iteration(xk):
+            nonlocal cg_iterations
+            cg_iterations += 1
+
+        x_new, cg_info = cg(
+            M,
+            rhs,
+            x0=x,
+            rtol=1e-6,
+            maxiter=500,
+            atol=1e-10,
+            callback=_count_cg_iteration,
+        )
         cg_info = int(cg_info)
         cg_status_history.append(cg_info)
         if cg_info != 0:
@@ -473,6 +488,21 @@ def _admm_solver(
         dual_history.append(dual_residual)
         objective_history.append(objective)
         x_change_history.append(float(x_diff))
+        z_update_norm = float(np.linalg.norm(z_new - z))
+        dual_update_norm = float(np.linalg.norm(u_new - u))
+        cg_residual = float(np.linalg.norm(M @ x_new - rhs))
+        history.append({
+            "iteration": int(it + 1),
+            "objective": objective,
+            "primal_residual": primal_residual,
+            "dual_residual": dual_residual,
+            "x_update_norm": float(np.linalg.norm(x_new - x)),
+            "z_update_norm": z_update_norm,
+            "dual_update_norm": dual_update_norm,
+            "cg_iterations": int(cg_iterations),
+            "cg_residual": cg_residual,
+            "relative_change": float(x_diff),
+        })
         n_iters = it + 1
 
         # ADMM convergence requires both standard primal and dual residuals;
@@ -520,6 +550,7 @@ def _admm_solver(
         "dual_residual_history": dual_history,
         "objective_history": objective_history,
         "x_relative_change_history": x_change_history,
+        "history": history,
         "cg_status_history": cg_status_history,
         "cg_failed": bool(cg_failed),
         "finite_state": bool(finite_state and np.isfinite(x).all()),
