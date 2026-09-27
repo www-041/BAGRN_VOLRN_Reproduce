@@ -62,6 +62,76 @@ def _write_single_band(path: Path, data: np.ndarray, transform, crs, nodata, dty
         dst.write(np.asarray(data).astype(dtype, copy=False), 1)
 
 
+def _sha256_stream(path: Path) -> str:
+    """Hash an artifact without loading a full GeoTIFF into memory."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _persist_normalized_scenes(
+    output_dir: Path,
+    local_arrays: list[np.ndarray],
+    crop_slices: list[tuple[int, int, int, int]],
+    full_shape: tuple[int, int],
+    grid: Mapping,
+    *,
+    source_config: Path,
+    global_run_dir: Path,
+    output_grid: Path,
+    geometry_run: str,
+    method: str,
+    radiometric_control_idx: int,
+    scene_ids: list[str],
+) -> str:
+    """Persist canonical-grid final scene rasters for a replayable BAGRN run."""
+    if len(local_arrays) != len(crop_slices) or len(local_arrays) != len(scene_ids):
+        raise ValueError("normalized-scene cache inputs must have matching scene counts")
+    height, width = (int(full_shape[0]), int(full_shape[1]))
+    scene_dir = output_dir / "normalized_scenes"
+    scene_dir.mkdir(exist_ok=False)
+    transform = grid_transform(grid)
+    scene_rows = []
+    for index, (array, (r0, r1, c0, c1), scene_id) in enumerate(
+        zip(local_arrays, crop_slices, scene_ids)
+    ):
+        full = np.full((height, width), np.nan, dtype=np.float32)
+        full[r0:r1, c0:c1] = np.asarray(array[0], dtype=np.float32)
+        filename = f"scene_{index:03d}.tif"
+        path = scene_dir / filename
+        _write_single_band(path, full, transform, grid["crs"], np.nan, "float32")
+        scene_rows.append({
+            "scene_index": index,
+            "scene_id": scene_id,
+            "path": filename,
+            "valid_pixels": int(np.count_nonzero(np.isfinite(full))),
+            "sha256": _sha256_stream(path),
+        })
+    manifest = {
+        "schema_version": 1,
+        "method": method,
+        "geometry_run": geometry_run,
+        "radiometric_control_idx": int(radiometric_control_idx),
+        "source_config_sha256": _sha256(source_config),
+        "global_transforms_sha256": _sha256(global_run_dir / "global_transforms.json"),
+        "output_grid_sha256": _sha256(output_grid),
+        "grid": {
+            "crs": str(grid["crs"]),
+            "width": width,
+            "height": height,
+            "transform": list(transform)[:6],
+        },
+        "scenes": scene_rows,
+    }
+    manifest_path = output_dir / "normalized_scenes_manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return manifest_path.name
+
+
 def _write_preview(path: Path, mosaic_path: Path, valid_mask: np.ndarray) -> None:
     with rasterio.open(mosaic_path) as src:
         image = src.read(1).astype(np.float32)
@@ -433,6 +503,7 @@ def run_fixed_geometry_radiometric(
     tol: float = 1e-4,
     protocol_path: str | Path | None = None,
     strict_protocol: bool = False,
+    persist_normalized_scenes: bool = False,
 ) -> dict:
     """Run one RAW/BAGRN/BAGRN_VOLRN experiment without changing geometry."""
     method = str(method).upper()
@@ -543,6 +614,22 @@ def run_fixed_geometry_radiometric(
         if method == "RAW"
         else _expand_registered_footprints(final_arrays, crop_slices, registered[0].shape[1:])
     )
+    normalized_scenes_manifest = None
+    if persist_normalized_scenes:
+        normalized_scenes_manifest = _persist_normalized_scenes(
+            output_dir,
+            final_arrays,
+            crop_slices,
+            registered[0].shape[1:],
+            grid,
+            source_config=source_config,
+            global_run_dir=global_run_dir,
+            output_grid=output_grid,
+            geometry_run=geometry_run,
+            method=method,
+            radiometric_control_idx=radiometric_control_idx,
+            scene_ids=scene_ids,
+        )
     overlap_metrics = _pair_metrics(metric_before, metric_after, valid_masks)
     if method == "RAW":
         registered_metrics = overlap_metrics
@@ -662,6 +749,9 @@ def run_fixed_geometry_radiometric(
             "weight_sum.tif", "run_config.json", "geometry_source.json", "radiometric_method.json",
         )},
     }
+    if normalized_scenes_manifest is not None:
+        summary["normalized_scenes_manifest"] = normalized_scenes_manifest
+        summary["outputs"]["normalized_scenes_manifest.json"] = normalized_scenes_manifest
     if method == "BAGRN_VOLRN":
         summary["outputs"].update({
             "volrn_solver_history.json": "volrn_solver_history.json",
