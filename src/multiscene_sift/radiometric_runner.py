@@ -20,7 +20,6 @@ from scripts.run_b9_weighted_mosaic import (
     _project_scene,
 )
 from src.bagrn import bagrn_normalize
-from src.metrics import compute_all
 from src.mosaic import create_mosaic
 from src.multiscene_sift.band_geometry import apply_world_correction_to_transform
 from src.multiscene_sift.mosaic_protocol import grid_transform
@@ -30,6 +29,16 @@ from src.multiscene_sift.radiometric_protocol import (
     build_task10_config,
     write_run_metadata,
 )
+from src.multiscene_sift.radiometric_metrics import (
+    aggregate_weighted_pair_metric,
+    compute_cgl,
+    compute_local_pair_metrics,
+    compute_pair_mamd,
+    compute_pair_msdd,
+    compute_pair_rdd,
+    compute_seam_zone_metrics,
+)
+from src.multiscene_sift.task10d_metric_protocol import load_task10d_metric_protocol
 from src.overlap import detect_multi_overlap
 from src.registration_benchmark.mosaic_diagnostics import (
     build_seam_zone_mask,
@@ -159,6 +168,121 @@ def _pair_metrics(
     return {"pairs": rows, "seam_zone": seam_rows, "summary": summary}
 
 
+def _task10d_metrics(
+    raw_arrays: list[np.ndarray],
+    normalized_arrays: list[np.ndarray],
+    valid_masks: list[np.ndarray],
+    scene_ids: list[str] | None = None,
+) -> tuple[dict, dict]:
+    """Compute all frozen Task10D primary metrics on one geometry support."""
+
+    if not (len(raw_arrays) == len(normalized_arrays) == len(valid_masks)):
+        raise ValueError("Task10D metric inputs must contain the same scene count")
+    scene_ids = scene_ids or [str(index) for index in range(len(raw_arrays))]
+    global_rows = {"mamd": [], "msdd": [], "rdd": []}
+    local_rows = {"mamd": [], "rdd": []}
+    seam_rows = {"seam_mae": [], "seam_rmse": [], "seam_rdd": []}
+    weights = [distance_transform_edt(mask).astype(np.float64) for mask in valid_masks]
+    for i, j in itertools.combinations(range(len(normalized_arrays)), 2):
+        pair_name = f"{scene_ids[i]}::{scene_ids[j]}"
+        shared = valid_masks[i] & valid_masks[j]
+        finite_shared = shared & np.isfinite(normalized_arrays[i][0]) & np.isfinite(normalized_arrays[j][0])
+        valid_pixels = int(np.count_nonzero(finite_shared))
+        if valid_pixels:
+            pair_values = (
+                ("mamd", compute_pair_mamd),
+                ("msdd", compute_pair_msdd),
+                ("rdd", compute_pair_rdd),
+            )
+            for name, function in pair_values:
+                global_rows[name].append({
+                    "pair": pair_name,
+                    "value": function(normalized_arrays[i][0], normalized_arrays[j][0], shared),
+                    "valid_pixels": valid_pixels,
+                })
+        local = compute_local_pair_metrics(
+            normalized_arrays[i][0], normalized_arrays[j][0], shared
+        )
+        for tile in local["tiles"]:
+            for name in ("mamd", "rdd"):
+                local_rows[name].append({
+                    "pair": pair_name,
+                    **tile,
+                    "value": tile[name],
+                })
+        seam_zone = build_seam_zone_mask(valid_masks[i], valid_masks[j], weights[i], weights[j])
+        seam = compute_seam_zone_metrics(
+            normalized_arrays[i][0], normalized_arrays[j][0], seam_zone
+        )
+        if seam["valid_pixels"]:
+            for name in seam_rows:
+                seam_rows[name].append({
+                    "pair": pair_name,
+                    "value": seam[name],
+                    "valid_pixels": seam["valid_pixels"],
+                })
+
+    primary = {
+        "mamd": aggregate_weighted_pair_metric(global_rows["mamd"]),
+        "msdd": aggregate_weighted_pair_metric(global_rows["msdd"]),
+        "rdd": aggregate_weighted_pair_metric(global_rows["rdd"]),
+        "local_mamd": _aggregate_local_rows(local_rows["mamd"]),
+        "local_rdd": _aggregate_local_rows(local_rows["rdd"]),
+        "seam_mae": aggregate_weighted_pair_metric(seam_rows["seam_mae"]),
+        "seam_rmse": aggregate_weighted_pair_metric(seam_rows["seam_rmse"]),
+        "seam_rdd": aggregate_weighted_pair_metric(seam_rows["seam_rdd"]),
+    }
+    cgl_rows = []
+    for scene_id, raw, normalized, valid in zip(scene_ids, raw_arrays, normalized_arrays, valid_masks):
+        metric = compute_cgl(raw[0], normalized[0], valid)
+        cgl_rows.append({"scene_id": scene_id, **metric})
+    cgl_values = [row["cgl_rad"] for row in cgl_rows if row["cgl_rad"] is not None]
+    cgl_rad = float(np.mean(cgl_values)) if cgl_values else None
+    primary["cgl_rad"] = {
+        "value_rad": cgl_rad,
+        "value_deg": float(np.rad2deg(cgl_rad)) if cgl_rad is not None else None,
+        "per_scene": cgl_rows,
+    }
+    return primary, {
+        "changed_pixel_fraction": _changed_pixel_fraction(raw_arrays, normalized_arrays, valid_masks),
+    }
+
+
+def _aggregate_local_rows(rows: list[dict]) -> dict:
+    if not rows:
+        return {
+            "median": None, "mean": None, "p95": None,
+            "worst_tile": None, "valid_tile_count": 0, "per_tile": [],
+        }
+    values = np.asarray([row["value"] for row in rows], dtype=np.float64)
+    worst_index = int(np.argmax(values))
+    return {
+        "median": float(np.median(values)),
+        "mean": float(np.mean(values)),
+        "p95": float(np.percentile(values, 95)),
+        "worst_tile": dict(rows[worst_index]),
+        "valid_tile_count": len(rows),
+        "per_tile": rows,
+    }
+
+
+def _changed_pixel_fraction(
+    raw_arrays: list[np.ndarray], normalized_arrays: list[np.ndarray], valid_masks: list[np.ndarray]
+) -> list[dict]:
+    rows = []
+    for index, (raw, normalized, valid) in enumerate(zip(raw_arrays, normalized_arrays, valid_masks)):
+        support = valid & np.isfinite(raw[0]) & np.isfinite(normalized[0])
+        count = int(np.count_nonzero(support))
+        changed = int(np.count_nonzero(np.abs(raw[0][support] - normalized[0][support]) > 1e-12))
+        rows.append({
+            "scene_index": index,
+            "valid_pixels": count,
+            "changed_pixels": changed,
+            "changed_pixel_fraction": float(changed / count) if count else None,
+        })
+    return rows
+
+
 def _registered_inputs(
     source_config: Path,
     global_run_dir: Path,
@@ -261,6 +385,11 @@ def run_fixed_geometry_radiometric(
     global_run_dir = Path(global_run_dir)
     output_grid = Path(output_grid)
     output_dir = Path(output_dir)
+    repository_root = Path(__file__).resolve().parents[2]
+    if protocol_path is None:
+        protocol_path = repository_root / "data/output/b9_five_scene_validation/task10d_metric_protocol.json"
+    protocol_path = Path(protocol_path)
+    load_task10d_metric_protocol(protocol_path)
     if strict_protocol:
         expected = {
             "block_size_pixels": 400,
@@ -329,26 +458,6 @@ def run_fixed_geometry_radiometric(
         volrn_runtime = time.perf_counter() - start
         final_arrays = volrn_result
 
-    # Keep the six-metric schema separate from the additional seam/histogram
-    # diagnostics.  The formula audit determines whether these can be called
-    # verified paper metrics; this namespace is stable regardless of that
-    # scientific qualification.
-    paper_metric_values = compute_all(
-        processing_arrays,
-        final_arrays,
-        processing_nodata,
-        overlaps,
-        bands=[0],
-    )
-    paper_metrics = {
-        "ADM": paper_metric_values.get("adm"),
-        "ADSD": paper_metric_values.get("adsd"),
-        "CD": paper_metric_values.get("cd"),
-        "GL": paper_metric_values.get("gl"),
-        "RDOA": paper_metric_values.get("rdoa"),
-        "Ave": paper_metric_values.get("ave"),
-    }
-
     mosaic_path = output_dir / "mosaic.tif"
     _, mosaic_diag = create_mosaic(
         arrays=final_arrays, transforms=final_transforms, crs=str(grid["crs"]),
@@ -380,12 +489,35 @@ def run_fixed_geometry_radiometric(
         registered_metrics = overlap_metrics
     else:
         registered_metrics = _pair_metrics(registered, registered, valid_masks)
+    task10d_primary_metrics, task10d_diagnostic_values = _task10d_metrics(
+        metric_before, metric_after, valid_masks, scene_ids
+    )
+    diagnostics = dict(overlap_metrics["summary"])
+    diagnostics.update(task10d_diagnostic_values)
+    diagnostics["overlap"] = overlap_metrics
+    diagnostics["registered"] = registered_metrics
+    diagnostics["volrn_coefficients"] = {
+        "count": int(volrn_coeffs.size),
+        "finite_count": int(np.isfinite(volrn_coeffs).sum()),
+        "min": float(np.min(volrn_coeffs)) if volrn_coeffs.size else None,
+        "max": float(np.max(volrn_coeffs)) if volrn_coeffs.size else None,
+    }
+    diagnostics["clipping_or_nonfinite"] = {
+        "nonfinite_final_pixels": [
+            int(np.count_nonzero(~np.isfinite(array[0]) & valid))
+            for array, valid in zip(metric_after, valid_masks)
+        ],
+        "finite_final_pixels": [
+            int(np.count_nonzero(np.isfinite(array[0]) & valid))
+            for array, valid in zip(metric_after, valid_masks)
+        ],
+    }
     if method in ("BAGRN", "BAGRN_VOLRN"):
         np.savez_compressed(output_dir / "bagrn_parameters.npz", theta_mu=theta_mu, theta_sigma=theta_sigma)
     if method == "BAGRN_VOLRN":
         np.savez_compressed(output_dir / "volrn_parameters.npz", block_coefficients=volrn_coeffs)
 
-    root = Path(__file__).resolve().parents[2]
+    root = repository_root
     config = build_task10_config(root)
     config.update({
         "source_config": str(source_config), "output_grid": str(output_grid),
@@ -410,8 +542,9 @@ def run_fixed_geometry_radiometric(
         "scene_ids": scene_ids,
         "geometry_mutable": False,
     }
-    if protocol_path is not None:
-        config["protocol_sha256"] = _sha256(Path(protocol_path))
+    protocol_sha256 = _sha256(protocol_path)
+    config["protocol_sha256"] = protocol_sha256
+    config["task10d_metric_protocol_sha256"] = protocol_sha256
     radiometric_method = {
         "method": method, "band": "B9", "radiometric_control_idx": radiometric_control_idx,
         "radiometric_control_scene_id": scene_ids[radiometric_control_idx],
@@ -422,6 +555,7 @@ def run_fixed_geometry_radiometric(
         "cloud_mask_enabled": False, "mosaic_mode": "weighted",
         "block_size_pixels": block_size_pixels, "lambda": lambda_param,
         "rho": rho, "max_iter": max_iter, "tol": tol,
+        "task10d_metric_protocol_sha256": protocol_sha256,
     }
     write_run_metadata(
         output_dir, config, geometry_source=geometry_source,
@@ -440,11 +574,15 @@ def run_fixed_geometry_radiometric(
         )
 
     summary = {
-        "schema_version": 1, "dataset": "B9", "geometry_run": geometry_run,
+        "schema_version": 2, "dataset": "B9", "geometry_run": geometry_run,
         "radiometric_method": method, "scene_ids": scene_ids,
         "science_status": science_status,
         "radiometric_control_idx": radiometric_control_idx,
-        "paper_metrics": paper_metrics,
+        "paper_metrics": {"status": "UNVERIFIED", "cd": None, "gl": None},
+        "paper_metric_source_lock_status": "AMBIGUOUS",
+        "task10d_metric_protocol_sha256": protocol_sha256,
+        "task10d_primary_metrics": task10d_primary_metrics,
+        "diagnostics": diagnostics,
         "additional_diagnostics": overlap_metrics,
         "overlap_count": len(overlaps), "overlaps": overlaps,
         "registered_metrics": registered_metrics,

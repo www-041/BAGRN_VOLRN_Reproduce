@@ -85,7 +85,7 @@ def test_nonconverged_runner_result_is_not_scientific_pass(tmp_path):
     assert result["science_status"] != "PASS_CONVERGED"
 
 
-def test_all_radiometric_methods_emit_six_metric_schema(tmp_path):
+def test_all_radiometric_methods_emit_separated_task10d_metric_schema(tmp_path):
     source, global_dir, grid = _inputs(tmp_path)
     for method in ("RAW", "BAGRN", "BAGRN_VOLRN"):
         output = tmp_path / method
@@ -100,5 +100,9 @@ def test_all_radiometric_methods_emit_six_metric_schema(tmp_path):
             max_iter=4,
         )
         summary = json.loads((output / "radiometric_summary.json").read_text(encoding="utf-8"))
-        assert set(summary["paper_metrics"]) == {"ADM", "ADSD", "CD", "GL", "RDOA", "Ave"}
+        assert summary["paper_metrics"] == {"status": "UNVERIFIED", "cd": None, "gl": None}
+        assert set(summary["task10d_primary_metrics"]) == {
+            "mamd", "msdd", "rdd", "local_mamd", "local_rdd",
+            "seam_mae", "seam_rmse", "seam_rdd", "cgl_rad",
+        }
         assert "additional_diagnostics" in summary
