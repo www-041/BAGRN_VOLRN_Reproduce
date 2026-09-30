@@ -243,7 +243,7 @@ def process_pair(
                        valid_union=union,
                        crop_origin=origin, diagnostics=diagnostics)
     initial = _move_seam(initial_overlap, local_overlap[0].start, local_overlap[1].start)
-    fixed_mask = joint & _corridor(initial, a.shape, 128)
+    fixed_mask = joint & _corridor(initial, a.shape, cfg.corridor_half_width)
     metrics: dict[str, Any] = {
         "v0": {"blend_method": "existing_distance_weighted_feather",
                "valid_pixels": int(np.count_nonzero(union)),
@@ -270,6 +270,7 @@ def process_pair(
     )
     diagnostics.update(gain_min=local.gain_min, gain_max=local.gain_max,
                        offset_min=local.b_min, offset_max=local.b_max,
+                       local_correction_status=local.status,
                        fallback_segments=sum(segment.fallback_from is not None
                                              for segment in local.segments))
     base.update(corrected_a=local.corrected_a, corrected_b=local.corrected_b,

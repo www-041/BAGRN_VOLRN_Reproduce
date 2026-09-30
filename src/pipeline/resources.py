@@ -55,6 +55,12 @@ def discover_selected_records(config) -> list[dict[str, Any]]:
         raise RuntimeError(
             f"{HARD_STOP_INPUT_INVALID}: expected {config.dataset.expected_scene_count} scenes, found {len(records)}"
         )
+    if config.dataset.expected_scene_ids is not None:
+        actual_ids = tuple(str(record.get("scene_id")) for record in records)
+        if actual_ids != tuple(config.dataset.expected_scene_ids):
+            raise RuntimeError(
+                f"{HARD_STOP_INPUT_INVALID}: expected scene ids {tuple(config.dataset.expected_scene_ids)!r}, found {actual_ids!r}"
+            )
     for record in records:
         if record.get("crs") != config.canonical_grid.crs:
             raise RuntimeError(f"{HARD_STOP_INPUT_INVALID}: {record['scene_id']} CRS mismatch")

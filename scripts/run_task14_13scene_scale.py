@@ -777,7 +777,11 @@ def _task14_stream_bagrn(
     return {"summary": summary, "output_dir": str(bagrn_dir)}
 
 
-def continue_task14_after_stage02(output_root: str | Path, *, repo_dir: str | Path, weights_path: str | Path, device: str = "cuda") -> dict:
+def continue_task14_after_stage02(
+    output_root: str | Path, *, repo_dir: str | Path, weights_path: str | Path,
+    device: str = "cuda", band: str = "B9", match_max_side: int = 1024,
+    ransac_threshold: float = 2.0, random_seed: int = 0,
+) -> dict:
     """Execute frozen global/BAGRN stages after a validated Stage 02 resume.
 
     The repository currently has no 13-scene Task13A/13B adapter.  Stages
@@ -1101,12 +1105,12 @@ def run_task14(*, stage: str = "all", resume: bool = False, input_root: Path = D
         rows = [{"pair_id": f"{int(p['idx_i']):02d}_{int(p['idx_j']):02d}", "scene_i": p["scene_i"], "scene_j": p["scene_j"], "raw_match_count": 0, "valid_match_count": 0, "ransac_inlier_count": 0, "inlier_ratio": 0.0, "pairwise_rmse_px": None, "pairwise_p95_px": None, "pairwise_max_px": None, "coverage": 0.0, "matcher_runtime_sec": 0.0, "ransac_runtime_sec": 0.0, "status": HARD_STOP_MATCHER_UNAVAILABLE, "accepted_for_global": False} for p in edge_pairs]
     else:
         from src.multiscene_sift.pairwise import run_all_pairs
-        results = run_all_pairs(_scene_models(records), _edge_models(edge_pairs), output_root / "registration", band="B9", match_max_side=1024, ransac_threshold=2.0, random_seed=0, matcher="efficient_loftr", device=device)
+        results = run_all_pairs(_scene_models(records), _edge_models(edge_pairs), output_root / "registration", band=band, match_max_side=match_max_side, ransac_threshold=ransac_threshold, random_seed=random_seed, matcher="efficient_loftr", device=device)
         rows = _task14_registration_rows(results, records)
         _persist_task14_geometry(results, records, output_root)
     _write_csv(output_root / "registration_pair_metrics.csv", rows)
-    registration = _registration_metrics(rows); _write_json(output_root / "global_geometry_summary.json", registration); _write_json(sdir / "matcher_availability.json", {"efficient_loftr_available": available, "matcher": "EfficientLoFTR", "match_max_side": 1024})
-    _stage_marker(sdir, input_hashes=_hashes([output_root / "overlap_edges.csv"]), output_paths=[output_root / "registration_pair_metrics.csv", output_root / "global_geometry_summary.json", sdir / "matcher_availability.json"], params={"matcher": "EfficientLoFTR", "match_max_side": 1024, "device": device}, started=started, status="HARD_STOP" if not available else "SUCCESS", error=HARD_STOP_MATCHER_UNAVAILABLE if not available else None)
+    registration = _registration_metrics(rows); _write_json(output_root / "global_geometry_summary.json", registration); _write_json(sdir / "matcher_availability.json", {"efficient_loftr_available": available, "matcher": "EfficientLoFTR", "band": band, "match_max_side": match_max_side, "ransac_threshold": ransac_threshold, "random_seed": random_seed})
+    _stage_marker(sdir, input_hashes=_hashes([output_root / "overlap_edges.csv"]), output_paths=[output_root / "registration_pair_metrics.csv", output_root / "global_geometry_summary.json", sdir / "matcher_availability.json"], params={"matcher": "EfficientLoFTR", "band": band, "match_max_side": match_max_side, "ransac_threshold": ransac_threshold, "random_seed": random_seed, "device": device}, started=started, status="HARD_STOP" if not available else "SUCCESS", error=HARD_STOP_MATCHER_UNAVAILABLE if not available else None)
     runtime_rows.append({"stage": "02_matching_ransac", "status": "HARD_STOP" if not available else "SUCCESS", "wall_time_sec": time.perf_counter() - started, **_snapshot_resource(), "error": HARD_STOP_MATCHER_UNAVAILABLE if not available else ""})
 
     # The repository has no wired Task14 adapters for stages 03-12 yet.  If

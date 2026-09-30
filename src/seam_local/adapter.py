@@ -199,6 +199,8 @@ def _aggregate_corrections(
     scenes: np.ndarray,
     masks: np.ndarray,
     pair_results: Mapping[str, AdapterPairResult],
+    *,
+    corridor_half_width: int = 128,
 ) -> np.ndarray:
     """Aggregate pair deltas by commutative weighted mean, never cumulatively."""
 
@@ -216,7 +218,7 @@ def _aggregate_corrections(
         sl = (slice(origin_r, origin_r + h), slice(origin_c, origin_c + w))
         va = masks[item.scene_i][sl]
         vb = masks[item.scene_j][sl]
-        taper = _taper_for_seam(pair.initial_seam, (h, w))
+        taper = _taper_for_seam(pair.initial_seam, (h, w), half_width=corridor_half_width)
         for scene_index, original, local, valid in (
             (item.scene_i, scenes[item.scene_i][sl], pair.corrected_a, va),
             (item.scene_j, scenes[item.scene_j][sl], pair.corrected_b, vb),
@@ -238,6 +240,7 @@ def aggregate_labels_with_ties(
     raw_edt: np.ndarray,
     *,
     p95_edt: np.ndarray | None = None,
+    tie_tolerance: float = 1e-6,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Compose Task13B aggregation with the frozen Task13B.1 tie hierarchy."""
 
@@ -246,7 +249,8 @@ def aggregate_labels_with_ties(
     if raw.shape != masks.shape:
         raise ValueError("raw_edt and masks must have the same scene-first shape")
     base: MultiSceneLabelResult = aggregate_multiscene_labels(
-        masks, pairwise_fields, interiority=raw, interiority_p95=p95_edt
+        masks, pairwise_fields, interiority=raw, interiority_p95=p95_edt,
+        tie_epsilon=tie_tolerance,
     )
     tie_raw = raw.astype(np.float32, copy=False)
     if p95_edt is None:
@@ -425,12 +429,16 @@ def run_multiscene_adapter(
                                             footprints[pair.scene_i], footprints[pair.scene_j])
             initial_resolved = initial_side.status in {"EXCLUSIVE_CONTACT_RESOLVABLE", "CENTROID_RESOLVABLE"}
             refined_resolved = refined_side is not None and refined_side.status in {"EXCLUSIVE_CONTACT_RESOLVABLE", "CENTROID_RESOLVABLE"}
-            source_status = "PASS" if initial_resolved and refined_resolved else "REQUIRES_MULTISCENE_LABELING"
+            # Ownership is route-specific: V1 remains usable when V2 has no
+            # refined seam/source-side result.  Keep the old aggregate field
+            # as a diagnostic alias, but never make it gate V1.
+            source_status = "PASS" if initial_resolved else "REQUIRES_MULTISCENE_LABELING"
             if initial_resolved:
                 full_seam = _expand_seam_to_full(processed, masks.shape[1:], processed.initial_seam)
                 field = build_pairwise_preference_field(
                     masks[pair.scene_i], masks[pair.scene_j], full_seam,
                     initial_side.side_1_source, scene_a=pair.scene_i, scene_b=pair.scene_j,
+                    seam_half_width=(runtime_config.preference_distance_scale if runtime_config else 64.0),
                 )
                 # The extrapolated seam only supplies the required canonical
                 # line domain; it is not evidence outside this pair's crop.
@@ -448,6 +456,7 @@ def run_multiscene_adapter(
                 field = build_pairwise_preference_field(
                     masks[pair.scene_i], masks[pair.scene_j], full_seam,
                     refined_side.side_1_source, scene_a=pair.scene_i, scene_b=pair.scene_j,
+                    seam_half_width=(runtime_config.preference_distance_scale if runtime_config else 64.0),
                 )
                 pair_support = masks[pair.scene_i] & masks[pair.scene_j] & _seam_domain(processed, masks.shape[1:])
                 v2_fields[(pair.scene_i, pair.scene_j)] = replace(
@@ -463,11 +472,20 @@ def run_multiscene_adapter(
         )
 
     raw_edt = np.asarray([distance_transform_edt(mask) for mask in masks], dtype=np.float64)
-    v1_labels, v1_methods, v1_diag = aggregate_labels_with_ties(masks, v1_fields, raw_edt)
-    v2_labels, v2_methods, v2_diag = aggregate_labels_with_ties(masks, v2_fields, raw_edt)
-    corrected = _aggregate_corrections(scenes, masks, pair_results)
-    v1_weights = _cosine_weights(v1_labels, masks)
-    v2_weights = _cosine_weights(v2_labels, masks)
+    tie_tolerance = runtime_config.tie_tolerance if runtime_config else 1e-6
+    blend_width = runtime_config.blend_half_width if runtime_config else 64
+    v1_labels, v1_methods, v1_diag = aggregate_labels_with_ties(
+        masks, v1_fields, raw_edt, tie_tolerance=tie_tolerance
+    )
+    v2_labels, v2_methods, v2_diag = aggregate_labels_with_ties(
+        masks, v2_fields, raw_edt, tie_tolerance=tie_tolerance
+    )
+    corrected = _aggregate_corrections(
+        scenes, masks, pair_results,
+        corridor_half_width=(runtime_config.corridor_half_width if runtime_config else 128),
+    )
+    v1_weights = _cosine_weights(v1_labels, masks, width=blend_width)
+    v2_weights = _cosine_weights(v2_labels, masks, width=blend_width)
     v1 = blend_labeled_scenes(scenes, masks, v1_labels, weights=v1_weights)
     v2 = blend_labeled_scenes(corrected, masks, v2_labels, weights=v2_weights)
     diagnostics = dict(v2_diag)

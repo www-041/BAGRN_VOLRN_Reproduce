@@ -74,4 +74,84 @@ def structure_metrics(
     }
 
 
-__all__ = ["gradient_magnitude_ncc", "structure_metrics"]
+def stream_structure_metrics(
+    baseline_path: str | Any,
+    candidate_path: str | Any,
+    valid: np.ndarray,
+    *,
+    tile_size: int = 512,
+    halo: int = 1,
+) -> dict[str, Any]:
+    """Compute the canonical structure metrics from haloed raster windows.
+
+    The valid mask is kept un-eroded while constructing the safe image.  The
+    one-pixel erosion is applied only to the metric support after Sobel has
+    seen the original valid-valued neighbourhood.  This prevents NoData
+    edges from becoming artificial gradients and makes the result invariant
+    to the tile partition.
+    """
+    import rasterio
+
+    mask = np.asarray(valid, dtype=bool)
+    sums = np.zeros(5, dtype=np.float64)  # n, sum(x), sum(y), sum(x^2), sum(y^2)
+    cross = 0.0
+    cgl_sum = 0.0
+    cosine_sum = 0.0
+    orientation_count = 0
+    support_count = 0
+    with rasterio.open(baseline_path) as left, rasterio.open(candidate_path) as right:
+        if (left.height, left.width) != mask.shape or (right.height, right.width) != mask.shape:
+            raise ValueError("raster and valid mask shapes differ")
+        height, width = mask.shape
+        for r0 in range(0, height, tile_size):
+            for c0 in range(0, width, tile_size):
+                r1, c1 = min(height, r0 + tile_size), min(width, c0 + tile_size)
+                rs, cs = max(0, r0 - halo), max(0, c0 - halo)
+                re, ce = min(height, r1 + halo), min(width, c1 + halo)
+                window = rasterio.windows.Window(cs, rs, ce - cs, re - rs)
+                a = left.read(1, window=window).astype(np.float64)
+                b = right.read(1, window=window).astype(np.float64)
+                original_valid = mask[rs:re, cs:ce] & np.isfinite(a) & np.isfinite(b)
+                safe_a = np.where(original_valid, a, 0.0)
+                safe_b = np.where(original_valid, b, 0.0)
+                ax = sobel(safe_a, axis=1, mode="nearest")
+                ay = sobel(safe_a, axis=0, mode="nearest")
+                bx = sobel(safe_b, axis=1, mode="nearest")
+                by = sobel(safe_b, axis=0, mode="nearest")
+                amag = np.hypot(ax, ay)
+                bmag = np.hypot(bx, by)
+                support = binary_erosion(original_valid, structure=np.ones((3, 3), dtype=bool))
+                core = np.zeros_like(support, dtype=bool)
+                core[r0 - rs:r1 - rs, c0 - cs:c1 - cs] = True
+                support &= core
+                support_count += int(support.sum())
+                orient = support & (amag > 1e-12) & (bmag > 1e-12)
+                if not orient.any():
+                    continue
+                x, y = amag[orient], bmag[orient]
+                n = float(x.size)
+                sums += np.asarray([n, x.sum(), y.sum(), np.square(x).sum(), np.square(y).sum()])
+                cross += float(np.dot(x, y))
+                delta = np.arctan2(by[orient], bx[orient]) - np.arctan2(ay[orient], ax[orient])
+                cgl_sum += float(np.abs(np.arctan2(np.sin(delta), np.cos(delta))).sum())
+                cosine_sum += float(((ax[orient] * bx[orient] + ay[orient] * by[orient]) / (amag[orient] * bmag[orient])).sum())
+                orientation_count += int(x.size)
+    n, sx, sy, sx2, sy2 = sums
+    if n <= 0:
+        ncc = 1.0 if np.array_equal(mask, mask) and support_count > 0 else None
+    else:
+        numerator = cross - sx * sy / n
+        denominator = np.sqrt(max(sx2 - sx * sx / n, 0.0) * max(sy2 - sy * sy / n, 0.0))
+        ncc = float(numerator / denominator) if denominator > 0 else None
+    return {
+        "cgl_rad": float(cgl_sum / orientation_count) if orientation_count else None,
+        "cgl_deg": float(np.rad2deg(cgl_sum / orientation_count)) if orientation_count else None,
+        "gradient_magnitude_ncc": ncc,
+        "gradient_orientation_cosine": float(cosine_sum / orientation_count) if orientation_count else None,
+        "eligible_pixels": orientation_count,
+        "support_pixels": support_count,
+        "finite": bool(ncc is not None and all(np.isfinite(value) for value in (ncc, cgl_sum, cosine_sum))),
+    }
+
+
+__all__ = ["gradient_magnitude_ncc", "structure_metrics", "stream_structure_metrics"]

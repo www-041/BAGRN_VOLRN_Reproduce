@@ -19,7 +19,7 @@ import numpy as np
 import rasterio
 from PIL import Image
 from rasterio.transform import Affine, array_bounds
-from scipy.ndimage import binary_erosion, distance_transform_edt, sobel
+from scipy.ndimage import distance_transform_edt
 from scipy.stats import wasserstein_distance
 
 from src.multiscene_sift.mosaic_protocol import grid_transform
@@ -34,6 +34,7 @@ from src.multiscene_sift.radiometric_metrics import (
 from src.multiscene_sift.radiometric_runner import _task10d_metrics
 from src.registration_benchmark.mosaic_diagnostics import build_seam_zone_mask
 from src.multiscene_sift.task10d_metric_protocol import load_task10d_metric_protocol
+from src.multiscene_sift.structural_metrics import stream_structure_metrics
 from src.volrn import volrn_normalize
 
 
@@ -266,6 +267,8 @@ def _load_frozen_inputs(task15_root: Path) -> dict[str, Any]:
     weight_root = task15_root / "stages/10_mosaics/weights"
     weight_dir = weight_root / "v1" if (weight_root / "v1").is_dir() else weight_root
     v2_weight_dir = weight_root / "v2" if (weight_root / "v2").is_dir() else weight_dir
+    ours_scene_dir = task15_root / "stages/09_correction"
+    ours_scene_paths = [ours_scene_dir / f"corrected_scene_{i:03d}.tif" for i in range(EXPECTED_SCENE_COUNT)]
     required = [canonical_path, source_path, manifest_path, v2_path, task15_root / "stages/10_mosaics/mosaic_summary.json"]
     required += [scene_dir / f"scene_{i:03d}.tif" for i in range(EXPECTED_SCENE_COUNT)]
     required += [mask_dir / f"scene_{i:03d}.tif" for i in range(EXPECTED_SCENE_COUNT)]
@@ -310,6 +313,7 @@ def _load_frozen_inputs(task15_root: Path) -> dict[str, Any]:
         "source_config": source_path,
         "manifest": manifest_path,
         "scene_paths": scene_paths,
+        "ours_scene_paths": ours_scene_paths,
         "mask_paths": mask_paths,
         "weight_paths": [weight_dir / f"weight_scene_{i:03d}.tif" for i in range(EXPECTED_SCENE_COUNT)],
         "v1_weight_paths": [weight_dir / f"weight_scene_{i:03d}.tif" for i in range(EXPECTED_SCENE_COUNT)],
@@ -372,80 +376,19 @@ def _finite_scene_outputs(paths: list[Path], masks: list[np.ndarray]) -> dict[st
 
 
 def _structural_ncc(path_a: Path, path_b: Path, mask: np.ndarray, tile: int = 512) -> float:
-    sums = np.zeros(5, dtype=np.float64)  # n, sum(a), sum(b), sum(a^2), sum(b^2)
-    cross = 0.0
-    with rasterio.open(path_a) as left, rasterio.open(path_b) as right:
-        height, width = left.height, left.width
-        for r0 in range(0, height, tile):
-            for c0 in range(0, width, tile):
-                r1, c1 = min(height, r0 + tile), min(width, c0 + tile)
-                rs, cs = max(0, r0 - 1), max(0, c0 - 1)
-                re, ce = min(height, r1 + 1), min(width, c1 + 1)
-                window = rasterio.windows.Window(cs, rs, ce - cs, re - rs)
-                a = left.read(1, window=window).astype(np.float64)
-                b = right.read(1, window=window).astype(np.float64)
-                valid = mask[rs:re, cs:ce] & np.isfinite(a) & np.isfinite(b)
-                valid = binary_erosion(valid, structure=np.ones((3, 3), dtype=bool))
-                core = np.zeros_like(valid, dtype=bool)
-                core[r0-rs:r1-rs, c0-cs:c1-cs] = True
-                valid &= core
-                if not valid.any():
-                    continue
-                ga = np.hypot(sobel(np.where(valid, a, 0.0), axis=1), sobel(np.where(valid, a, 0.0), axis=0))[valid]
-                gb = np.hypot(sobel(np.where(valid, b, 0.0), axis=1), sobel(np.where(valid, b, 0.0), axis=0))[valid]
-                sums += [ga.size, ga.sum(), gb.sum(), np.square(ga).sum(), np.square(gb).sum()]
-                sums[0] = sums[0]  # keep the count slot explicit
-                # Cross-product is accumulated separately to avoid another array-wide pass.
-                cross += float(np.dot(ga, gb))
-    n, sum_a, sum_b, sum_a2, sum_b2 = sums
-    if n == 0:
-        return float("nan")
-    numerator = cross - sum_a * sum_b / n
-    denominator = math.sqrt(max(sum_a2 - sum_a * sum_a / n, 0.0) * max(sum_b2 - sum_b * sum_b / n, 0.0))
-    return float(numerator / denominator) if denominator > 0 else float("nan")
+    metrics = stream_structure_metrics(path_a, path_b, mask, tile_size=tile, halo=1)
+    value = metrics.get("gradient_magnitude_ncc")
+    return float(value) if isinstance(value, (int, float)) and np.isfinite(value) else float("nan")
 
 
 def _stream_cgl(path_a: Path, path_b: Path, mask: np.ndarray, tile: int = 512) -> dict[str, Any]:
     """Compute Task10D CGL in haloed windows to avoid full-canvas temporaries."""
 
-    total = 0
-    loss_sum = 0.0
-    with rasterio.open(path_a) as left, rasterio.open(path_b) as right:
-        height, width = left.height, left.width
-        for r0 in range(0, height, tile):
-            for c0 in range(0, width, tile):
-                r_start, c_start = max(0, r0 - 1), max(0, c0 - 1)
-                r_stop, c_stop = min(height, r0 + tile + 1), min(width, c0 + tile + 1)
-                window = rasterio.windows.Window(c_start, r_start, c_stop - c_start, r_stop - r_start)
-                raw = left.read(1, window=window).astype(np.float64)
-                normalized = right.read(1, window=window).astype(np.float64)
-                valid = mask[r_start:r_stop, c_start:c_stop] & np.isfinite(raw) & np.isfinite(normalized)
-                raw_safe = np.where(valid, raw, 0.0)
-                normalized_safe = np.where(valid, normalized, 0.0)
-                raw_gx, raw_gy = sobel(raw_safe, axis=1, mode="nearest"), sobel(raw_safe, axis=0, mode="nearest")
-                norm_gx, norm_gy = sobel(normalized_safe, axis=1, mode="nearest"), sobel(normalized_safe, axis=0, mode="nearest")
-                raw_mag = np.hypot(raw_gx, raw_gy)
-                norm_mag = np.hypot(norm_gx, norm_gy)
-                eligible = binary_erosion(valid, structure=np.ones((3, 3), dtype=bool)) & (raw_mag > 1e-12) & (norm_mag > 1e-12)
-                # The halo is only for exact Sobel neighborhoods. Count each
-                # pixel once by restricting accumulation to this tile's core.
-                core = np.zeros_like(eligible, dtype=bool)
-                core_r0, core_c0 = r0 - r_start, c0 - c_start
-                core_r1 = core_r0 + min(tile, height - r0)
-                core_c1 = core_c0 + min(tile, width - c0)
-                core[core_r0:core_r1, core_c0:core_c1] = True
-                eligible &= core
-                if not eligible.any():
-                    continue
-                theta_a = np.arctan2(raw_gy, raw_gx)
-                theta_b = np.arctan2(norm_gy, norm_gx)
-                delta = np.abs(np.arctan2(np.sin(theta_b - theta_a), np.cos(theta_b - theta_a)))
-                loss_sum += float(delta[eligible].sum())
-                total += int(eligible.sum())
-    if total == 0:
-        return {"status": "INSUFFICIENT_SUPPORT", "valid_pixels": 0, "cgl_rad": None, "cgl_deg": None}
-    cgl_rad = float(loss_sum / total)
-    return {"status": "PASS", "valid_pixels": total, "cgl_rad": cgl_rad, "cgl_deg": float(np.rad2deg(cgl_rad))}
+    metrics = stream_structure_metrics(path_a, path_b, mask, tile_size=tile, halo=1)
+    count = int(metrics.get("eligible_pixels", 0))
+    cgl = metrics.get("cgl_rad")
+    return {"status": "PASS" if cgl is not None else "INSUFFICIENT_SUPPORT", "valid_pixels": count,
+            "cgl_rad": cgl, "cgl_deg": metrics.get("cgl_deg")}
 
 
 def _stream_task10d_metrics(
@@ -603,6 +546,154 @@ def _three_method_figure(path: Path, raster_paths: list[Path], labels: list[str]
     plt.close(fig)
 
 
+def run_strict_local_ablation(
+    bagrn_scene_paths: list[Path],
+    ours_scene_paths: list[Path],
+    volrn_scene_paths: list[Path],
+    v1_weight_paths: list[Path],
+    masks: list[np.ndarray],
+    scene_ids: list[str],
+    grid: Mapping[str, Any],
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Run A0/A1/A2 with one byte-identical frozen V1 weight layout.
+
+    A0 is BAGRN + V1 weights, A1 is the Task15/Ours corrected scenes + the
+    same V1 weights, and A2 is VOLRN corrected scenes + the same V1 weights.
+    The helper is deliberately path/hash based so a caller cannot silently
+    substitute a route-specific weight directory.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    routes = {"A0_BAGRN_V1": bagrn_scene_paths, "A1_OURS_V1": ours_scene_paths, "A2_VOLRN_V1": volrn_scene_paths}
+    if any(len(paths) != len(v1_weight_paths) for paths in routes.values()):
+        raise ValueError("strict ablation route/weight counts differ")
+    weight_hashes = [_sha256(path) for path in v1_weight_paths]
+    rows = []
+    route_metrics = {}
+    for route, scene_paths in routes.items():
+        mosaic = output_dir / f"{route.lower()}.tif"
+        _stream_weighted_mosaic(scene_paths, v1_weight_paths, mosaic, grid)
+        metrics = _stream_task10d_metrics(scene_paths, masks, v1_weight_paths, scene_ids)
+        route_metrics[route] = {"mosaic": str(mosaic), "mosaic_sha256": _sha256(mosaic), "metrics": metrics,
+                                "scene_sha256": [_sha256(path) for path in scene_paths], "weight_sha256": weight_hashes}
+    baseline_metrics = route_metrics["A0_BAGRN_V1"]["metrics"]
+    support = int(np.count_nonzero(np.logical_or.reduce(masks)))
+    for route, payload in route_metrics.items():
+        rows.extend({"route": route, **row} for row in _task10d_rows(
+            baseline_metrics, payload["metrics"], {"mean": 1.0}, support
+        ))
+    manifest = {"routes": list(routes), "weight_paths": [str(path) for path in v1_weight_paths],
+                "weight_sha256": weight_hashes, "same_weight_hashes": True,
+                "same_weight_layout_across_routes": True, "semantics": "A0 BAGRN + V1; A1 Ours corrected + SAME V1; A2 VOLRN corrected + SAME V1"}
+    (output_dir / "weight_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    (output_dir / "strict_ablation_metrics.json").write_text(json.dumps(route_metrics, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
+    _write_csv(output_dir / "strict_ablation.csv", rows)
+    return {"routes": route_metrics, "weight_manifest": manifest}
+
+
+def run_volrn_end_to_end(
+    corrected_scene_paths: list[Path],
+    valid_masks: list[np.ndarray],
+    initial_pair_records: list[Mapping[str, Any]],
+    grid: Mapping[str, Any],
+    output_dir: str | Path,
+    *,
+    refine_fn: Any | None = None,
+    runtime_config: Any | None = None,
+) -> dict[str, Any]:
+    """Execute VOLRN -> shared refinement -> source-side -> labels -> blend.
+
+    ``refine_fn`` is injectable for the focused contract test and defaults to
+    the same ``refine_seam_after_correction`` used by the Ours pipeline.
+    """
+    from src.seam_local.adapter import _cosine_weights, aggregate_labels_with_ties, blend_labeled_scenes
+    from src.seam_local.config import SeamLocalRuntimeConfig
+    from src.seam_local.footprint import footprint_polygon_from_valid_mask
+    from src.seam_local.multiscene_label import build_pairwise_preference_field
+    from src.seam_local.pipeline import refine_seam_after_correction
+    from src.seam_local.source_side import resolve_source_sides
+
+    cfg = runtime_config or SeamLocalRuntimeConfig()
+    refine = refine_fn or refine_seam_after_correction
+    arrays = []
+    for path, mask in zip(corrected_scene_paths, valid_masks):
+        with rasterio.open(path) as src:
+            data = src.read(1).astype(np.float64)
+        data[~np.asarray(mask, dtype=bool)] = np.nan
+        arrays.append(data)
+    scenes = np.asarray(arrays)
+    masks = np.asarray(valid_masks, dtype=bool)
+    if scenes.shape != masks.shape:
+        raise ValueError("VOLRN end-to-end scene/mask shapes differ")
+    footprints = [footprint_polygon_from_valid_mask(mask, grid_transform(grid)) for mask in masks]
+    fields = {}
+    refined_count = 0
+    refinement_rows = []
+    for record in initial_pair_records:
+        seam = record.get("initial_seam")
+        if seam is None:
+            continue
+        i, j = int(record["scene_i"]), int(record["scene_j"])
+        refined = refine(scenes[i], scenes[j], masks[i], masks[j], seam,
+                         refine_half_width=cfg.refine_half_width, cost_config=cfg)
+        refinement_rows.append({"pair_id": record.get("pair_id", f"{i:02d}_{j:02d}"), "status": refined.status})
+        if refined.status != "OK":
+            continue
+        refined_count += 1
+        source = resolve_source_sides(refined, masks[i] & masks[j], masks[i], masks[j], footprints[i], footprints[j])
+        side = source.side_1_source or record.get("initial_side_1_source") or "A"
+        fields[(i, j)] = build_pairwise_preference_field(
+            masks[i], masks[j], refined, side, scene_a=i, scene_b=j,
+            seam_half_width=cfg.preference_distance_scale,
+        )
+    raw_edt = np.asarray([distance_transform_edt(mask) for mask in masks], dtype=np.float64)
+    labels, methods, diagnostics = aggregate_labels_with_ties(
+        masks, fields, raw_edt, tie_tolerance=cfg.tie_tolerance
+    )
+    weights = _cosine_weights(labels, masks, width=cfg.blend_half_width)
+    mosaic = blend_labeled_scenes(scenes, masks, labels, weights=weights)
+    output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=True)
+    transform = grid_transform(grid)
+    crs = str(grid["crs"])
+    _write_single_band(output_dir / "source_label_map.tif", labels, transform, crs, -1, "int16")
+    _write_single_band(output_dir / "label_method_map.tif", methods, transform, crs, 0, "uint8")
+    _write_single_band(output_dir / "mosaic.tif", mosaic, transform, crs, np.nan, "float32")
+    for index, weight in enumerate(weights):
+        _write_single_band(output_dir / f"weight_scene_{index:03d}.tif", weight, transform, crs, np.nan, "float32")
+    result = {"status": "SUCCESS" if refined_count else "NO_REFINED_PAIRS", "refined_pair_count": refined_count,
+              "refinement_rows": refinement_rows, "labels": diagnostics, "shared_refine_function": getattr(refine, "__name__", str(refine)),
+              "outputs": {"labels": str(output_dir / "source_label_map.tif"), "mosaic": str(output_dir / "mosaic.tif")}}
+    (output_dir / "end_to_end_summary.json").write_text(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
+    return result
+
+
+def _load_task15_initial_seams(task15_root: Path, grid: Mapping[str, Any], scene_count: int) -> list[dict[str, Any]]:
+    """Restore Stage07 initial seams into the canonical pixel grid."""
+    from src.seam_local.seam import SeamResult
+    pair_root = task15_root / "stages/07_pairwise_seam_local/pairs"
+    transform = grid_transform(grid)
+    records = []
+    for row in _json(task15_root / "stages/07_pairwise_seam_local/pairwise_results.json") if (task15_root / "stages/07_pairwise_seam_local/pairwise_results.json").is_file() else []:
+        path = pair_root / str(row.get("pair_id")) / "seam_initial.geojson"
+        if not path.is_file():
+            continue
+        payload = _json(path); feature = payload["features"][0]; orientation = feature["properties"]["orientation"]
+        pixels = []
+        for x, y in feature["geometry"]["coordinates"]:
+            col, line = (~transform) * (float(x), float(y))
+            pixels.append((int(round(line - 0.5)), int(round(col - 0.5))))
+        path_array = np.asarray(pixels, dtype=np.int32)
+        if orientation == "vertical":
+            centers = np.interp(np.arange(int(grid["height"])), path_array[:, 0], path_array[:, 1])
+            path_array = np.column_stack((np.arange(int(grid["height"])), np.rint(centers).astype(np.int32)))
+        else:
+            centers = np.interp(np.arange(int(grid["width"])), path_array[:, 1], path_array[:, 0])
+            path_array = np.column_stack((np.rint(centers).astype(np.int32), np.arange(int(grid["width"]))))
+        records.append({**row, "initial_seam": SeamResult(orientation, path_array, None, None, None, "OK", "task15_initial")})
+    return records
+
+
 def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_path: str | Path | None = None, resume: bool = False, task16_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Execute the Task16 fixed-geometry comparison and write the full artifact tree."""
 
@@ -612,7 +703,7 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
     if output_root.exists() and any(output_root.iterdir()) and not resume:
         raise FileExistsError(f"Task16 output directory is non-empty: {output_root}")
     output_root.mkdir(parents=True, exist_ok=True)
-    for name in ("00_protocol", "01_baseline_bagrn_weighted", "02_volrn_solver", "03_volrn_corrected_scenes", "04_volrn_weighted_mosaic", "05_radiometric_metrics", "06_task15_v2_reference", "07_comparison_tables", "08_figures", "09_report"):
+    for name in ("00_protocol", "01_baseline_bagrn_weighted", "02_volrn_solver", "03_volrn_corrected_scenes", "04_volrn_weighted_mosaic", "04_strict_local_ablation", "05_volrn_end_to_end", "05_radiometric_metrics", "06_task15_v2_reference", "07_comparison_tables", "08_figures", "09_report"):
         (output_root / name).mkdir(exist_ok=True)
 
     frozen = _load_frozen_inputs(task15_root)
@@ -672,10 +763,8 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
     local_transforms: list[Any] = []
     local_bounds: list[Any] = []
     crops: list[tuple[int, int, int, int]] = []
-    bagrn_full: list[np.ndarray] = []
     for scene_path, mask in zip(frozen["scene_paths"], masks):
         array, _, transform = _read_scene(scene_path, frozen["mask_paths"][len(local_arrays)])
-        bagrn_full.append(array[np.newaxis, :, :])
         local_array, local_mask, local_transform, crop = _crop_scene(array, mask, transform)
         local_arrays.append(local_array)
         local_masks.append(local_mask)
@@ -711,7 +800,6 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         np.savez_compressed(solver_dir / "volrn_coefficients.npz", block_coefficients=coefficients)
 
     corrected_paths: list[Path] = []
-    corrected_full: list[np.ndarray] = []
     if reuse_volrn:
         corrected_paths = corrected_scene_paths
     else:
@@ -722,7 +810,6 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
             out_path = corrected_dir / f"scene_{index:03d}.tif"
             _save_full_scene(out_path, full, grid)
             corrected_paths.append(out_path)
-            corrected_full.append(full[np.newaxis, :, :])
         for index, mask in enumerate(masks):
             _write_single_band(corrected_dir / "input_valid_masks" / f"scene_{index:03d}.tif", mask.astype(np.uint8), canonical_transform, str(grid["crs"]), 0, "uint8")
     finite_outputs = _finite_scene_outputs(corrected_paths, masks)
@@ -743,8 +830,31 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
     # Task15's persisted distance-weight maps let this replay avoid keeping
     # thirteen projected float64 canvases in memory simultaneously.
     import gc
-    del corrected_full, bagrn_full, local_arrays, local_masks, local_transforms, local_bounds, corrected_local
+    del local_arrays, local_masks, local_transforms, local_bounds, corrected_local
     gc.collect()
+
+    strict_dir = output_root / "04_strict_local_ablation"
+    if all(path.is_file() for path in frozen["ours_scene_paths"]):
+        strict_ablation = run_strict_local_ablation(
+            frozen["scene_paths"], frozen["ours_scene_paths"], corrected_paths,
+            frozen["v1_weight_paths"], masks, frozen["scene_ids"], grid, strict_dir,
+        )
+    else:
+        strict_ablation = {"status": "HARD_STOP_MISSING_TASK15_OURS_CORRECTED_SCENES"}
+        (strict_dir / "strict_ablation_metrics.json").write_text(json.dumps(strict_ablation, indent=2), encoding="utf-8")
+
+    initial_records = _load_task15_initial_seams(task15_root, grid, EXPECTED_SCENE_COUNT)
+    e2e_dir = output_root / "05_volrn_end_to_end"
+    if initial_records:
+        # Both routes use the same injected function and seam/refinement
+        # contract; only their corrected scene inputs differ.
+        ours_e2e = run_volrn_end_to_end(frozen["ours_scene_paths"], masks, initial_records, grid, e2e_dir / "ours") if all(path.is_file() for path in frozen["ours_scene_paths"]) else {"status": "MISSING_OURS_SCENES"}
+        volrn_e2e = run_volrn_end_to_end(corrected_paths, masks, initial_records, grid, e2e_dir / "volrn")
+        end_to_end = {"ours": ours_e2e, "volrn": volrn_e2e, "shared_refine_function": "refine_seam_after_correction"}
+    else:
+        end_to_end = {"status": "HARD_STOP_MISSING_TASK15_INITIAL_SEAMS", "shared_refine_function": "refine_seam_after_correction"}
+    (e2e_dir / "end_to_end_manifest.json").write_text(json.dumps(end_to_end, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
+
     _stream_weighted_mosaic(
         corrected_paths, frozen["weight_paths"], mosaic_dir / "bagrn_volrn_iter200_weighted.tif", grid
     )
@@ -830,6 +940,8 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         "runtime_sec": {"baseline_mosaic": baseline_runtime, "solver": solver_runtime, "volrn_mosaic": mosaic_runtime, "total_task16": total_runtime, "ram_vram": "NOT_MEASURED"},
         "structure_preservation": structural,
         "task10d": {"A": a_metrics, "B": b_metrics},
+        "strict_local_ablation": strict_ablation,
+        "volrn_end_to_end": end_to_end,
         "boundary_A_vs_B": boundary_ab,
         "task15_v2_reference": {"boundary_metrics": task15_boundary, "minimum_gradient_ncc": c_min_ncc},
         "numerical_validity": finite_outputs,

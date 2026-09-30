@@ -88,6 +88,10 @@ def _run_existing_prefix(root: Path, config: PipelineConfig) -> dict[str, Any]:
         repo_dir=config.registration.matcher_repo,
         weights_path=config.registration.checkpoint,
         device=config.registration.device,
+        band=config.dataset.band,
+        match_max_side=config.registration.match_max_side,
+        ransac_threshold=config.registration.ransac_threshold_px,
+        random_seed=config.registration.random_seed,
     )
     continuation_stops = [str(item) for item in continuation.get("hard_stops", []) if str(item) != "HARD_STOP_TASK14_MULTISCENE_ADAPTER_UNAVAILABLE"]
     if continuation_stops:

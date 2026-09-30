@@ -20,6 +20,21 @@ def _number(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+def classify_structural_gate(structural: list[dict[str, Any]], ncc_threshold: float = 0.99) -> dict[str, Any]:
+    """Separate finite structural validity from the NCC quality review.
+
+    A finite experiment is legal even when NCC needs scientific review; the
+    threshold must not turn a measurable result into a numerical failure.
+    """
+    finite = bool(structural) and all(
+        bool(item.get("finite")) and _number(item.get("gradient_magnitude_ncc")) is not None
+        for item in structural if isinstance(item, dict)
+    )
+    values = [float(item["gradient_magnitude_ncc"]) for item in structural if isinstance(item, dict) and _number(item.get("gradient_magnitude_ncc")) is not None]
+    quality = finite and bool(values) and min(values) >= ncc_threshold
+    return {"finite": finite, "quality_review": "PASS" if quality else "REVIEW"}
+
+
 def v0_semantic_gate(root: str | Path) -> dict[str, Any]:
     """Verify that Stage06's registered V0 is a formal weighted-feather output."""
     root = Path(root)
@@ -138,7 +153,9 @@ def compute_final_metrics(root: str | Path) -> dict[str, Any]:
     correction_order = correction_invariance.get("status") == "PASS" and correction_invariance.get("evidence_type", "").startswith("fresh_task15")
     scene_order = scene_invariance.get("status") == "PASS" and scene_invariance.get("evidence_type", "").startswith("fresh_task15")
     support_gate = isinstance(quality["union_support"], int) and quality["union_support"] > 0 and all((root / "stages/10_mosaics" / name).is_file() for name in ("v0_bagrn_weighted.tif", "v1_multiscene_label_blend.tif", "v2_local_corrected_multiscene.tif"))
-    finite_structural = bool(structural) and all(bool(item.get("finite")) and _number(item.get("gradient_magnitude_ncc")) is not None and float(item.get("gradient_magnitude_ncc")) >= 0.99 for item in structural if isinstance(item, dict))
+    structural_gate = classify_structural_gate(structural)
+    structural_metric_valid = structural_gate["finite"]
+    structural_quality_review = structural_gate["quality_review"] == "PASS"
     no_invalid_outputs = labels_clean and metrics.get("status") == "SUCCESS" and all((root / "stages/09_correction" / f"corrected_scene_{i:03d}.tif").is_file() for i in range(int(scale.get("scene_count", 0))))
     historical_reference = {
         "support": 62033096,
@@ -164,7 +181,8 @@ def compute_final_metrics(root: str | Path) -> dict[str, Any]:
     quality["fresh_correction_order_invariance"] = correction_invariance
     quality["fresh_five_scene_regression"] = _fresh_five_scene_status(root)
     quality["support_gate"] = support_gate
-    quality["finite_structural_gate"] = finite_structural
+    quality["finite_structural_gate"] = structural_metric_valid
+    quality["structural_quality_review"] = "PASS" if structural_quality_review else "REVIEW"
     quality["no_invalid_outputs_gate"] = no_invalid_outputs
     quality["all_core_metrics_match"] = core_metrics_match
     improvements = complete and all((
@@ -176,7 +194,7 @@ def compute_final_metrics(root: str | Path) -> dict[str, Any]:
     legality_pass = all((
         complete, labels_clean, min(ncc) >= 0.99 if ncc else False,
         quality["v0_semantic_gate"]["status"] == "PASS",
-        support_gate, finite_structural, no_invalid_outputs,
+        support_gate, structural_metric_valid, no_invalid_outputs,
     ))
     quality["historical_reference"] = historical_reference
     quality["historical_reference_status"] = "MATCH" if core_metrics_match else "DIFF"
