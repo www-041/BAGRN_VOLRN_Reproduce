@@ -1,0 +1,61 @@
+dataset:
+  input_root: "D:/科研/地质一号/文献/BAGRN_VOLRN_Reproduce/data/input/B9_reference_13scenes_full"
+  band: "B9"
+  expected_scene_count: 13
+
+registration:
+  matcher: "efficient_loftr"
+  match_max_side: 1024
+  matcher_repo: "D:/科研/地质一号/文献/EfficientLoFTR"
+  checkpoint: "D:/科研/地质一号/文献/EfficientLoFTR/weights/eloftr_outdoor.ckpt"
+  global_method: "translation_l2"
+  device: "auto"
+  precision: "fp32"
+
+canonical_grid:
+  crs: "EPSG:32650"
+  resolution_m: 14.0
+
+radiometric:
+  method: "bagrn"
+  control_scene_index: 0
+
+seam:
+  intensity_weight: 0.5
+  gradient_weight: 0.5
+  normalization: "p95"
+  coarse_factor: 4
+  refine_half_width: 64
+
+local_correction:
+  corridor_half_width: 128
+  segment_length: 256
+  min_valid_pixels: 4096
+  percentile_low: 1
+  percentile_high: 99
+  gain_min: 0.5
+  gain_max: 2.0
+
+labeling:
+  preference_distance_scale: 64
+  tie_tolerance: 1.0e-6
+  hierarchy:
+    - pairwise_score
+    - clipped_normalized_interiority
+    - unclipped_normalized_interiority
+    - raw_edt
+
+blend:
+  method: "multilabel_cosine"
+  half_width: 64
+
+streaming:
+  tile_size: 1024
+  halo: 128
+
+outputs:
+  root: "data/output/final_pipeline/b9_13scene"
+  write_geotiff: true
+  write_quicklooks: true
+  write_metrics: true
+  write_report: true

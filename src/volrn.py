@@ -367,6 +367,51 @@ def _soft_threshold(v: np.ndarray, kappa: float) -> np.ndarray:
     return np.sign(v) * np.maximum(np.abs(v) - kappa, 0.0)
 
 
+def build_jacobi_preconditioner(
+    matrix: sparse.spmatrix, eps_scale: float = 1e-12
+) -> LinearOperator:
+    """Build an objective-preserving diagonal inverse for an SPD system."""
+    diagonal = np.asarray(matrix.diagonal(), dtype=np.float64)
+    if diagonal.size == 0 or not np.isfinite(diagonal).all():
+        raise ValueError("preconditioner matrix diagonal must be finite and non-empty")
+    scale = max(1.0, float(np.max(np.abs(diagonal))))
+    floor = float(eps_scale) * scale
+    inverse = np.ones_like(diagonal)
+    usable = np.abs(diagonal) > floor
+    inverse[usable] = 1.0 / diagonal[usable]
+    inverse[~np.isfinite(inverse)] = 1.0
+    return LinearOperator(
+        matrix.shape,
+        matvec=lambda vector: inverse * np.asarray(vector, dtype=np.float64),
+        rmatvec=lambda vector: inverse * np.asarray(vector, dtype=np.float64),
+        dtype=np.float64,
+    )
+
+
+def _adaptive_rho_update(
+    rho: float,
+    primal_residual: float,
+    dual_residual: float,
+    *,
+    mu: float = 10.0,
+    tau_increase: float = 2.0,
+    tau_decrease: float = 2.0,
+    rho_min: float = 1e-4,
+    rho_max: float = 1e4,
+) -> float:
+    """Standard residual-balancing ADMM penalty update."""
+    if primal_residual > mu * dual_residual:
+        return min(float(rho) * tau_increase, rho_max)
+    if dual_residual > mu * primal_residual:
+        return max(float(rho) / tau_decrease, rho_min)
+    return float(rho)
+
+
+def _rescale_scaled_dual(u: np.ndarray, rho_old: float, rho_new: float) -> np.ndarray:
+    """Keep the unscaled dual rho*u invariant when rho changes."""
+    return np.asarray(u, dtype=np.float64) * (float(rho_old) / float(rho_new))
+
+
 def _admm_solver(
     B: sparse.csr_matrix,
     A: sparse.csr_matrix,
@@ -377,6 +422,13 @@ def _admm_solver(
     tol: float = 1e-4,
     verbose: bool = False,
     return_diagnostics: bool = False,
+    use_preconditioner: bool = False,
+    adaptive_rho: bool = False,
+    rho_mu: float = 10.0,
+    rho_tau_increase: float = 2.0,
+    rho_tau_decrease: float = 2.0,
+    rho_min: float = 1e-4,
+    rho_max: float = 1e4,
 ) -> Tuple[np.ndarray, bool, int]:
     """
     用 ADMM 求解变分模型（Eq.30-33）。
@@ -404,8 +456,13 @@ def _admm_solver(
     BtB = B.T @ B
     AtA = A.T @ A
     At = A.T
-    M = BtB + rho * AtA
-    M = M.tocsr()
+    def _system(current_rho: float):
+        matrix = (BtB + current_rho * AtA).tocsr()
+        preconditioner = build_jacobi_preconditioner(matrix) if use_preconditioner else None
+        return matrix, preconditioner
+
+    rho_initial = float(rho)
+    M, preconditioner = _system(rho)
 
     converged = False
     cg_failed = False
@@ -423,6 +480,11 @@ def _admm_solver(
     dual_tolerance = np.inf
     x_relative_change = np.inf
     n_iters = 0
+    rho_history = []
+    rho_change_count = 0
+    objective_start = None
+    relative_objective_change = np.inf
+    last_cg_residual = np.inf
 
     for it in range(max_iter):
         rhs = rho * (At @ (z - u + b))
@@ -440,6 +502,7 @@ def _admm_solver(
             maxiter=500,
             atol=1e-10,
             callback=_count_cg_iteration,
+            M=preconditioner,
         )
         cg_info = int(cg_info)
         cg_status_history.append(cg_info)
@@ -484,25 +547,57 @@ def _admm_solver(
             n_iters = it + 1
             break
 
+        previous_objective = objective_history[-1] if objective_history else None
         primal_history.append(primal_residual)
         dual_history.append(dual_residual)
-        objective_history.append(objective)
         x_change_history.append(float(x_diff))
         z_update_norm = float(np.linalg.norm(z_new - z))
         dual_update_norm = float(np.linalg.norm(u_new - u))
         cg_residual = float(np.linalg.norm(M @ x_new - rhs))
+        last_cg_residual = cg_residual
+        if objective_start is None:
+            objective_start = objective
+        elif previous_objective is not None:
+            relative_objective_change = abs(objective - previous_objective) / (abs(previous_objective) + 1e-12)
+        objective_history.append(objective)
+        rho_changed = False
+        current_rho = float(rho)
+        if adaptive_rho:
+            proposed_rho = _adaptive_rho_update(
+                rho, primal_residual, dual_residual, mu=rho_mu,
+                tau_increase=rho_tau_increase, tau_decrease=rho_tau_decrease,
+                rho_min=rho_min, rho_max=rho_max,
+            )
+            rho_changed = not np.isclose(proposed_rho, rho, rtol=0.0, atol=0.0)
+            if rho_changed:
+                rho_old = rho
+                rho = proposed_rho
+                u_new = _rescale_scaled_dual(u_new, rho_old, rho)
+                M, preconditioner = _system(rho)
+                rho_change_count += 1
         history.append({
             "iteration": int(it + 1),
             "objective": objective,
             "primal_residual": primal_residual,
             "dual_residual": dual_residual,
+            "primal_tolerance": primal_tolerance,
+            "dual_tolerance": dual_tolerance,
+            "primal_ratio": float(primal_residual / max(primal_tolerance, 1e-12)),
+            "dual_ratio": float(dual_residual / max(dual_tolerance, 1e-12)),
             "x_update_norm": float(np.linalg.norm(x_new - x)),
             "z_update_norm": z_update_norm,
             "dual_update_norm": dual_update_norm,
             "cg_iterations": int(cg_iterations),
             "cg_residual": cg_residual,
             "relative_change": float(x_diff),
+            "cg_info": cg_info,
+            "cg_final_residual_norm": cg_residual,
+            "preconditioner_type": "jacobi" if use_preconditioner else "none",
+            "rho": current_rho,
+            "rho_changed": bool(rho_changed),
+            "finite_state": True,
         })
+        rho_history.append(float(current_rho))
         n_iters = it + 1
 
         # ADMM convergence requires both standard primal and dual residuals;
@@ -553,13 +648,38 @@ def _admm_solver(
         "history": history,
         "cg_status_history": cg_status_history,
         "cg_failed": bool(cg_failed),
+        "cg_failed_any": bool(cg_failed),
+        "cg_final_residual_norm": float(last_cg_residual),
+        "preconditioner_type": "jacobi" if use_preconditioner else "none",
+        "rho_mode": "adaptive" if adaptive_rho else "fixed",
+        "rho_initial": float(rho_initial),
+        "rho_final": float(rho),
+        "rho_history": rho_history,
+        "rho_change_count": int(rho_change_count),
+        "rho_min_observed": float(min(rho_history)) if rho_history else float(rho_initial),
+        "rho_max_observed": float(max(rho_history)) if rho_history else float(rho_initial),
+        "objective_start": float(objective_start) if objective_start is not None else None,
+        "objective_end": float(objective_history[-1]) if objective_history else None,
+        "relative_objective_change": float(relative_objective_change),
         "finite_state": bool(finite_state and np.isfinite(x).all()),
         "failure_reason": failure_reason,
         "converged": bool(converged),
+        "strict_admm_converged": bool(converged),
+        "coefficient_stable": bool(
+            finite_state and np.isfinite(x_relative_change) and x_relative_change <= 1e-4
+        ),
         "science_pass": bool(
             converged and not cg_failed and finite_state and np.isfinite(x).all()
         ),
     }
+    if not diagnostics["finite_state"] or diagnostics["cg_failed_any"]:
+        diagnostics["science_status"] = "NUMERICAL_INVALID"
+    elif diagnostics["strict_admm_converged"]:
+        diagnostics["science_status"] = "STRICT_ADMM_CONVERGED"
+    elif diagnostics["coefficient_stable"]:
+        diagnostics["science_status"] = "STABLE_BUT_STRICT_NONCONVERGED"
+    else:
+        diagnostics["science_status"] = "NONCONVERGED_AFTER_ALIGNMENT"
 
     if return_diagnostics:
         return x, converged, n_iters, diagnostics
@@ -838,6 +958,8 @@ def volrn_normalize(
     return_diagnostics: bool = False,
     cloud_masks: Optional[List[np.ndarray]] = None,
     valid_masks: Optional[List[np.ndarray]] = None,
+    use_preconditioner: bool = False,
+    adaptive_rho: bool = False,
 ) -> Tuple[List[np.ndarray], np.ndarray]:
     """
     VOLRN 局部辐射归一化主函数。
@@ -973,6 +1095,8 @@ def volrn_normalize(
             tol,
             verbose,
             return_diagnostics=True,
+            use_preconditioner=use_preconditioner,
+            adaptive_rho=adaptive_rho,
         )
         band_converged[b_idx] = converged
         band_iterations[b_idx] = n_iters

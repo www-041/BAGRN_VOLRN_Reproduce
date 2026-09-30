@@ -175,8 +175,10 @@ def _write_volrn_solver_history(output_dir: Path, diagnostics: Mapping) -> None:
     )
     fieldnames = [
         "band", "iteration", "objective", "primal_residual", "dual_residual",
+        "primal_tolerance", "dual_tolerance", "primal_ratio", "dual_ratio",
         "x_update_norm", "z_update_norm", "dual_update_norm", "cg_iterations",
-        "cg_residual", "relative_change",
+        "cg_residual", "relative_change", "cg_info", "cg_final_residual_norm",
+        "preconditioner_type", "rho", "rho_changed", "finite_state",
     ]
     with (output_dir / "volrn_solver_history.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -319,6 +321,8 @@ def _task10d_metrics(
     normalized_arrays: list[np.ndarray],
     valid_masks: list[np.ndarray],
     scene_ids: list[str] | None = None,
+    *,
+    include_cgl: bool = True,
 ) -> tuple[dict, dict]:
     """Compute all frozen Task10D primary metrics on one geometry support."""
 
@@ -378,17 +382,20 @@ def _task10d_metrics(
         "seam_rmse": aggregate_weighted_pair_metric(seam_rows["seam_rmse"]),
         "seam_rdd": aggregate_weighted_pair_metric(seam_rows["seam_rdd"]),
     }
-    cgl_rows = []
-    for scene_id, raw, normalized, valid in zip(scene_ids, raw_arrays, normalized_arrays, valid_masks):
-        metric = compute_cgl(raw[0], normalized[0], valid)
-        cgl_rows.append({"scene_id": scene_id, **metric})
-    cgl_values = [row["cgl_rad"] for row in cgl_rows if row["cgl_rad"] is not None]
-    cgl_rad = float(np.mean(cgl_values)) if cgl_values else None
-    primary["cgl_rad"] = {
-        "value_rad": cgl_rad,
-        "value_deg": float(np.rad2deg(cgl_rad)) if cgl_rad is not None else None,
-        "per_scene": cgl_rows,
-    }
+    if include_cgl:
+        cgl_rows = []
+        for scene_id, raw, normalized, valid in zip(scene_ids, raw_arrays, normalized_arrays, valid_masks):
+            metric = compute_cgl(raw[0], normalized[0], valid)
+            cgl_rows.append({"scene_id": scene_id, **metric})
+        cgl_values = [row["cgl_rad"] for row in cgl_rows if row["cgl_rad"] is not None]
+        cgl_rad = float(np.mean(cgl_values)) if cgl_values else None
+        primary["cgl_rad"] = {
+            "value_rad": cgl_rad,
+            "value_deg": float(np.rad2deg(cgl_rad)) if cgl_rad is not None else None,
+            "per_scene": cgl_rows,
+        }
+    else:
+        primary["cgl_rad"] = {"value_rad": None, "value_deg": None, "per_scene": [], "status": "DEFERRED_STREAMING"}
     return primary, {
         "changed_pixel_fraction": _changed_pixel_fraction(raw_arrays, normalized_arrays, valid_masks),
     }
@@ -521,6 +528,8 @@ def run_fixed_geometry_radiometric(
     protocol_path: str | Path | None = None,
     strict_protocol: bool = False,
     persist_normalized_scenes: bool = False,
+    use_preconditioner: bool = False,
+    adaptive_rho: bool = False,
 ) -> dict:
     """Run one RAW/BAGRN/BAGRN_VOLRN experiment without changing geometry."""
     method = str(method).upper()
@@ -608,6 +617,8 @@ def run_fixed_geometry_radiometric(
             block_size_pixels=block_size_pixels, lambda_param=lambda_param,
             rho=rho, max_iter=max_iter, tol=tol, verbose=False,
             return_diagnostics=True, valid_masks=processing_valid_masks,
+            use_preconditioner=use_preconditioner,
+            adaptive_rho=adaptive_rho,
         )
         volrn_runtime = time.perf_counter() - start
         final_arrays = volrn_result
