@@ -108,6 +108,25 @@ def _run_existing_downstream(root: Path, config: PipelineConfig) -> dict[str, An
     legacy.STAGE12 = root / "stages/12_report"
     legacy.TILE = config.streaming.tile_size
     legacy.HALO = config.streaming.halo
+    from src.seam_local.config import SeamLocalRuntimeConfig
+    legacy.RUNTIME_CONFIG = SeamLocalRuntimeConfig(
+        intensity_weight=config.seam.intensity_weight,
+        gradient_weight=config.seam.gradient_weight,
+        normalization=config.seam.normalization,
+        coarse_factor=config.seam.coarse_factor,
+        refine_half_width=config.seam.refine_half_width,
+        corridor_half_width=config.local_correction.corridor_half_width,
+        segment_length=config.local_correction.segment_length,
+        min_valid_pixels=config.local_correction.min_valid_pixels,
+        percentile_low=config.local_correction.percentile_low,
+        percentile_high=config.local_correction.percentile_high,
+        stability_gain_min=config.local_correction.stability_gain_min,
+        stability_gain_max=config.local_correction.stability_gain_max,
+        preference_distance_scale=config.labeling.preference_distance_scale,
+        tie_tolerance=config.labeling.tie_tolerance,
+        blend_method=config.blend.method,
+        blend_half_width=config.blend.half_width,
+    )
     legacy.run()
     stage10 = legacy.STAGE10
     renames = {
@@ -117,6 +136,8 @@ def _run_existing_downstream(root: Path, config: PipelineConfig) -> dict[str, An
     }
     for old_name, new_name in renames.items():
         source = stage10 / old_name
+        if not source.is_file() and (stage10 / new_name).is_file():
+            continue
         if not source.is_file():
             raise RuntimeError(f"HARD_STOP_PIPELINE_ARTIFACT_MISSING: {source}")
         shutil.copyfile(source, stage10 / new_name)

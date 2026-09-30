@@ -24,6 +24,7 @@ from .multiscene_label import (
     build_pairwise_preference_field,
 )
 from .pipeline import PairResult, _corridor, process_pair
+from .config import SeamLocalRuntimeConfig
 from .source_side import SourceSideResult, resolve_source_sides
 from .tie_resolution import TieResolutionResult, resolve_unresolved_geometry
 
@@ -53,6 +54,14 @@ class AdapterPairResult:
     shared_valid_pixel_count: int
     registration_edge_accepted: bool | None
 
+    @property
+    def initial_source_side_status(self) -> str:
+        return self.initial_source_side.status if self.initial_source_side is not None else "UNRESOLVED"
+
+    @property
+    def refined_source_side_status(self) -> str:
+        return self.refined_source_side.status if self.refined_source_side is not None else "UNRESOLVED"
+
 
 @dataclass(frozen=True)
 class AdapterResult:
@@ -65,6 +74,17 @@ class AdapterResult:
     corrected_scenes: np.ndarray
     multi_label_weights: np.ndarray
     diagnostics: dict[str, Any]
+    v1_labels: np.ndarray | None = None
+    v1_label_methods: np.ndarray | None = None
+    v2_labels: np.ndarray | None = None
+    v2_label_methods: np.ndarray | None = None
+    v1_weights: np.ndarray | None = None
+    v2_weights: np.ndarray | None = None
+    label_diagnostics: dict[str, Any] | None = None
+
+    @property
+    def shared_label_map(self) -> bool:
+        return False
 
 
 def normalize_overlap_pairs(
@@ -101,20 +121,20 @@ def normalize_overlap_pairs(
     return result
 
 
-def _crop_to_full_seam(pair: PairResult, full_shape: tuple[int, int]):
-    if pair.refined_seam is None or pair.crop_origin is None:
+def _crop_to_full_seam(pair: PairResult, full_shape: tuple[int, int], seam: Any | None = None):
+    seam = pair.refined_seam if seam is None else seam
+    if seam is None or pair.crop_origin is None:
         return None
-    seam = pair.refined_seam
     path = seam.row_col_path.copy()
     path[:, 0] += pair.crop_origin[0]
     path[:, 1] += pair.crop_origin[1]
     return replace(seam, row_col_path=path)
 
 
-def _expand_seam_to_full(pair: PairResult, full_shape: tuple[int, int]):
+def _expand_seam_to_full(pair: PairResult, full_shape: tuple[int, int], seam: Any | None = None):
     """Extend a crop seam to the canonical line domain for field construction."""
 
-    seam = _crop_to_full_seam(pair, full_shape)
+    seam = _crop_to_full_seam(pair, full_shape, seam)
     if seam is None or pair.crop_origin is None:
         return None
     path = seam.row_col_path
@@ -329,6 +349,7 @@ def run_multiscene_adapter(
     canonical_grid: Mapping[str, Any] | None = None,
     frozen_protocol: Mapping[str, Any] | None = None,
     footprints: Sequence[Any] | None = None,
+    runtime_config: SeamLocalRuntimeConfig | None = None,
 ) -> AdapterResult:
     """Run the same pair→ownership→label→correction→blend graph for any N.
 
@@ -375,7 +396,8 @@ def run_multiscene_adapter(
         raise ValueError("one footprint is required per scene")
 
     pair_results: dict[str, AdapterPairResult] = {}
-    fields: dict[tuple[int, int], Any] = {}
+    v1_fields: dict[tuple[int, int], Any] = {}
+    v2_fields: dict[tuple[int, int], Any] = {}
     for pair in pairs:
         shared = masks[pair.scene_i] & masks[pair.scene_j]
         shared_count = int(np.count_nonzero(shared))
@@ -384,53 +406,71 @@ def run_multiscene_adapter(
         if not np.any(shared):
             continue
         processed = process_pair(scenes[pair.scene_i], scenes[pair.scene_j],
-                                 masks[pair.scene_i], masks[pair.scene_j])
+                                 masks[pair.scene_i], masks[pair.scene_j],
+                                 runtime_config=runtime_config)
         initial_side = refined_side = None
         source_status = "REQUIRES_MULTISCENE_LABELING"
-        if processed.initial_seam is not None and processed.refined_seam is not None and processed.crop_origin is not None:
+        if processed.initial_seam is not None and processed.crop_origin is not None:
             origin = processed.crop_origin
             h, w = processed.initial_seam.row_col_path.shape[0], processed.initial_seam.row_col_path.shape[1]
             # process_pair stores crop-local arrays; ownership uses the same crop.
-            outer_h, outer_w = processed.corrected_a.shape if processed.corrected_a is not None else (0, 0)
+            local_shape = processed.corrected_a.shape if processed.corrected_a is not None else processed.v1_mosaic.shape
+            outer_h, outer_w = local_shape
             sl = (slice(origin[0], origin[0] + outer_h), slice(origin[1], origin[1] + outer_w))
             va, vb = masks[pair.scene_i][sl], masks[pair.scene_j][sl]
             initial_side = _source_side(processed.initial_seam, va, vb,
                                         footprints[pair.scene_i], footprints[pair.scene_j])
-            refined_side = _source_side(processed.refined_seam, va, vb,
-                                        footprints[pair.scene_i], footprints[pair.scene_j])
-            agree = (initial_side.side_1_source == refined_side.side_1_source
-                     and initial_side.side_2_source == refined_side.side_2_source)
-            resolved = initial_side.status in {"EXCLUSIVE_CONTACT_RESOLVABLE", "CENTROID_RESOLVABLE"} and refined_side.status in {"EXCLUSIVE_CONTACT_RESOLVABLE", "CENTROID_RESOLVABLE"} and agree
-            source_status = "PASS" if resolved else "REQUIRES_MULTISCENE_LABELING"
-            if resolved:
-                full_seam = _expand_seam_to_full(processed, masks.shape[1:])
+            if processed.refined_seam is not None:
+                refined_side = _source_side(processed.refined_seam, va, vb,
+                                            footprints[pair.scene_i], footprints[pair.scene_j])
+            initial_resolved = initial_side.status in {"EXCLUSIVE_CONTACT_RESOLVABLE", "CENTROID_RESOLVABLE"}
+            refined_resolved = refined_side is not None and refined_side.status in {"EXCLUSIVE_CONTACT_RESOLVABLE", "CENTROID_RESOLVABLE"}
+            source_status = "PASS" if initial_resolved and refined_resolved else "REQUIRES_MULTISCENE_LABELING"
+            if initial_resolved:
+                full_seam = _expand_seam_to_full(processed, masks.shape[1:], processed.initial_seam)
                 field = build_pairwise_preference_field(
                     masks[pair.scene_i], masks[pair.scene_j], full_seam,
-                    refined_side.side_1_source, scene_a=pair.scene_i, scene_b=pair.scene_j,
+                    initial_side.side_1_source, scene_a=pair.scene_i, scene_b=pair.scene_j,
                 )
                 # The extrapolated seam only supplies the required canonical
                 # line domain; it is not evidence outside this pair's crop.
                 pair_support = masks[pair.scene_i] & masks[pair.scene_j]
-                pair_support &= _seam_domain(processed, masks.shape[1:])
-                fields[(pair.scene_i, pair.scene_j)] = replace(
+                initial_domain = _seam_domain(replace(processed, refined_seam=processed.initial_seam), masks.shape[1:])
+                pair_support &= initial_domain
+                v1_fields[(pair.scene_i, pair.scene_j)] = replace(
                     field,
                     available=field.available & pair_support,
                     vote=np.where(field.available & pair_support, field.vote, 0.0).astype(np.float32),
                     confidence=np.where(field.available & pair_support, field.confidence, 0.0).astype(np.float32),
                 )
-        status = "PASS" if processed.status == "PASS" and source_status == "PASS" else source_status
+            if refined_resolved:
+                full_seam = _expand_seam_to_full(processed, masks.shape[1:], processed.refined_seam)
+                field = build_pairwise_preference_field(
+                    masks[pair.scene_i], masks[pair.scene_j], full_seam,
+                    refined_side.side_1_source, scene_a=pair.scene_i, scene_b=pair.scene_j,
+                )
+                pair_support = masks[pair.scene_i] & masks[pair.scene_j] & _seam_domain(processed, masks.shape[1:])
+                v2_fields[(pair.scene_i, pair.scene_j)] = replace(
+                    field,
+                    available=field.available & pair_support,
+                    vote=np.where(field.available & pair_support, field.vote, 0.0).astype(np.float32),
+                    confidence=np.where(field.available & pair_support, field.confidence, 0.0).astype(np.float32),
+                )
+        status = "PASS" if processed.status == "PASS" else processed.status
         pair_results[pair.pair_id] = AdapterPairResult(
             pair.pair_id, pair.scene_i, pair.scene_j, processed, initial_side,
             refined_side, source_status, status, shared_count, pair.registration_edge_accepted,
         )
 
     raw_edt = np.asarray([distance_transform_edt(mask) for mask in masks], dtype=np.float64)
-    labels, methods, label_diag = aggregate_labels_with_ties(masks, fields, raw_edt)
+    v1_labels, v1_methods, v1_diag = aggregate_labels_with_ties(masks, v1_fields, raw_edt)
+    v2_labels, v2_methods, v2_diag = aggregate_labels_with_ties(masks, v2_fields, raw_edt)
     corrected = _aggregate_corrections(scenes, masks, pair_results)
-    weights = _cosine_weights(labels, masks)
-    v1 = blend_labeled_scenes(scenes, masks, labels, weights=weights)
-    v2 = blend_labeled_scenes(corrected, masks, labels, weights=weights)
-    diagnostics = dict(label_diag)
+    v1_weights = _cosine_weights(v1_labels, masks)
+    v2_weights = _cosine_weights(v2_labels, masks)
+    v1 = blend_labeled_scenes(scenes, masks, v1_labels, weights=v1_weights)
+    v2 = blend_labeled_scenes(corrected, masks, v2_labels, weights=v2_weights)
+    diagnostics = dict(v2_diag)
     diagnostics.update({
         "scene_count": n_scenes,
         "union_valid_pixels": int(np.count_nonzero(masks.any(axis=0))),
@@ -438,6 +478,12 @@ def run_multiscene_adapter(
         "coverage_max": int(np.max(np.count_nonzero(masks, axis=0))),
         "mosaic_overlap_edges": len(pairs),
         "pairwise_seam_processed_edges": len(pair_results),
+        "v1_label_status": "PASS" if not np.any((v1_labels == LABEL_UNRESOLVED) & masks.any(axis=0)) else "UNRESOLVED",
+        "v2_label_status": "PASS" if not np.any((v2_labels == LABEL_UNRESOLVED) & masks.any(axis=0)) else "UNRESOLVED",
+        "local_correction_status": "PASS" if all(row.process.status == "PASS" for row in pair_results.values()) else "PARTIAL",
+        "shared_label_map": False,
+        "v1_label_diagnostics": v1_diag,
+        "v2_label_diagnostics": v2_diag,
         "source_side_status_counts": {
             status: sum(row.source_side_status == status for row in pair_results.values())
             for status in ("PASS", "REQUIRES_MULTISCENE_LABELING", "UNSUPPORTED_TOPOLOGY",
@@ -448,7 +494,11 @@ def run_multiscene_adapter(
     })
     if output_dir is not None:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-    return AdapterResult(n_scenes, pair_results, labels, methods, v1, v2, corrected, weights, diagnostics)
+    return AdapterResult(
+        n_scenes, pair_results, v2_labels, v2_methods, v1, v2, corrected,
+        v2_weights, diagnostics, v1_labels, v1_methods, v2_labels,
+        v2_methods, v1_weights, v2_weights, {"v1": v1_diag, "v2": v2_diag},
+    )
 
 
 __all__ = [

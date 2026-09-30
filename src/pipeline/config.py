@@ -23,6 +23,7 @@ class DatasetConfig:
     band: str
     expected_scene_count: int
     scene_selection: tuple[int, ...] | None = None
+    expected_scene_ids: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,8 @@ class RegistrationConfig:
     matcher_repo: Path | None = None
     device: str = "auto"
     precision: str = "fp32"
+    ransac_threshold_px: float = 2.0
+    random_seed: int = 0
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,14 @@ class LocalCorrectionConfig:
     gain_min: float
     gain_max: float
 
+    @property
+    def stability_gain_min(self) -> float:
+        return self.gain_min
+
+    @property
+    def stability_gain_max(self) -> float:
+        return self.gain_max
+
 
 @dataclass(frozen=True)
 class LabelingConfig:
@@ -85,6 +96,15 @@ class BlendConfig:
 class StreamingConfig:
     tile_size: int
     halo: int
+
+
+@dataclass(frozen=True)
+class MetricsConfig:
+    canonical_tile_size: int = 256
+    local_min_valid_pixels: int = 4096
+    seam_balance_threshold: float = 0.25
+    gradient_epsilon: float = 1e-12
+    structure_halo: int = 1
 
 
 @dataclass(frozen=True)
@@ -107,6 +127,7 @@ class PipelineConfig:
     labeling: LabelingConfig
     blend: BlendConfig
     streaming: StreamingConfig
+    metrics: MetricsConfig
     outputs: OutputConfig
 
     def as_dict(self) -> dict[str, Any]:
@@ -161,6 +182,9 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
     blend = _section(raw, "blend")
     streaming = _section(raw, "streaming")
     outputs = _section(raw, "outputs")
+    metrics = raw.get("metrics", {})
+    if not isinstance(metrics, Mapping):
+        raise ValueError("metrics must be a YAML mapping")
 
     hierarchy = tuple(_required(labeling, "hierarchy"))
     if hierarchy != EXPECTED_HIERARCHY:
@@ -186,6 +210,7 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
             band=str(_required(dataset, "band")),
             expected_scene_count=int(_required(dataset, "expected_scene_count")),
             scene_selection=selection_tuple,
+            expected_scene_ids=None if dataset.get("expected_scene_ids") is None else tuple(str(item) for item in dataset["expected_scene_ids"]),
         ),
         registration=RegistrationConfig(
             matcher="efficient_loftr",
@@ -195,6 +220,8 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
             matcher_repo=None if registration.get("matcher_repo") is None else _as_path(registration["matcher_repo"], "matcher_repo"),
             device=str(registration.get("device", "auto")),
             precision=str(registration.get("precision", "fp32")),
+            ransac_threshold_px=float(registration.get("ransac_threshold_px", 2.0)),
+            random_seed=int(registration.get("random_seed", 0)),
         ),
         canonical_grid=CanonicalGridConfig(str(_required(grid, "crs")), float(_required(grid, "resolution_m"))),
         radiometric=RadiometricConfig("bagrn", int(_required(radiometric, "control_scene_index"))),
@@ -205,11 +232,20 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         local_correction=LocalCorrectionConfig(
             int(_required(correction, "corridor_half_width")), int(_required(correction, "segment_length")),
             int(_required(correction, "min_valid_pixels")), float(_required(correction, "percentile_low")),
-            float(_required(correction, "percentile_high")), float(_required(correction, "gain_min")), float(_required(correction, "gain_max")),
+            float(_required(correction, "percentile_high")),
+            float(correction.get("stability_gain_min", correction.get("gain_min", 0.5))),
+            float(correction.get("stability_gain_max", correction.get("gain_max", 2.0))),
         ),
         labeling=LabelingConfig(float(_required(labeling, "preference_distance_scale")), float(_required(labeling, "tie_tolerance")), hierarchy),
         blend=BlendConfig(str(_required(blend, "method")), int(_required(blend, "half_width"))),
         streaming=StreamingConfig(int(_required(streaming, "tile_size")), int(_required(streaming, "halo"))),
+        metrics=MetricsConfig(
+            canonical_tile_size=int(metrics.get("canonical_tile_size", 256)),
+            local_min_valid_pixels=int(metrics.get("local_min_valid_pixels", 4096)),
+            seam_balance_threshold=float(metrics.get("seam_balance_threshold", 0.25)),
+            gradient_epsilon=float(metrics.get("gradient_epsilon", 1e-12)),
+            structure_halo=int(metrics.get("structure_halo", 1)),
+        ),
         outputs=OutputConfig(
             _as_path(_required(outputs, "root"), "outputs.root"), bool(outputs.get("write_geotiff", True)),
             bool(outputs.get("write_quicklooks", True)), bool(outputs.get("write_metrics", True)), bool(outputs.get("write_report", True)),

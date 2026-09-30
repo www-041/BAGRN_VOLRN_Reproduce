@@ -23,7 +23,7 @@ def test_task16_parameters_are_frozen():
 
 def test_finite_iter200_nonconverged_is_distinguished_from_invalid():
     finite = {"finite_state": True, "cg_failed": False, "iterations": 200, "strict_admm_converged": False}
-    assert classify_volrn_status(finite) == "PASS_FINITE_ITER200_NONCONVERGED"
+    assert classify_volrn_status(finite) == "COMPLETED_FINITE_NONCONVERGED"
     invalid = {**finite, "finite_state": False}
     assert classify_volrn_status(invalid) == "NUMERICAL_INVALID_ITER200"
     converged = {**finite, "strict_admm_converged": True}

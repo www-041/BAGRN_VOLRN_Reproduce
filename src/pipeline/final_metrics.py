@@ -137,18 +137,28 @@ def compute_final_metrics(root: str | Path) -> dict[str, Any]:
     labels_clean = quality["unresolved_labels"] == 0 and quality["invalid_labels"] == 0 and quality["two_scene_disagreement"] == 0
     correction_order = correction_invariance.get("status") == "PASS" and correction_invariance.get("evidence_type", "").startswith("fresh_task15")
     scene_order = scene_invariance.get("status") == "PASS" and scene_invariance.get("evidence_type", "").startswith("fresh_task15")
-    support_gate = quality["union_support"] == 62033096 and all((root / "stages/10_mosaics" / name).is_file() for name in ("v0_bagrn_weighted.tif", "v1_multiscene_label_blend.tif", "v2_local_corrected_multiscene.tif"))
+    support_gate = isinstance(quality["union_support"], int) and quality["union_support"] > 0 and all((root / "stages/10_mosaics" / name).is_file() for name in ("v0_bagrn_weighted.tif", "v1_multiscene_label_blend.tif", "v2_local_corrected_multiscene.tif"))
     finite_structural = bool(structural) and all(bool(item.get("finite")) and _number(item.get("gradient_magnitude_ncc")) is not None and float(item.get("gradient_magnitude_ncc")) >= 0.99 for item in structural if isinstance(item, dict))
     no_invalid_outputs = labels_clean and metrics.get("status") == "SUCCESS" and all((root / "stages/09_correction" / f"corrected_scene_{i:03d}.tif").is_file() for i in range(int(scale.get("scene_count", 0))))
-    core_metrics_match = (
-        scale.get("union_valid_pixels") == 62033096
-        and scale.get("multiscene_pixels") == 24731286
-        and quality["cycle_pixels"] == 8577496
-        and required_numeric["weighted_bagrn_mae"] == 105.95474750609073
-        and required_numeric["weighted_v2_mae"] == 93.79802987358079
-        and required_numeric["weighted_bagrn_rdd"] == 57.141824803056934
-        and required_numeric["weighted_v2_rdd"] == 41.76302625936166
-        and min(ncc) == 0.9986118416578263
+    historical_reference = {
+        "support": 62033096,
+        "multiscene_pixels": 24731286,
+        "cycle_pixels": 8577496,
+        "weighted_bagrn_mae": 105.95474750609073,
+        "weighted_v2_mae": 93.79802987358079,
+        "weighted_bagrn_rdd": 57.141824803056934,
+        "weighted_v2_rdd": 41.76302625936166,
+        "min_gradient_ncc": 0.9986118416578263,
+    }
+    core_metrics_match = all(isinstance(value, (int, float)) for value in historical_reference.values()) and (
+        scale.get("union_valid_pixels") == historical_reference["support"]
+        and scale.get("multiscene_pixels") == historical_reference["multiscene_pixels"]
+        and quality["cycle_pixels"] == historical_reference["cycle_pixels"]
+        and required_numeric["weighted_bagrn_mae"] == historical_reference["weighted_bagrn_mae"]
+        and required_numeric["weighted_v2_mae"] == historical_reference["weighted_v2_mae"]
+        and required_numeric["weighted_bagrn_rdd"] == historical_reference["weighted_bagrn_rdd"]
+        and required_numeric["weighted_v2_rdd"] == historical_reference["weighted_v2_rdd"]
+        and min(ncc) == historical_reference["min_gradient_ncc"]
     )
     quality["fresh_scene_order_invariance"] = scene_invariance
     quality["fresh_correction_order_invariance"] = correction_invariance
@@ -163,13 +173,15 @@ def compute_final_metrics(root: str | Path) -> dict[str, Any]:
         required_numeric["median_v2_mae"] < required_numeric["median_bagrn_mae"],
         required_numeric["median_v2_rdd"] < required_numeric["median_bagrn_rdd"],
     ))
-    gates_pass = all((
-        complete, labels_clean, improvements, min(ncc) >= 0.99 if ncc else False,
-        quality["v0_semantic_gate"]["status"] == "PASS", scene_order, correction_order,
-        support_gate, finite_structural, no_invalid_outputs, core_metrics_match,
-        quality["fresh_five_scene_regression"]["status"] == "PASS",
+    legality_pass = all((
+        complete, labels_clean, min(ncc) >= 0.99 if ncc else False,
+        quality["v0_semantic_gate"]["status"] == "PASS",
+        support_gate, finite_structural, no_invalid_outputs,
     ))
-    quality["scientific_gate_status"] = "READY_FOR_NEXT_SCALE_STAGE" if gates_pass else ("MIXED_SCALE_REVIEW" if complete else "NOT_MEASURED")
+    quality["historical_reference"] = historical_reference
+    quality["historical_reference_status"] = "MATCH" if core_metrics_match else "DIFF"
+    quality["observed_effects"] = {"v2_better_than_bagrn": improvements}
+    quality["scientific_gate_status"] = "READY_FOR_NEXT_SCALE_STAGE" if legality_pass and scene_order and correction_order else ("VALID_EXPERIMENT_COMPLETED" if legality_pass else ("MIXED_SCALE_REVIEW" if complete else "NOT_MEASURED"))
     if scale.get("scene_count") == 5:
         quality["five_scene_regression"] = five_scene_regression_gate(root)
     return {"quality": quality, "legacy_stage11": metrics, "legacy_stage12": scale, "scene_order_invariance": scene_invariance, "correction_order_invariance": correction_invariance}

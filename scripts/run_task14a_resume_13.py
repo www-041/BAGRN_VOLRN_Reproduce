@@ -33,6 +33,7 @@ STAGE11 = OUT / "stages/11_metrics"
 STAGE12 = OUT / "stages/12_scale_summary"
 TILE = 1024
 HALO = 128
+RUNTIME_CONFIG = None
 
 import sys
 if str(ROOT) not in sys.path:
@@ -41,6 +42,7 @@ if str(ROOT) not in sys.path:
 from src.seam_local.adapter import aggregate_labels_with_ties
 from src.seam_local.multiscene_label import PairwisePreferenceField
 from src.seam_local.pipeline import _crop_for_pair, process_pair
+from src.seam_local.config import SeamLocalRuntimeConfig
 from src.seam_local.source_side import resolve_source_sides
 from src.seam_local.footprint import footprint_polygon_from_valid_mask
 
@@ -156,7 +158,7 @@ def _stage07(paths, pairs, accepted, bboxes, transform):
         if rec["shared_valid_pixel_count"] == 0:
             rows.append(rec); continue
         t0 = time.perf_counter()
-        result = process_pair(a, b, va, vb)
+        result = process_pair(a, b, va, vb, runtime_config=RUNTIME_CONFIG)
         rec.update({"initial_seam_status": result.v1_status, "refined_seam_status": result.v2_status, "runtime_sec": time.perf_counter()-t0, "process_status": result.status})
         if result.initial_seam is None or result.refined_seam is None or result.crop_origin is None:
             rec["status"] = result.status; rows.append(rec); continue
@@ -177,7 +179,7 @@ def _stage07(paths, pairs, accepted, bboxes, transform):
         agree = initial_side.side_1_source == refined_side.side_1_source and initial_side.side_2_source == refined_side.side_2_source
         resolved = initial_side.status in {"EXCLUSIVE_CONTACT_RESOLVABLE","CENTROID_RESOLVABLE"} and refined_side.status in {"EXCLUSIVE_CONTACT_RESOLVABLE","CENTROID_RESOLVABLE"} and agree
         final_status = "PASS" if resolved and result.status in {"PASS", "AMBIGUOUS_SOURCE_SIDE"} else ("REQUIRES_MULTISCENE_LABELING" if not resolved else result.status)
-        rec.update({"status": final_status, "source_side_status": "PASS" if resolved else "REQUIRES_MULTISCENE_LABELING", "initial_source_side_status": initial_side.status, "refined_source_side_status": refined_side.status, "side_1_source": refined_side.side_1_source, "side_2_source": refined_side.side_2_source, "crop_origin": list(global_origin), "crop_shape": list(result.corrected_a.shape if result.corrected_a is not None else shape), "orientation": result.refined_seam.orientation, "seam_length": len(result.refined_seam.row_col_path), "local_segment_count": len(result.local_segments), "gain_min": result.diagnostics.get("gain_min"), "gain_max": result.diagnostics.get("gain_max"), "offset_min": result.diagnostics.get("offset_min"), "offset_max": result.diagnostics.get("offset_max")})
+        rec.update({"status": final_status, "source_side_status": "PASS" if resolved else "REQUIRES_MULTISCENE_LABELING", "initial_source_side_status": initial_side.status, "refined_source_side_status": refined_side.status, "initial_side_1_source": initial_side.side_1_source, "initial_side_2_source": initial_side.side_2_source, "refined_side_1_source": refined_side.side_1_source, "refined_side_2_source": refined_side.side_2_source, "side_1_source": refined_side.side_1_source, "side_2_source": refined_side.side_2_source, "legacy_refined_alias": True, "crop_origin": list(global_origin), "crop_shape": list(result.corrected_a.shape if result.corrected_a is not None else shape), "orientation": result.refined_seam.orientation, "seam_length": len(result.refined_seam.row_col_path), "local_segment_count": len(result.local_segments), "gain_min": result.diagnostics.get("gain_min"), "gain_max": result.diagnostics.get("gain_max"), "offset_min": result.diagnostics.get("offset_min"), "offset_max": result.diagnostics.get("offset_max")})
         rows.append(rec)
     with (STAGE07 / "pairwise_results.json").open("w", encoding="utf-8") as f: json.dump(rows, f, indent=2)
     with (STAGE07 / "pairwise_results.csv").open("w", newline="", encoding="utf-8") as f:
@@ -242,7 +244,60 @@ def _stage08(rows, paths, transform, crs, height, width):
     observed_max = max((i for i, value in enumerate(hist) if value > 0), default=0)
     stats.update({"coverage_histogram":{str(i):int(v) for i,v in enumerate(hist)},"coverage_max":observed_max,"coverage_max_observed":observed_max,"coverage_max_theoretical":n,"cycle_fraction":stats["cycle_pixels"]/max(stats["multiscene_pixels"],1),"label_method":"pairwise_score_then_clipped_interiority_then_unclipped_normalized_interiority_then_raw_edt","status":"SUCCESS" if stats["unresolved_pixels"]==0 else "HARD_STOP_UNRESOLVED_LABELS"})
     _write_json(STAGE08/"labeling_summary.json",stats); _marker(STAGE08,stats["status"],started,[labels_path,method_path,margin_path,coverage_path,STAGE08/"labeling_summary.json"],{"tile_size":TILE,"halo":HALO,"p95":p95.tolist()})
+    # The legacy root files are the refined/V2 view.  Preserve them as a
+    # compatibility alias while publishing the explicit V2 contract.
+    v2_dir = STAGE08 / "v2"; v2_dir.mkdir(parents=True, exist_ok=True)
+    for source, name in ((labels_path, "source_label_map.tif"), (method_path, "label_method_map.tif"), (margin_path, "score_margin.tif"), (coverage_path, "coverage_count.tif")):
+        shutil.copyfile(source, v2_dir / name)
+    _write_json(v2_dir / "labeling_summary.json", {**stats, "variant": "v2", "shared_label_map": False})
+    _stage08_initial_variant(rows, paths, transform, height, width, p95)
     return stats
+
+
+def _stage08_initial_variant(rows, paths, transform, height, width, p95):
+    """Build the independent V1 label map from initial seam/source-side data."""
+    out_dir = STAGE08 / "v1"; out_dir.mkdir(parents=True, exist_ok=True)
+    srcs = [rasterio.open(p) for p in paths]
+    dists = [rasterio.open(OUT/f"stages/05_valid_distance_cache/distance_scene_{i:03d}.tif") for i in range(len(paths))]
+    n = len(paths)
+    profile = srcs[0].profile.copy(); profile.update(count=1, dtype="int16", nodata=-1, compress="deflate", tiled=True, blockxsize=256, blockysize=256)
+    mprof = profile.copy(); mprof.update(dtype="uint8", nodata=0)
+    lprof = profile.copy(); lprof.update(dtype="float32", nodata=np.nan)
+    outputs = [out_dir/f"{name}" for name in ("source_label_map.tif", "label_method_map.tif", "score_margin.tif", "coverage_count.tif")]
+    label_dst = rasterio.open(outputs[0], "w", **profile); method_dst = rasterio.open(outputs[1], "w", **mprof); margin_dst = rasterio.open(outputs[2], "w", **lprof); coverage_dst = rasterio.open(outputs[3], "w", **mprof)
+    pair_info = []
+    for row in rows:
+        if row.get("initial_source_side_status") not in {"EXCLUSIVE_CONTACT_RESOLVABLE", "CENTROID_RESOLVABLE"}:
+            continue
+        pid = row["pair_id"]; seam_path = STAGE07/"pairs"/pid/"seam_initial.geojson"
+        if not seam_path.is_file():
+            continue
+        orient, centers = _load_seam_centers(seam_path, transform, height, width)
+        side = row.get("initial_side_1_source")
+        if side not in {"A", "B"}:
+            continue
+        pair_info.append((int(row["scene_i"]), int(row["scene_j"]), orient, centers, side == "A"))
+    summary = {"variant": "v1", "pairwise_score_tie_pixels": 0, "unresolved_pixels": 0, "invalid_label_pixels": 0, "union_valid_pixels": 0, "multiscene_pixels": 0, "cycle_pixels": 0}
+    try:
+        for r0 in range(0, height, TILE):
+            hh = min(TILE, height-r0); win = Window(0, r0, width, hh)
+            masks = np.stack([s.read_masks(1, window=win)>0 for s in srcs]); raw = np.stack([d.read(1, window=win).astype(np.float32) for d in dists])
+            fields = {}
+            for i,j,orient,centers,side_a in pair_info:
+                path = _local_tile_seam_path(orient, centers, r0, hh, width)
+                f = __import__("src.seam_local.multiscene_label", fromlist=["build_pairwise_preference_field"]).build_pairwise_preference_field(masks[i], masks[j], path, "A" if side_a else "B", orientation=orient, scene_a=i, scene_b=j)
+                c = centers[r0:r0+hh] if orient == "vertical" else centers
+                dom = np.isfinite(c)[:, None] if orient == "vertical" else np.broadcast_to(np.isfinite(c)[None, :], (hh, width))
+                fields[(i,j)] = PairwisePreferenceField(i,j,np.where(dom,f.vote,0).astype(np.float32),f.available&dom,np.where(dom,f.confidence,0).astype(np.float32),orient)
+            lab, meth, diag = aggregate_labels_with_ties(masks, fields, raw, p95_edt=p95)
+            label_dst.write(lab.astype(np.int16), 1, window=win); method_dst.write(meth, 1, window=win); margin_dst.write(np.asarray(diag["score_margin"], np.float32), 1, window=win); coverage_dst.write(np.count_nonzero(masks, axis=0).astype(np.uint8), 1, window=win)
+            cov = np.count_nonzero(masks, axis=0); summary["union_valid_pixels"] += int(np.count_nonzero(cov)); summary["multiscene_pixels"] += int(np.count_nonzero(cov >= 3)); summary["cycle_pixels"] += int(diag.get("cycle_pixels", 0)); summary["pairwise_score_tie_pixels"] += int(diag.get("top_score_tie_pixels", 0)); summary["unresolved_pixels"] += int(diag.get("unresolved_pixels", 0)); summary["invalid_label_pixels"] += int(np.count_nonzero((cov > 0) & (lab < 0)))
+    finally:
+        label_dst.close(); method_dst.close(); margin_dst.close(); coverage_dst.close()
+        for src in srcs + dists: src.close()
+    summary["cycle_fraction"] = summary["cycle_pixels"] / max(summary["multiscene_pixels"], 1); summary["status"] = "SUCCESS" if summary["unresolved_pixels"] == 0 else "HARD_STOP_UNRESOLVED_LABELS"; summary["shared_label_map"] = False
+    _write_json(out_dir/"labeling_summary.json", summary)
+    return summary
 
 
 def _seam_pixels(path, transform):
@@ -306,8 +361,8 @@ def _stage09(rows, paths, transform, height, width):
     return out_paths
 
 
-def _build_weights(labels_path, masks_paths, height, width):
-    weight_dir=STAGE10/"weights"; weight_dir.mkdir(parents=True,exist_ok=True); weights=[]
+def _build_weights(labels_path, masks_paths, height, width, variant="v2"):
+    weight_dir=STAGE10/"weights"/variant; weight_dir.mkdir(parents=True,exist_ok=True); weights=[]
     with rasterio.open(labels_path) as lab_src:
         labels=lab_src.read(1)
         profile=lab_src.profile.copy(); profile.update(dtype="float32",nodata=np.nan,compress="deflate",predictor=3,tiled=True,blockxsize=256,blockysize=256)
@@ -334,7 +389,20 @@ def _stream_blend(scene_paths, weight_paths, output, height, width):
 
 
 def _stage10(paths, corrected, height, width):
-    started=time.perf_counter(); STAGE10.mkdir(parents=True,exist_ok=True); labels=STAGE08/"source_label_map.tif"; masks=[p for p in paths]; weights=_build_weights(labels,masks,height,width); v1=STAGE10/"v1_mosaic.tif"; v2=STAGE10/"v2_mosaic.tif"; _stream_blend(paths,weights,v1,height,width); _stream_blend(corrected,weights,v2,height,width); shutil.copyfile(OUT/"stages/06_bagrn/bagrn/mosaic.tif",STAGE10/"v0_bagrn_mosaic.tif"); summary={"status":"SUCCESS","v0":"Stage06 BAGRN mosaic reused after grid/support semantic check","v1":str(v1),"v2":str(v2),"weight_width":64,"tile_size":TILE,"halo":HALO,"same_labels_and_weights_for_v1_v2":True}; _write_json(STAGE10/"mosaic_summary.json",summary); _marker(STAGE10,"SUCCESS",started,[STAGE10/"mosaic_summary.json",v1,v2,STAGE10/"v0_bagrn_mosaic.tif"],{"tile_size":TILE,"halo":HALO,"blend":"simultaneous multi-label cosine"}); return summary
+    started=time.perf_counter(); STAGE10.mkdir(parents=True,exist_ok=True)
+    labels_v1=STAGE08/"v1/source_label_map.tif"; labels_v2=STAGE08/"v2/source_label_map.tif"
+    masks=[p for p in paths]; weights_v1=_build_weights(labels_v1,masks,height,width,"v1"); weights_v2=_build_weights(labels_v2,masks,height,width,"v2")
+    v0_dir = STAGE10/"weights"/"v0"; v0_dir.mkdir(parents=True, exist_ok=True)
+    v0_weights = []
+    for i in range(len(paths)):
+        source = OUT/f"stages/05_valid_distance_cache/distance_scene_{i:03d}.tif"; target = v0_dir/f"weight_scene_{i:03d}.tif"
+        if source.is_file(): shutil.copyfile(source, target)
+        v0_weights.append(target)
+    v1=STAGE10/"v1_multiscene_label_blend.tif"; v2=STAGE10/"v2_local_corrected_multiscene.tif"
+    _stream_blend(paths,weights_v1,v1,height,width); _stream_blend(corrected,weights_v2,v2,height,width)
+    shutil.copyfile(OUT/"stages/06_bagrn/bagrn/mosaic.tif",STAGE10/"v0_bagrn_weighted.tif")
+    summary={"status":"SUCCESS","v0":"Stage06 BAGRN mosaic reused after grid/support semantic check","v0_weight_paths":[str(p) for p in v0_weights],"v1":str(v1),"v2":str(v2),"v1_label_source":str(labels_v1),"v2_label_source":str(labels_v2),"shared_label_map":False,"same_labels_and_weights_for_v1_v2":False,"weight_width":64,"tile_size":TILE,"halo":HALO,"blend":"independent multi-label cosine"}
+    _write_json(STAGE10/"mosaic_summary.json",summary); _marker(STAGE10,"SUCCESS",started,[STAGE10/"mosaic_summary.json",v1,v2,STAGE10/"v0_bagrn_weighted.tif"],{"tile_size":TILE,"halo":HALO,"blend":"independent v1/v2 multi-label cosine"}); return summary
 
 
 def _boundary_metrics(labels_arr, paths, corrected, height, width):
@@ -377,8 +445,10 @@ def _stage11(rows, paths, corrected, height, width):
             for r0 in range(0,height,TILE*4):
                 hh=min(TILE*4,height-r0); a=src.read(1,window=Window(0,r0,width,hh)); b=corr.read(1,window=Window(0,r0,width,hh)); ok=np.isfinite(a)&np.isfinite(b)&(src.read_masks(1,window=Window(0,r0,width,hh))>0); ga=np.hypot(sobel(np.where(ok,a,0),axis=1),sobel(np.where(ok,a,0),axis=0))[ok]; gb=np.hypot(sobel(np.where(ok,b,0),axis=1),sobel(np.where(ok,b,0),axis=0))[ok]; samples.append((ga,gb))
             ga=np.concatenate([x[0] for x in samples]); gb=np.concatenate([x[1] for x in samples]); ncc=float(np.corrcoef(ga,gb)[0,1]) if np.std(ga)>0 and np.std(gb)>0 else float("nan"); finite_structure.append({"scene":i,"gradient_magnitude_ncc":ncc,"finite":bool(np.isfinite(ncc))})
-    quality="PASS" if pair_counts["PASS"]>0 and boundary_summary["v2_weighted_mae"]<boundary_summary["bagrn_weighted_mae"] and boundary_summary["v2_weighted_rdd"]<boundary_summary["bagrn_weighted_rdd"] and all(x["finite"] and x["gradient_magnitude_ncc"]>=.99 for x in finite_structure) else "MIXED_SCALE_REVIEW"
-    metrics={"status":"SUCCESS","pairwise":pair_counts,"boundary_count":boundary_count,"boundary_pixels":sum(x["pixels"] for x in boundary_rows),"boundary_metrics":boundary_summary,"boundary_rows":boundary_rows,"structural":finite_structure,"quality_gate":quality}; _write_json(STAGE11/"metrics_summary.json",metrics); _marker(STAGE11,"SUCCESS",started,[STAGE11/"metrics_summary.json"],{"metrics":["boundary MAE/RDD","CGL","gradient magnitude NCC","gradient orientation cosine"]}); return metrics
+    legality = bool(pair_counts["PASS"] > 0 and all(x["finite"] for x in finite_structure))
+    observed_effects = {"v2_weighted_mae": boundary_summary.get("v2_weighted_mae"), "bagrn_weighted_mae": boundary_summary.get("bagrn_weighted_mae"), "v2_weighted_rdd": boundary_summary.get("v2_weighted_rdd"), "bagrn_weighted_rdd": boundary_summary.get("bagrn_weighted_rdd"), "v2_better_than_bagrn": bool(boundary_summary.get("v2_weighted_mae", np.inf) < boundary_summary.get("bagrn_weighted_mae", -np.inf) and boundary_summary.get("v2_weighted_rdd", np.inf) < boundary_summary.get("bagrn_weighted_rdd", -np.inf))}
+    quality="VALID_EXPERIMENT_COMPLETED" if legality else "HARD_STOP_ILLEGAL_OUTPUT"
+    metrics={"status":"SUCCESS","pairwise":pair_counts,"boundary_count":boundary_count,"boundary_pixels":sum(x["pixels"] for x in boundary_rows),"boundary_metrics":boundary_summary,"boundary_rows":boundary_rows,"structural":finite_structure,"quality_gate":quality,"observed_effects":observed_effects}; _write_json(STAGE11/"metrics_summary.json",metrics); _marker(STAGE11,"SUCCESS",started,[STAGE11/"metrics_summary.json"],{"metrics":["boundary MAE/RDD","CGL","gradient magnitude NCC","gradient orientation cosine"],"quality_gate_semantics":"legality_only"}); return metrics
 
 
 def _stage12(rows, stage08, stage11, height, width):

@@ -28,6 +28,18 @@ STAGE_NAMES = (
 
 
 _REQUIRED_OUTPUTS = {
+    "08_multiscene_labeling": (
+        "v1/source_label_map.tif",
+        "v1/label_method_map.tif",
+        "v1/score_margin.tif",
+        "v1/coverage_count.tif",
+        "v1/labeling_summary.json",
+        "v2/source_label_map.tif",
+        "v2/label_method_map.tif",
+        "v2/score_margin.tif",
+        "v2/coverage_count.tif",
+        "v2/labeling_summary.json",
+    ),
     "10_mosaics": (
         "v0_bagrn_weighted.tif",
         "v1_multiscene_label_blend.tif",

@@ -71,8 +71,11 @@ def _seam_lines(seam: SeamResult, shape: tuple[int, int]) -> tuple[np.ndarray, n
     return transverse, arcs
 
 
-def _clipped_moments(values: np.ndarray, eps: float) -> tuple[float, float] | None:
-    low, high = np.percentile(values, (1, 99))
+def _clipped_moments(
+    values: np.ndarray, eps: float, percentile_low: float = 1.0,
+    percentile_high: float = 99.0,
+) -> tuple[float, float] | None:
+    low, high = np.percentile(values, (percentile_low, percentile_high))
     clipped = values[(values >= low) & (values <= high)]
     if clipped.size == 0:
         return None
@@ -93,6 +96,10 @@ def estimate_seam_segment_moments(
     half_width: int = 128,
     segment_length: int = 256,
     min_valid_pairs: int = 4096,
+    percentile_low: float = 1.0,
+    percentile_high: float = 99.0,
+    stability_gain_min: float = 0.5,
+    stability_gain_max: float = 2.0,
     eps: float = 1e-6,
 ) -> LocalMomentEstimate:
     """Estimate independent source gains toward symmetric clipped moments.
@@ -140,8 +147,8 @@ def estimate_seam_segment_moments(
         n = int(source_a.size)
         coefficients: tuple[float, float, float, float] | None = None
         if n >= min_valid_pairs:
-            moments_a = _clipped_moments(source_a, eps)
-            moments_b = _clipped_moments(source_b, eps)
+            moments_a = _clipped_moments(source_a, eps, percentile_low, percentile_high)
+            moments_b = _clipped_moments(source_b, eps, percentile_low, percentile_high)
             if moments_a is not None and moments_b is not None:
                 mean_a, sigma_a = moments_a
                 mean_b, sigma_b = moments_b
@@ -175,7 +182,7 @@ def estimate_seam_segment_moments(
     offsets = np.array([(segment.b_a, segment.b_b) for segment in segments])
     gain_min, gain_max = float(gains.min()), float(gains.max())
     b_min, b_max = float(offsets.min()), float(offsets.max())
-    status = "UNSTABLE_LOCAL_GAIN" if gain_min < .5 or gain_max > 2.0 else "OK"
+    status = "UNSTABLE_LOCAL_GAIN" if gain_min < stability_gain_min or gain_max > stability_gain_max else "OK"
     return LocalMomentEstimate(status, tuple(segments), gain_min, gain_max, b_min, b_max, arcs)
 
 
@@ -189,13 +196,19 @@ def apply_seam_local_correction(
     half_width: int = 128,
     segment_length: int = 256,
     min_valid_pairs: int = 4096,
+    percentile_low: float = 1.0,
+    percentile_high: float = 99.0,
+    stability_gain_min: float = 0.5,
+    stability_gain_max: float = 2.0,
     eps: float = 1e-6,
 ) -> LocalMomentResult:
     """Apply line-interpolated local affine corrections with a cosine taper."""
     estimate = estimate_seam_segment_moments(
         a, b, valid_a, valid_b, seam,
         half_width=half_width, segment_length=segment_length,
-        min_valid_pairs=min_valid_pairs, eps=eps,
+        min_valid_pairs=min_valid_pairs, percentile_low=percentile_low,
+        percentile_high=percentile_high, stability_gain_min=stability_gain_min,
+        stability_gain_max=stability_gain_max, eps=eps,
     )
     corrected_a = np.asarray(a, dtype=np.float64).copy()
     corrected_b = np.asarray(b, dtype=np.float64).copy()

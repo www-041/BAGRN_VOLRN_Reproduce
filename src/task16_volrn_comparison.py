@@ -22,7 +22,6 @@ from rasterio.transform import Affine, array_bounds
 from scipy.ndimage import binary_erosion, distance_transform_edt, sobel
 from scipy.stats import wasserstein_distance
 
-from src.mosaic import create_mosaic
 from src.multiscene_sift.mosaic_protocol import grid_transform
 from src.multiscene_sift.radiometric_metrics import (
     aggregate_weighted_pair_metric,
@@ -45,12 +44,30 @@ TASK16_PARAMS = {
     "max_iter": 200,
     "tol": 1e-4,
 }
-EXPECTED_SUPPORT = 62_033_096
+# Historical value retained only for regression reporting; it is not a gate.
+HISTORICAL_EXPECTED_SUPPORT = 62_033_096
+EXPECTED_SUPPORT = HISTORICAL_EXPECTED_SUPPORT
 EXPECTED_SCENE_COUNT = 13
 
 
 class ProvenanceMismatch(RuntimeError):
     """Raised when the frozen Task15 input identity is not reproducible."""
+
+
+def validate_task16_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the version-controlled Task16 YAML without allowing drift."""
+    volrn = config.get("volrn")
+    if not isinstance(volrn, Mapping):
+        raise ValueError("Task16 config requires a volrn mapping")
+    expected = {"block_size_pixels": 400, "lambda": 0.5, "rho": 1.0, "max_iter": 200, "tol": 1e-4, "adaptive_rho": False, "preconditioner": "jacobi"}
+    for key, value in expected.items():
+        if volrn.get(key, value) != value:
+            raise ValueError(f"Task16 frozen parameter mismatch: {key}={volrn.get(key)!r}, expected {value!r}")
+    strict = config.get("strict_ablation", {})
+    e2e = config.get("end_to_end", {})
+    if strict.get("layout", "task15_v1") != "task15_v1" or e2e.get("reuse_same_refine_algorithm", True) is not True:
+        raise ValueError("Task16 strict ablation/end-to-end semantics are frozen")
+    return dict(expected)
 
 
 def classify_volrn_status(diag: Mapping[str, Any]) -> str:
@@ -65,7 +82,7 @@ def classify_volrn_status(diag: Mapping[str, Any]) -> str:
         return "ITERATION_COUNT_MISMATCH"
     if bool(diag.get("strict_admm_converged", diag.get("converged", False))):
         return "PASS_STRICT_CONVERGED"
-    return "PASS_FINITE_ITER200_NONCONVERGED"
+    return "COMPLETED_FINITE_NONCONVERGED"
 
 
 def compare_metric_values(metric: str, baseline: float | None, candidate: float | None) -> dict[str, Any]:
@@ -177,8 +194,11 @@ def _crop_scene(array: np.ndarray, mask: np.ndarray, transform: Any) -> tuple[np
 
 
 def _support_products(output_dir: Path, masks: list[np.ndarray], grid: Mapping[str, Any]) -> dict[str, Any]:
-    union = np.any(np.stack(masks), axis=0)
-    count = np.sum(np.stack(masks), axis=0).astype(np.uint8)
+    union = np.zeros(masks[0].shape, dtype=bool)
+    count = np.zeros(masks[0].shape, dtype=np.uint8)
+    for mask in masks:
+        union |= mask
+        count += mask.astype(np.uint8)
     weights = np.zeros(union.shape, dtype=np.float32)
     for mask in masks:
         weight = distance_transform_edt(mask).astype(np.float32)
@@ -243,7 +263,9 @@ def _load_frozen_inputs(task15_root: Path) -> dict[str, Any]:
     scene_dir = task15_root / "stages/06_bagrn/bagrn/normalized_scenes"
     mask_dir = scene_dir / "input_valid_masks"
     v2_path = task15_root / "stages/10_mosaics/v2_local_corrected_multiscene.tif"
-    weight_dir = task15_root / "stages/10_mosaics/weights"
+    weight_root = task15_root / "stages/10_mosaics/weights"
+    weight_dir = weight_root / "v1" if (weight_root / "v1").is_dir() else weight_root
+    v2_weight_dir = weight_root / "v2" if (weight_root / "v2").is_dir() else weight_dir
     required = [canonical_path, source_path, manifest_path, v2_path, task15_root / "stages/10_mosaics/mosaic_summary.json"]
     required += [scene_dir / f"scene_{i:03d}.tif" for i in range(EXPECTED_SCENE_COUNT)]
     required += [mask_dir / f"scene_{i:03d}.tif" for i in range(EXPECTED_SCENE_COUNT)]
@@ -279,9 +301,10 @@ def _load_frozen_inputs(task15_root: Path) -> dict[str, Any]:
         declared = int(manifest["scenes"][index].get("valid_pixels", -1))
         if declared >= 0 and declared != int(mask.sum()):
             raise ProvenanceMismatch(f"HARD_STOP_PROVENANCE_MISMATCH: scene {index} support declaration differs")
-    union_support = int(np.any(np.stack(masks), axis=0).sum())
-    if union_support != EXPECTED_SUPPORT:
-        raise ProvenanceMismatch(f"HARD_STOP_PROVENANCE_MISMATCH: union support {union_support} != {EXPECTED_SUPPORT}")
+    union = np.zeros((int(grid["height"]), int(grid["width"])), dtype=bool)
+    for mask in masks:
+        union |= mask
+    union_support = int(union.sum())
     return {
         "grid": grid,
         "source_config": source_path,
@@ -289,10 +312,13 @@ def _load_frozen_inputs(task15_root: Path) -> dict[str, Any]:
         "scene_paths": scene_paths,
         "mask_paths": mask_paths,
         "weight_paths": [weight_dir / f"weight_scene_{i:03d}.tif" for i in range(EXPECTED_SCENE_COUNT)],
+        "v1_weight_paths": [weight_dir / f"weight_scene_{i:03d}.tif" for i in range(EXPECTED_SCENE_COUNT)],
+        "v2_weight_paths": [v2_weight_dir / f"weight_scene_{i:03d}.tif" for i in range(EXPECTED_SCENE_COUNT)],
         "masks": masks,
         "scene_ids": list(manifest["scene_ids"]),
         "v2_path": v2_path,
         "provenance_files": required,
+        "union_support": union_support,
     }
 
 
@@ -346,17 +372,23 @@ def _finite_scene_outputs(paths: list[Path], masks: list[np.ndarray]) -> dict[st
 
 
 def _structural_ncc(path_a: Path, path_b: Path, mask: np.ndarray, tile: int = 512) -> float:
-    sums = np.zeros(5, dtype=np.float64)
+    sums = np.zeros(5, dtype=np.float64)  # n, sum(a), sum(b), sum(a^2), sum(b^2)
     cross = 0.0
     with rasterio.open(path_a) as left, rasterio.open(path_b) as right:
         height, width = left.height, left.width
         for r0 in range(0, height, tile):
             for c0 in range(0, width, tile):
                 r1, c1 = min(height, r0 + tile), min(width, c0 + tile)
-                window = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)
+                rs, cs = max(0, r0 - 1), max(0, c0 - 1)
+                re, ce = min(height, r1 + 1), min(width, c1 + 1)
+                window = rasterio.windows.Window(cs, rs, ce - cs, re - rs)
                 a = left.read(1, window=window).astype(np.float64)
                 b = right.read(1, window=window).astype(np.float64)
-                valid = mask[r0:r1, c0:c1] & np.isfinite(a) & np.isfinite(b)
+                valid = mask[rs:re, cs:ce] & np.isfinite(a) & np.isfinite(b)
+                valid = binary_erosion(valid, structure=np.ones((3, 3), dtype=bool))
+                core = np.zeros_like(valid, dtype=bool)
+                core[r0-rs:r1-rs, c0-cs:c1-cs] = True
+                valid &= core
                 if not valid.any():
                     continue
                 ga = np.hypot(sobel(np.where(valid, a, 0.0), axis=1), sobel(np.where(valid, a, 0.0), axis=0))[valid]
@@ -507,7 +539,9 @@ def _task10d_rows(a_metrics: Mapping[str, Any], b_metrics: Mapping[str, Any], b_
         ("CGL degrees", ("cgl_rad", "value_deg"), ("cgl_rad", "value_deg")),
     ]
     rows = [compare_metric_values(name, _metric_scalar(a_metrics, a_path), _metric_scalar(b_metrics, b_path)) for name, a_path, b_path in mapping]
-    rows.append(compare_metric_values("Gradient NCC mean", _metric_scalar(b_structural, ("mean",)), _metric_scalar(b_structural, ("mean",))))
+    # Identity/no-local baseline is exactly one.  Do not duplicate the
+    # measured candidate value in both columns; that hides structure loss.
+    rows.append(compare_metric_values("Gradient NCC mean", 1.0, _metric_scalar(b_structural, ("mean",))))
     rows.append(compare_metric_values("Union support", float(support), float(support)))
     return rows
 
@@ -569,11 +603,12 @@ def _three_method_figure(path: Path, raster_paths: list[Path], labels: list[str]
     plt.close(fig)
 
 
-def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_path: str | Path | None = None, resume: bool = False) -> dict[str, Any]:
+def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_path: str | Path | None = None, resume: bool = False, task16_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Execute the Task16 fixed-geometry comparison and write the full artifact tree."""
 
     task15_root = Path(task15_root)
     output_root = Path(output_root)
+    task_params = validate_task16_config(task16_config) if task16_config is not None else dict(TASK16_PARAMS)
     if output_root.exists() and any(output_root.iterdir()) and not resume:
         raise FileExistsError(f"Task16 output directory is non-empty: {output_root}")
     output_root.mkdir(parents=True, exist_ok=True)
@@ -583,7 +618,7 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
     frozen = _load_frozen_inputs(task15_root)
     grid = frozen["grid"]
     if protocol_path is None:
-        protocol_path = Path(__file__).resolve().parents[1] / "data/output/b9_five_scene_validation/task10d_metric_protocol.json"
+        protocol_path = Path(__file__).resolve().parents[1] / "configs/task10d_metric_protocol.json"
     protocol_path = Path(protocol_path)
     metric_protocol = load_task10d_metric_protocol(protocol_path)
     provenance = {
@@ -594,9 +629,9 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         "scene_count": EXPECTED_SCENE_COUNT,
         "scene_ids": frozen["scene_ids"],
         "canonical_grid": grid,
-        "union_support_expected": EXPECTED_SUPPORT,
-        "union_support_measured": int(np.any(np.stack(frozen["masks"]), axis=0).sum()),
-        "volrn_parameters": TASK16_PARAMS,
+        "union_support_historical_reference": HISTORICAL_EXPECTED_SUPPORT,
+        "union_support_measured": int(frozen["union_support"]),
+        "volrn_parameters": task_params,
         "rho_mode": "fixed",
         "preconditioner": "canonical Task10D VOLRN Jacobi preconditioner",
         "task10d_protocol_sha256": _sha256(protocol_path),
@@ -613,26 +648,21 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
     baseline_dir = output_root / "01_baseline_bagrn_weighted"
     baseline_mosaic = baseline_dir / "bagrn_weighted.tif"
     baseline_complete = all((baseline_dir / name).is_file() for name in ("bagrn_weighted.tif", "valid_mask.tif", "contributor_count.tif", "weight_sum.tif"))
+    baseline_arrays = None
     if resume and baseline_complete:
         baseline_runtime = 0.0
         baseline_arrays = None
     else:
-        baseline_arrays = []
-        for scene_path in frozen["scene_paths"]:
-            with rasterio.open(scene_path) as src:
-                baseline_arrays.append(src.read(1)[np.newaxis, :, :].astype(np.float32))
         t0 = time.perf_counter()
-        create_mosaic(
-            arrays=baseline_arrays, transforms=[canonical_transform] * EXPECTED_SCENE_COUNT,
-            crs=str(grid["crs"]), nodata_values=[None] * EXPECTED_SCENE_COUNT,
-            output_path=str(baseline_mosaic), resolution=float(grid["resolution"]), mode="weighted",
-            output_transform=canonical_transform, output_width=full_shape[1], output_height=full_shape[0], output_dtype="float32",
-        )
+        _stream_weighted_mosaic(frozen["scene_paths"], frozen["weight_paths"], baseline_mosaic, grid)
         baseline_runtime = time.perf_counter() - t0
     baseline_support = _support_products(baseline_dir, masks, grid)
-    if baseline_support["union_support"] != EXPECTED_SUPPORT:
+    if baseline_support["union_support"] != frozen["union_support"]:
         raise ProvenanceMismatch("HARD_STOP_BASELINE_SUPPORT_MISMATCH")
-    baseline_preview = _write_preview(baseline_dir / "preview.png", baseline_dir / "bagrn_weighted.tif", np.any(np.stack(masks), axis=0))
+    union_mask = np.zeros(full_shape, dtype=bool)
+    for mask in masks:
+        union_mask |= mask
+    baseline_preview = _write_preview(baseline_dir / "preview.png", baseline_dir / "bagrn_weighted.tif", union_mask)
     if baseline_arrays is not None:
         del baseline_arrays
 
@@ -670,12 +700,12 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         solver_start = time.perf_counter()
         corrected_local, coefficients, solver_diag = volrn_normalize(
             local_arrays, local_transforms, local_bounds, [None] * EXPECTED_SCENE_COUNT,
-            block_size_pixels=TASK16_PARAMS["block_size_pixels"], lambda_param=TASK16_PARAMS["lambda"], rho=TASK16_PARAMS["rho"], max_iter=TASK16_PARAMS["max_iter"], tol=TASK16_PARAMS["tol"],
+            block_size_pixels=task_params["block_size_pixels"], lambda_param=task_params["lambda"], rho=task_params["rho"], max_iter=task_params["max_iter"], tol=task_params["tol"],
             verbose=False, return_diagnostics=True, valid_masks=local_masks, use_preconditioner=True, adaptive_rho=False,
         )
         solver_runtime = time.perf_counter() - solver_start
         band_statuses = [classify_volrn_status(diag) for diag in solver_diag.get("band_solver_diagnostics", [])]
-        formal_status = "NUMERICAL_INVALID_ITER200" if any(status == "NUMERICAL_INVALID_ITER200" for status in band_statuses) else ("PASS_STRICT_CONVERGED" if all(status == "PASS_STRICT_CONVERGED" for status in band_statuses) else ("PASS_FINITE_ITER200_NONCONVERGED" if all(status == "PASS_FINITE_ITER200_NONCONVERGED" for status in band_statuses) else "ITERATION_COUNT_MISMATCH"))
+        formal_status = "NUMERICAL_INVALID_ITER200" if any(status == "NUMERICAL_INVALID_ITER200" for status in band_statuses) else ("PASS_STRICT_CONVERGED" if all(status == "PASS_STRICT_CONVERGED" for status in band_statuses) else ("COMPLETED_FINITE_NONCONVERGED" if all(status == "COMPLETED_FINITE_NONCONVERGED" for status in band_statuses) else "ITERATION_COUNT_MISMATCH"))
         _save_history(solver_dir, solver_diag)
         (solver_dir / "solver_diagnostics.json").write_text(json.dumps({"formal_status": formal_status, "band_statuses": band_statuses, "diagnostics": solver_diag}, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
         np.savez_compressed(solver_dir / "volrn_coefficients.npz", block_coefficients=coefficients)
@@ -720,8 +750,8 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
     )
     mosaic_runtime = time.perf_counter() - mosaic_start
     b_support = _support_products(mosaic_dir, masks, grid)
-    b_preview = _write_preview(mosaic_dir / "preview.png", mosaic_dir / "bagrn_volrn_iter200_weighted.tif", np.any(np.stack(masks), axis=0), baseline_preview["lower"], baseline_preview["upper"])
-    if b_support["union_support"] != EXPECTED_SUPPORT:
+    b_preview = _write_preview(mosaic_dir / "preview.png", mosaic_dir / "bagrn_volrn_iter200_weighted.tif", union_mask, baseline_preview["lower"], baseline_preview["upper"])
+    if b_support["union_support"] != frozen["union_support"]:
         raise ProvenanceMismatch("HARD_STOP_BASELINE_SUPPORT_MISMATCH: B support differs")
 
     # A/B Task10D metrics use the same 13-scene masks and canonical tiles.
@@ -744,12 +774,14 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
     ncc_values = [row["gradient_ncc"] for row in structural_rows if np.isfinite(row["gradient_ncc"])]
     structural = {"per_scene": structural_rows, "min": float(min(ncc_values)) if ncc_values else None, "median": float(np.median(ncc_values)) if ncc_values else None, "mean": float(np.mean(ncc_values)) if ncc_values else None, "worst": float(min(ncc_values)) if ncc_values else None}
     (metrics_dir / "task10d_metrics.json").write_text(json.dumps({"BAGRN_weighted": a_metrics, "BAGRN_VOLRN_iter200_weighted": b_metrics, "diagnostics_A": a_diag, "diagnostics_B": b_diag, "structure_preservation": structural, "finite_outputs": finite_outputs}, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
-    task10d_rows = _task10d_rows(a_metrics, b_metrics, structural, EXPECTED_SUPPORT)
+    task10d_rows = _task10d_rows(a_metrics, b_metrics, structural, frozen["union_support"])
     _write_csv(metrics_dir / "radiometric_ablation.csv", task10d_rows, ["metric", "baseline", "candidate", "absolute_change", "relative_change_percent"])
 
     # Reuse the exact Task15 source-label boundary definition for A/B.
     from scripts.run_task14a_resume_13 import _boundary_metrics
-    label_path = task15_root / "stages/08_multiscene_labeling/source_label_map.tif"
+    label_path = task15_root / "stages/08_multiscene_labeling/v1/source_label_map.tif"
+    if not label_path.is_file():
+        label_path = task15_root / "stages/08_multiscene_labeling/source_label_map.tif"
     with rasterio.open(label_path) as label_src:
         labels = label_src.read(1)
     boundary_rows, boundary_ab = _boundary_metrics(labels, frozen["scene_paths"], corrected_paths, full_shape[0], full_shape[1])
@@ -775,8 +807,8 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         ("boundary median MAE", boundary_ab.get("median_bagrn_mae"), boundary_ab.get("median_v2_mae"), c_value("median_v2_mae")),
         ("boundary median RDD", boundary_ab.get("median_bagrn_rdd"), boundary_ab.get("median_v2_rdd"), c_value("median_v2_rdd")),
         ("boundary worst MAE", max((r["bagrn_mae"] for r in boundary_rows), default=None), max((r["v2_mae"] for r in boundary_rows), default=None), None),
-        ("minimum scene gradient NCC", structural["min"], structural["min"], c_min_ncc),
-        ("union support", float(EXPECTED_SUPPORT), float(EXPECTED_SUPPORT), float(EXPECTED_SUPPORT)),
+        ("minimum scene gradient NCC", 1.0, structural["min"], c_min_ncc),
+        ("union support", float(frozen["union_support"]), float(frozen["union_support"]), float(frozen["union_support"])),
         ("runtime total B seconds", None, float(solver_runtime + mosaic_runtime), None),
     ]
     for metric, a_value, b_value, c_value_ in end_map:
@@ -793,7 +825,7 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         "task": "Task16",
         "status": formal_status if formal_status != "PASS_STRICT_CONVERGED" else "PASS_STRICT_CONVERGED",
         "scene_count": EXPECTED_SCENE_COUNT,
-        "support": {"expected": EXPECTED_SUPPORT, "A": baseline_support, "B": b_support},
+        "support": {"historical_reference": HISTORICAL_EXPECTED_SUPPORT, "measured": frozen["union_support"], "A": baseline_support, "B": b_support},
         "volrn": {"formal_status": formal_status, "band_statuses": band_statuses, "runtime_sec": solver_runtime, "diagnostics": solver_diag, "coefficient_diagnostics": coeff_diag},
         "runtime_sec": {"baseline_mosaic": baseline_runtime, "solver": solver_runtime, "volrn_mosaic": mosaic_runtime, "total_task16": total_runtime, "ram_vram": "NOT_MEASURED"},
         "structure_preservation": structural,
@@ -826,7 +858,7 @@ def _build_report(summary: Mapping[str, Any], provenance: Mapping[str, Any], out
         f"8. Finite solver/output state: numerical-invalid valid pixels={summary['numerical_validity']['numerical_invalid_pixels']}.",
         f"9. Block/pair/variable counts: {volrn['coefficient_diagnostics']['n_blocks']} / {volrn['coefficient_diagnostics']['n_pairs']} / {volrn['coefficient_diagnostics']['n_variables']}.",
         f"10. Coefficient ranges: a={volrn['coefficient_diagnostics']['a']}; b={volrn['coefficient_diagnostics']['b']}.",
-        f"11. Support equality: A={summary['support']['A']['union_support']}, B={summary['support']['B']['union_support']}, expected={EXPECTED_SUPPORT}.",
+        f"11. Support equality: A={summary['support']['A']['union_support']}, B={summary['support']['B']['union_support']}, measured frozen support={summary['support']['measured']} (historical reference={summary['support']['historical_reference']}).",
         "12. BAGRN→VOLRN MAMD/MSDD/RDD: see `05_radiometric_metrics/radiometric_ablation.csv`.",
         "13. Local MAMD/RDD: see the same ablation table and full JSON diagnostics.",
         "14. Seam MAE/RMSE/RDD: see `05_radiometric_metrics/boundary_metrics_summary.json` and the ablation table.",

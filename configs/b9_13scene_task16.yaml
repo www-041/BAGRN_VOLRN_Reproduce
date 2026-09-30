@@ -1,0 +1,19 @@
+source:
+  task15_root: data/output/final_pipeline/b9_13scene_formal_v2
+volrn:
+  block_size_pixels: 400
+  lambda: 0.5
+  rho: 1.0
+  max_iter: 200
+  tol: 1.0e-4
+  adaptive_rho: false
+  preconditioner: jacobi
+strict_ablation:
+  layout: task15_v1
+end_to_end:
+  refine_seam_from: task15_initial
+  reuse_same_refine_algorithm: true
+metrics:
+  protocol: configs/task10d_metric_protocol.json
+outputs:
+  root: data/output/b9_13scene_volrn_comparison_formal_v2

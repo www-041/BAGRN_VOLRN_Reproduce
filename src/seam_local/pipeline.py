@@ -13,9 +13,10 @@ import numpy as np
 from scipy.ndimage import binary_erosion, distance_transform_edt, label, sobel
 
 from src.multiscene_sift.radiometric_metrics import compute_cgl, compute_seam_zone_metrics
-from src.registration_benchmark.metrics import gradient_ncc
+from src.multiscene_sift.structural_metrics import structure_metrics
 
 from .blend import blend_across_seam
+from .config import SeamLocalRuntimeConfig
 from .cost import compute_seam_cost
 from .local_moment import LocalMomentSegment, apply_seam_local_correction
 from .seam import SeamResult, find_monotonic_seam
@@ -137,8 +138,9 @@ def _radiometric_metrics(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> dict
 
 def _actual_seam_metrics(
     a: np.ndarray, b: np.ndarray, valid: np.ndarray, seam: SeamResult,
+    corridor_half_width: int = 64,
 ) -> dict[str, float | int | None]:
-    metrics = _radiometric_metrics(a, b, valid & _corridor(seam, a.shape, 64))
+    metrics = _radiometric_metrics(a, b, valid & _corridor(seam, a.shape, corridor_half_width))
     metrics["mean_absolute_cost"] = seam.mean_cost
     metrics["p95_cost"] = seam.p95_cost
     return metrics
@@ -147,36 +149,48 @@ def _actual_seam_metrics(
 def _structure_metrics(
     source: np.ndarray, corrected: np.ndarray, valid: np.ndarray,
 ) -> dict[str, Any]:
-    # CGL remains the existing Task10D definition. The cosine statistic uses
-    # the same eroded, nonzero-gradient support and independent Sobel vectors.
-    cgl = compute_cgl(source, corrected, valid)
-    finite_stencil = binary_erosion(
-        valid & np.isfinite(source) & np.isfinite(corrected),
-        structure=np.ones((3, 3), dtype=bool),
-    )
-    ncc = float(gradient_ncc(source, corrected, finite_stencil.copy()))
-    safe_source = np.where(np.isfinite(source), source, 0.0)
-    safe_corrected = np.where(np.isfinite(corrected), corrected, 0.0)
-    ax, ay = sobel(safe_source, axis=1, mode="nearest"), sobel(safe_source, axis=0, mode="nearest")
-    bx, by = sobel(safe_corrected, axis=1, mode="nearest"), sobel(safe_corrected, axis=0, mode="nearest")
-    norm_a, norm_b = np.hypot(ax, ay), np.hypot(bx, by)
-    eligible = binary_erosion(valid & np.isfinite(source) & np.isfinite(corrected),
-                              structure=np.ones((3, 3), dtype=bool))
-    eligible &= (norm_a > 1e-12) & (norm_b > 1e-12)
-    cosine = None
-    if np.any(eligible):
-        cosine = float(np.mean((ax[eligible] * bx[eligible] + ay[eligible] * by[eligible])
-                               / (norm_a[eligible] * norm_b[eligible])))
+    metrics = structure_metrics(source, corrected, valid, halo=1)
     return {
-        "cgl": cgl,
-        "gradient_magnitude_ncc": ncc if np.isfinite(ncc) else None,
-        "gradient_orientation_cosine": cosine,
+        "cgl": {"cgl_rad": metrics["cgl_rad"], "cgl_deg": metrics["cgl_deg"]},
+        "gradient_magnitude_ncc": metrics["gradient_magnitude_ncc"],
+        "gradient_orientation_cosine": metrics["gradient_orientation_cosine"],
     }
+
+
+def refine_seam_after_correction(
+    corrected_a: np.ndarray,
+    corrected_b: np.ndarray,
+    valid_a: np.ndarray,
+    valid_b: np.ndarray,
+    initial_seam: SeamResult,
+    *,
+    refine_half_width: int = 64,
+    cost_config: SeamLocalRuntimeConfig | None = None,
+) -> SeamResult:
+    """Refine a seam in the initial-seam corridor using the frozen DP path.
+
+    This is the single implementation used by Task15 and Task16 end-to-end
+    correction branches.  The corridor is evidence-limited to the initial
+    seam; it never invents support outside the original overlap.
+    """
+    cfg = cost_config or SeamLocalRuntimeConfig(refine_half_width=refine_half_width)
+    if initial_seam.status != "OK":
+        return initial_seam
+    joint = np.asarray(valid_a, dtype=bool) & np.asarray(valid_b, dtype=bool)
+    cost = compute_seam_cost(
+        np.asarray(corrected_a), np.asarray(corrected_b), joint,
+        intensity_weight=cfg.intensity_weight,
+        gradient_weight=cfg.gradient_weight,
+        normalization=cfg.normalization,
+    )
+    restricted = joint & _corridor(initial_seam, joint.shape, cfg.refine_half_width)
+    return find_monotonic_seam(cost, restricted, coarse_factor=1, refine_half_width=0)
 
 
 def process_pair(
     image_a: np.ndarray, image_b: np.ndarray,
     valid_a: np.ndarray, valid_b: np.ndarray,
+    *, runtime_config: SeamLocalRuntimeConfig | None = None,
 ) -> PairResult:
     """Run V1 and V2 on one pair; return diagnostics even for pair failures."""
     a, b = np.asarray(image_a, dtype=np.float64), np.asarray(image_b, dtype=np.float64)
@@ -207,8 +221,17 @@ def process_pair(
                        v0_mosaic=v0_mosaic, valid_union=union,
                        crop_origin=origin,
                        diagnostics={"joint_overlap_components": int(component_count)})
-    initial_cost = compute_seam_cost(a[local_overlap], b[local_overlap], overlap_joint)
-    initial_overlap = find_monotonic_seam(initial_cost, overlap_joint)
+    cfg = runtime_config or SeamLocalRuntimeConfig()
+    initial_cost = compute_seam_cost(
+        a[local_overlap], b[local_overlap], overlap_joint,
+        intensity_weight=cfg.intensity_weight,
+        gradient_weight=cfg.gradient_weight,
+        normalization=cfg.normalization,
+    )
+    initial_overlap = find_monotonic_seam(
+        initial_cost, overlap_joint, coarse_factor=cfg.coarse_factor,
+        refine_half_width=cfg.refine_half_width,
+    )
     diagnostics: dict[str, Any] = {
         "joint_overlap_components": int(component_count),
         "initial_search_mode": initial_overlap.search_mode,
@@ -226,16 +249,25 @@ def process_pair(
                "valid_pixels": int(np.count_nonzero(union)),
                "finite_pixels": int(np.count_nonzero(np.isfinite(v0_mosaic) & union))},
         "fixed_corridor": {"bagrn": _radiometric_metrics(a, b, fixed_mask)},
-        "actual_seam": {"v1": _actual_seam_metrics(a, b, joint, initial)},
+        "actual_seam": {"v1": _actual_seam_metrics(a, b, joint, initial, cfg.corridor_half_width)},
     }
-    v1 = blend_across_seam(a, b, initial, va, vb)
+    v1 = blend_across_seam(a, b, initial, va, vb, blend_half_width=cfg.blend_half_width)
     diagnostics["v1_blend_pixels"] = v1.blend_pixels
     diagnostics["v1_source_side"] = v1.source_side
     base = dict(initial_seam=initial, v0_status="PASS", v0_mosaic=v0_mosaic,
                 v1_mosaic=v1.image,
                 valid_union=union, crop_origin=origin,
                 metrics=metrics, diagnostics=diagnostics)
-    local = apply_seam_local_correction(a, b, va, vb, initial)
+    local = apply_seam_local_correction(
+        a, b, va, vb, initial,
+        half_width=cfg.corridor_half_width,
+        segment_length=cfg.segment_length,
+        min_valid_pairs=cfg.min_valid_pixels,
+        percentile_low=cfg.percentile_low,
+        percentile_high=cfg.percentile_high,
+        stability_gain_min=cfg.stability_gain_min,
+        stability_gain_max=cfg.stability_gain_max,
+    )
     diagnostics.update(gain_min=local.gain_min, gain_max=local.gain_max,
                        offset_min=local.b_min, offset_max=local.b_max,
                        fallback_segments=sum(segment.fallback_from is not None
@@ -250,17 +282,21 @@ def process_pair(
         "a": _structure_metrics(a, local.corrected_a, fixed_mask & va),
         "b": _structure_metrics(b, local.corrected_b, fixed_mask & vb),
     }
-    refined_cost = compute_seam_cost(
-        local.corrected_a[local_overlap], local.corrected_b[local_overlap], overlap_joint)
-    restricted = overlap_joint & _corridor(initial_overlap, overlap_joint.shape, 64)
-    refined_overlap = find_monotonic_seam(refined_cost, restricted, coarse_factor=1)
+    refined_overlap = refine_seam_after_correction(
+        local.corrected_a[local_overlap], local.corrected_b[local_overlap],
+        va[local_overlap], vb[local_overlap], initial_overlap,
+        refine_half_width=cfg.refine_half_width, cost_config=cfg,
+    )
     diagnostics["refined_search_mode"] = refined_overlap.search_mode
     if refined_overlap.status != "OK":
         return _failed("UNSUPPORTED_TOPOLOGY", v1_status=v1.status, **base)
     refined = _move_seam(refined_overlap, local_overlap[0].start, local_overlap[1].start)
     metrics["actual_seam"]["v2"] = _actual_seam_metrics(
-        local.corrected_a, local.corrected_b, joint, refined)
-    v2 = blend_across_seam(local.corrected_a, local.corrected_b, refined, va, vb)
+        local.corrected_a, local.corrected_b, joint, refined, cfg.corridor_half_width)
+    v2 = blend_across_seam(
+        local.corrected_a, local.corrected_b, refined, va, vb,
+        blend_half_width=cfg.blend_half_width,
+    )
     diagnostics["v2_blend_pixels"] = v2.blend_pixels
     diagnostics["v2_source_side"] = v2.source_side
     base.update(refined_seam=refined, v2_mosaic=v2.image)

@@ -11,6 +11,8 @@ registration:
   global_method: "translation_l2"
   device: "auto"
   precision: "fp32"
+  ransac_threshold_px: 2.0
+  random_seed: 0
 
 canonical_grid:
   crs: "EPSG:32650"
@@ -33,8 +35,8 @@ local_correction:
   min_valid_pixels: 4096
   percentile_low: 1
   percentile_high: 99
-  gain_min: 0.5
-  gain_max: 2.0
+  stability_gain_min: 0.5
+  stability_gain_max: 2.0
 
 labeling:
   preference_distance_scale: 64
@@ -53,8 +55,15 @@ streaming:
   tile_size: 1024
   halo: 128
 
+metrics:
+  canonical_tile_size: 256
+  local_min_valid_pixels: 4096
+  seam_balance_threshold: 0.25
+  gradient_epsilon: 1.0e-12
+  structure_halo: 1
+
 outputs:
-  root: "data/output/final_pipeline/b9_13scene"
+  root: "data/output/final_pipeline/b9_13scene_formal_v2"
   write_geotiff: true
   write_quicklooks: true
   write_metrics: true

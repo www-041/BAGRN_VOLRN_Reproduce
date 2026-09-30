@@ -5,7 +5,9 @@ from scipy.ndimage import sobel
 
 
 def compute_seam_cost(
-    a: np.ndarray, b: np.ndarray, valid_mask: np.ndarray
+    a: np.ndarray, b: np.ndarray, valid_mask: np.ndarray,
+    *, intensity_weight: float = 0.5, gradient_weight: float = 0.5,
+    normalization: str = "p95",
 ) -> np.ndarray:
     """Return the P95-normalized intensity/gradient cost on joint valid pixels.
 
@@ -17,6 +19,10 @@ def compute_seam_cost(
     if a.ndim != 2 or a.shape != b.shape or a.shape != valid_mask.shape:
         raise ValueError("a, b, and valid_mask must be same-shape 2D arrays")
 
+    if intensity_weight < 0 or gradient_weight < 0 or intensity_weight + gradient_weight <= 0:
+        raise ValueError("cost weights must be nonnegative and not both zero")
+    if normalization != "p95":
+        raise ValueError("the frozen seam cost currently supports normalization='p95' only")
     valid = valid_mask & np.isfinite(a) & np.isfinite(b)
     cost = np.full(a.shape, np.inf, dtype=np.float64)
     if not np.any(valid):
@@ -36,8 +42,9 @@ def compute_seam_cost(
     # combining C = 0.5 D_I_norm + 0.5 D_G_norm.
     intensity_scale = max(float(np.percentile(intensity_difference[valid], 95)), 1e-6)
     gradient_scale = max(float(np.percentile(gradient_difference[valid], 95)), 1e-6)
-    cost[valid] = 0.5 * (
-        np.clip(intensity_difference[valid] / intensity_scale, 0.0, 1.0)
-        + np.clip(gradient_difference[valid] / gradient_scale, 0.0, 1.0)
-    )
+    total = intensity_weight + gradient_weight
+    cost[valid] = (
+        intensity_weight * np.clip(intensity_difference[valid] / intensity_scale, 0.0, 1.0)
+        + gradient_weight * np.clip(gradient_difference[valid] / gradient_scale, 0.0, 1.0)
+    ) / total
     return cost
