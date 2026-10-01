@@ -114,6 +114,9 @@ def _run_existing_downstream(root: Path, config: PipelineConfig) -> dict[str, An
     legacy.STAGE10 = root / "stages/10_mosaics"
     legacy.STAGE11 = root / "stages/11_metrics"
     legacy.STAGE12 = root / "stages/12_report"
+    legacy.METRIC_CONFIG = {
+        "seam_balance_threshold": config.metrics.seam_balance_threshold,
+    }
     legacy.TILE = config.streaming.tile_size
     legacy.HALO = config.streaming.halo
     from src.seam_local.config import SeamLocalRuntimeConfig

@@ -20,6 +20,23 @@ def _number(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+def _label_legality(summary: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate one explicit V1/V2 label summary without cross-route fallback."""
+
+    unresolved = summary.get("unresolved_pixels")
+    invalid = summary.get("invalid_label_pixels")
+    disagreement = summary.get("two_scene_disagreement_pixels", 0)
+    measured = all(isinstance(value, int) for value in (unresolved, invalid, disagreement))
+    clean = bool(measured and unresolved == 0 and invalid == 0 and disagreement == 0)
+    return {
+        "measured": measured,
+        "clean": clean,
+        "unresolved_pixels": unresolved,
+        "invalid_label_pixels": invalid,
+        "two_scene_disagreement_pixels": disagreement,
+    }
+
+
 def classify_structural_gate(structural: list[dict[str, Any]], ncc_threshold: float = 0.99) -> dict[str, Any]:
     """Separate finite structural validity from the NCC quality review.
 
@@ -106,6 +123,10 @@ def _invariance_artifact(root: Path, name: str) -> dict[str, Any]:
 def compute_final_metrics(root: str | Path) -> dict[str, Any]:
     root = Path(root)
     labels = _json(root / "stages/08_multiscene_labeling/labeling_summary.json")
+    v1_labels = _json(root / "stages/08_multiscene_labeling/v1/labeling_summary.json")
+    v2_labels = _json(root / "stages/08_multiscene_labeling/v2/labeling_summary.json")
+    v1_label_gate = _label_legality(v1_labels)
+    v2_label_gate = _label_legality(v2_labels)
     metrics = _json(root / "stages/11_metrics/metrics_summary.json")
     scale = _json(root / "stages/12_report/scale_summary.json")
     correction_summary = _json(root / "stages/09_correction/correction_summary.json")
@@ -126,9 +147,10 @@ def compute_final_metrics(root: str | Path) -> dict[str, Any]:
         "median_v2_rdd": _number(boundary.get("median_v2_rdd")),
     }
     quality = {
-        "unresolved_labels": labels.get("unresolved_pixels", "NOT_MEASURED"),
-        "invalid_labels": labels.get("invalid_label_pixels", "NOT_MEASURED"),
-        "two_scene_disagreement": labels.get("two_scene_disagreement_pixels", "NOT_MEASURED"),
+        "unresolved_labels": v2_label_gate["unresolved_pixels"],
+        "invalid_labels": v2_label_gate["invalid_label_pixels"],
+        "two_scene_disagreement": v2_label_gate["two_scene_disagreement_pixels"],
+        "label_validity": {"V1": v1_label_gate, "V2": v2_label_gate},
         "union_support": labels.get("union_valid_pixels", scale.get("union_valid_pixels", "NOT_MEASURED")),
         "gradient_ncc_min": min(ncc) if ncc else "NOT_MEASURED",
         "weighted_boundary": required_numeric,
@@ -149,7 +171,8 @@ def compute_final_metrics(root: str | Path) -> dict[str, Any]:
         "score_margin_p95": labels.get("score_margin_p95", "NOT_MEASURED"),
     }
     complete = all(value is not None and math.isfinite(float(value)) for value in required_numeric.values()) and bool(ncc) and all(math.isfinite(float(value)) for value in ncc)
-    labels_clean = quality["unresolved_labels"] == 0 and quality["invalid_labels"] == 0 and quality["two_scene_disagreement"] == 0
+    labels_clean = v1_label_gate["clean"] and v2_label_gate["clean"]
+    quality["labels_clean"] = labels_clean
     correction_order = correction_invariance.get("status") == "PASS" and correction_invariance.get("evidence_type", "").startswith("fresh_task15")
     scene_order = scene_invariance.get("status") == "PASS" and scene_invariance.get("evidence_type", "").startswith("fresh_task15")
     support_gate = isinstance(quality["union_support"], int) and quality["union_support"] > 0 and all((root / "stages/10_mosaics" / name).is_file() for name in ("v0_bagrn_weighted.tif", "v1_multiscene_label_blend.tif", "v2_local_corrected_multiscene.tif"))

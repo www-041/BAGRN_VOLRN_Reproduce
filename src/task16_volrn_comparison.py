@@ -71,6 +71,21 @@ def validate_task16_config(config: Mapping[str, Any]) -> dict[str, Any]:
     return dict(expected)
 
 
+def _transition_balance_threshold(task16_config: Mapping[str, Any] | None) -> float:
+    """Read the frozen pair-transition threshold from the Task16 config."""
+
+    if task16_config is None:
+        value = 0.25
+    else:
+        metrics = task16_config.get("metrics")
+        if not isinstance(metrics, Mapping) or "seam_balance_threshold" not in metrics:
+            raise ValueError("Task16 config requires metrics.seam_balance_threshold")
+        value = float(metrics["seam_balance_threshold"])
+    if not (0.0 < value < 0.5):
+        raise ValueError("seam_balance_threshold must be in (0, 0.5)")
+    return value
+
+
 def classify_volrn_status(diag: Mapping[str, Any]) -> str:
     """Classify the formal Task16 status without treating x-stability as convergence."""
 
@@ -255,6 +270,37 @@ def _stream_weighted_mosaic(
     finally:
         for handle in scenes + weights:
             handle.close()
+
+
+def _stream_mosaic_validity(
+    path: Path,
+    union_mask: np.ndarray,
+    *,
+    tile_size: int = 512,
+) -> dict[str, int]:
+    """Validate finite mosaic values on the frozen union support only."""
+
+    union = np.asarray(union_mask, dtype=bool)
+    finite_pixels = 0
+    invalid_pixels = 0
+    with rasterio.open(path) as src:
+        if (src.height, src.width) != union.shape:
+            raise ValueError("mosaic validity grid mismatch")
+        for r0 in range(0, src.height, tile_size):
+            r1 = min(src.height, r0 + tile_size)
+            for c0 in range(0, src.width, tile_size):
+                c1 = min(src.width, c0 + tile_size)
+                window = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)
+                support = union[r0:r1, c0:c1]
+                values = src.read(1, window=window)
+                finite = np.isfinite(values)
+                finite_pixels += int(np.count_nonzero(support & finite))
+                invalid_pixels += int(np.count_nonzero(support & ~finite))
+    return {
+        "union_support_pixels": int(np.count_nonzero(union)),
+        "finite_pixels": finite_pixels,
+        "numerical_invalid_pixels": invalid_pixels,
+    }
 
 
 def _load_frozen_inputs(task15_root: Path) -> dict[str, Any]:
@@ -583,6 +629,8 @@ def run_strict_local_ablation(
     scene_ids: list[str],
     grid: Mapping[str, Any],
     output_dir: str | Path,
+    *,
+    transition_balance_threshold: float = 0.25,
 ) -> dict[str, Any]:
     """Run A0/A1/A2 with one byte-identical frozen V1 weight layout.
 
@@ -593,6 +641,8 @@ def run_strict_local_ablation(
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if not (0.0 < float(transition_balance_threshold) < 0.5):
+        raise ValueError("transition_balance_threshold must be in (0, 0.5)")
     routes = {"A0_BAGRN_V1": bagrn_scene_paths, "A1_OURS_V1": ours_scene_paths, "A2_VOLRN_V1": volrn_scene_paths}
     if any(len(paths) != len(v1_weight_paths) for paths in routes.values()):
         raise ValueError("strict ablation route/weight counts differ")
@@ -615,13 +665,31 @@ def run_strict_local_ablation(
             baseline_metrics, payload["metrics"], payload["structure_preservation"], support,
             a_structural=baseline_structure,
         ))
+    from scripts.run_task14a_resume_13 import _transition_metrics
+    fixed_support = {}
+    for route, scene_paths in routes.items():
+        fixed_rows, fixed_metrics = _transition_metrics(
+            v1_weight_paths, bagrn_scene_paths, scene_paths,
+            int(grid["height"]), int(grid["width"]),
+            balance_threshold=transition_balance_threshold,
+        )
+        fixed_support[route] = {"rows": fixed_rows, "metrics": fixed_metrics}
     manifest = {"routes": list(routes), "weight_paths": [str(path) for path in v1_weight_paths],
                 "weight_sha256": weight_hashes, "same_weight_hashes": True,
-                "same_weight_layout_across_routes": True, "semantics": "A0 BAGRN + V1; A1 Ours corrected + SAME V1; A2 VOLRN corrected + SAME V1"}
+                "same_weight_layout_across_routes": True,
+                "transition_balance_threshold": float(transition_balance_threshold),
+                "transition_support_definition": "pair-normalized V1 weights",
+                "semantics": "A0 BAGRN + V1; A1 Ours corrected + SAME V1; A2 VOLRN corrected + SAME V1"}
     (output_dir / "weight_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     (output_dir / "strict_ablation_metrics.json").write_text(json.dumps(route_metrics, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
+    (output_dir / "fixed_support_metrics.json").write_text(json.dumps({
+        "support_definition": "frozen V1 weights with pair-normalized transition support",
+        "weight_paths": [str(path) for path in v1_weight_paths],
+        "transition_balance_threshold": float(transition_balance_threshold),
+        "routes": fixed_support,
+    }, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
     _write_csv(output_dir / "strict_ablation.csv", rows)
-    return {"routes": route_metrics, "weight_manifest": manifest}
+    return {"routes": route_metrics, "weight_manifest": manifest, "fixed_support": fixed_support}
 
 
 def run_volrn_end_to_end(
@@ -686,7 +754,11 @@ def run_volrn_end_to_end(
         shared = masks[i] & masks[j]
         rows, cols = np.where(shared)
         if not rows.size:
-            refinement_rows.append({"pair_id": record.get("pair_id", f"{i:02d}_{j:02d}"), "status": "NO_FINAL_SHARED_SUPPORT"})
+            refinement_rows.append({"pair_id": record.get("pair_id", f"{i:02d}_{j:02d}"),
+                                    "status": "NO_FINAL_SHARED_SUPPORT",
+                                    "refinement_status": "NO_FINAL_SHARED_SUPPORT",
+                                    "source_side_status": "NOT_MEASURED",
+                                    "label_status": "NOT_MEASURED"})
             continue
         wr0, wr1 = int(rows.min()), int(rows.max()) + 1
         wc0, wc1 = int(cols.min()), int(cols.max()) + 1
@@ -699,12 +771,32 @@ def run_volrn_end_to_end(
         local_initial = seam_for_window(seam, wr0, wr1, wc0, wc1)
         refined = refine(a, b, va, vb, local_initial,
                          refine_half_width=cfg.refine_half_width, cost_config=cfg)
-        refinement_rows.append({"pair_id": record.get("pair_id", f"{i:02d}_{j:02d}"), "status": refined.status})
+        pair_id = record.get("pair_id", f"{i:02d}_{j:02d}")
         if refined.status != "OK":
+            refinement_rows.append({"pair_id": pair_id, "status": refined.status,
+                                    "refinement_status": refined.status,
+                                    "source_side_status": "NOT_MEASURED", "label_status": "NOT_MEASURED"})
             continue
         refined_count += 1
         source = resolve_source_sides(refined, va & vb, va, vb, footprints[i], footprints[j])
-        side = source.side_1_source or record.get("initial_side_1_source") or "A"
+        resolved_statuses = {"EXCLUSIVE_CONTACT_RESOLVABLE", "CENTROID_RESOLVABLE"}
+        if source.status not in resolved_statuses:
+            refinement_rows.append({
+                "pair_id": pair_id,
+                "status": refined.status,
+                "refinement_status": refined.status,
+                "source_side_status": source.status,
+                "label_status": "REQUIRES_MULTISCENE_LABELING",
+            })
+            continue
+        side = source.side_1_source
+        refinement_rows.append({
+            "pair_id": pair_id,
+            "status": refined.status,
+            "refinement_status": refined.status,
+            "source_side_status": source.status,
+            "label_status": "PASS",
+        })
         from src.seam_local.seam import SeamResult
         local_path = np.asarray(refined.row_col_path).copy()
         if refined.orientation == "vertical":
@@ -738,7 +830,8 @@ def run_volrn_end_to_end(
     method_path = output_dir / "label_method_map.tif"
     margin_path = output_dir / "score_margin.tif"
     coverage_path = output_dir / "coverage_count.tif"
-    stats = {"unresolved_pixels": 0, "invalid_label_pixels": 0, "cycle_pixels": 0,
+    stats = {"unresolved_pixels": 0, "invalid_label_pixels": 0,
+             "two_scene_disagreement_pixels": 0, "cycle_pixels": 0,
              "multiscene_pixels": 0, "pairwise_score_tie_pixels": 0,
              "resolved_by_unclipped_interiority": 0, "resolved_by_raw_edt": 0,
              "union_valid_pixels": 0, "label_method_counts": {str(i): 0 for i in range(5)},
@@ -782,7 +875,7 @@ def run_volrn_end_to_end(
                 label_dst.write(lab.astype(np.int16), 1, window=win); method_dst.write(methods.astype(np.uint8), 1, window=win)
                 margin_dst.write(np.asarray(diag["score_margin"], dtype=np.float32), 1, window=win); coverage_dst.write(np.count_nonzero(tile_masks, axis=0).astype(np.uint8), 1, window=win)
                 coverage = np.count_nonzero(tile_masks, axis=0)
-                stats["union_valid_pixels"] += int(np.count_nonzero(coverage)); stats["multiscene_pixels"] += int(np.count_nonzero(coverage >= 3)); stats["cycle_pixels"] += int(diag.get("cycle_pixels", 0)); stats["pairwise_score_tie_pixels"] += int(diag.get("top_score_tie_pixels", 0)); stats["resolved_by_unclipped_interiority"] += int(diag.get("resolved_by_unclipped_interiority", 0)); stats["resolved_by_raw_edt"] += int(diag.get("resolved_by_raw_edt", 0)); stats["unresolved_pixels"] += int(diag.get("unresolved_pixels", 0)); stats["invalid_label_pixels"] += int(np.count_nonzero((coverage > 0) & (lab < 0))); stats["label_method_counts"] = {str(i): stats["label_method_counts"].get(str(i), 0) + int(np.count_nonzero(methods == i)) for i in range(5)}
+                stats["union_valid_pixels"] += int(np.count_nonzero(coverage)); stats["multiscene_pixels"] += int(np.count_nonzero(coverage >= 3)); stats["cycle_pixels"] += int(diag.get("cycle_pixels", 0)); stats["pairwise_score_tie_pixels"] += int(diag.get("top_score_tie_pixels", 0)); stats["resolved_by_unclipped_interiority"] += int(diag.get("resolved_by_unclipped_interiority", 0)); stats["resolved_by_raw_edt"] += int(diag.get("resolved_by_raw_edt", 0)); stats["unresolved_pixels"] += int(diag.get("unresolved_pixels", 0)); stats["invalid_label_pixels"] += int(np.count_nonzero((coverage > 0) & (lab < 0))); stats["two_scene_disagreement_pixels"] += int(diag.get("two_scene_disagreement_pixels", 0)); stats["label_method_counts"] = {str(i): stats["label_method_counts"].get(str(i), 0) + int(np.count_nonzero(methods == i)) for i in range(5)}
                 margin_values = np.asarray(diag.get("score_margin", []), dtype=np.float32); margin_values = margin_values[np.isfinite(margin_values)]
                 if margin_values.size: stats["score_margin_values"].extend(np.percentile(margin_values, [0, 50, 95]).tolist())
     for raw_path in raw_paths:
@@ -793,7 +886,14 @@ def run_volrn_end_to_end(
     stats["score_margin_median"] = float(np.median(stats["score_margin_values"])) if stats["score_margin_values"] else None
     stats["score_margin_p95"] = float(np.percentile(stats["score_margin_values"], 95)) if stats["score_margin_values"] else None
     stats.pop("score_margin_values", None)
-    stats["status"] = "SUCCESS" if stats["unresolved_pixels"] == 0 else "HARD_STOP_UNRESOLVED_LABELS"
+    if stats["unresolved_pixels"] != 0:
+        stats["status"] = "HARD_STOP_UNRESOLVED_LABELS"
+    elif stats["invalid_label_pixels"] != 0:
+        stats["status"] = "HARD_STOP_INVALID_LABELS"
+    elif stats["two_scene_disagreement_pixels"] != 0:
+        stats["status"] = "HARD_STOP_TWO_SCENE_DISAGREEMENT"
+    else:
+        stats["status"] = "SUCCESS"
 
     weight_paths = []
     with rasterio.open(label_path) as label_src:
@@ -816,8 +916,19 @@ def run_volrn_end_to_end(
             del region, inside, outside, signed
     mosaic_path = output_dir / "mosaic.tif"
     _stream_weighted_mosaic(corrected_scene_paths, weight_paths, mosaic_path, grid)
-    result = {"status": "SUCCESS" if refined_count else "NO_REFINED_PAIRS", "refined_pair_count": refined_count,
+    union_mask = np.logical_or.reduce(masks)
+    mosaic_validity = _stream_mosaic_validity(mosaic_path, union_mask)
+    if refined_count == 0:
+        final_status = "NO_REFINED_PAIRS"
+    elif stats["status"] != "SUCCESS":
+        final_status = stats["status"]
+    elif mosaic_validity["numerical_invalid_pixels"] != 0:
+        final_status = "NUMERICAL_INVALID"
+    else:
+        final_status = "SUCCESS"
+    result = {"status": final_status, "refined_pair_count": refined_count,
               "refinement_rows": refinement_rows, "labels": stats, "shared_refine_function": getattr(refine, "__name__", str(refine)),
+              "mosaic_validity": mosaic_validity,
               "weight_paths": [str(path) for path in weight_paths],
               "outputs": {"labels": str(label_path), "mosaic": str(mosaic_path)}}
     (output_dir / "end_to_end_summary.json").write_text(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
@@ -856,6 +967,7 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
     task15_root = Path(task15_root)
     output_root = Path(output_root)
     task_params = validate_task16_config(task16_config) if task16_config is not None else dict(TASK16_PARAMS)
+    transition_balance_threshold = _transition_balance_threshold(task16_config)
     if output_root.exists() and any(output_root.iterdir()) and not resume:
         raise FileExistsError(f"Task16 output directory is non-empty: {output_root}")
     output_root.mkdir(parents=True, exist_ok=True)
@@ -994,6 +1106,7 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         strict_ablation = run_strict_local_ablation(
             frozen["scene_paths"], frozen["ours_scene_paths"], corrected_paths,
             frozen["v1_weight_paths"], masks, frozen["scene_ids"], grid, strict_dir,
+            transition_balance_threshold=transition_balance_threshold,
         )
     else:
         strict_ablation = {"status": "HARD_STOP_MISSING_TASK15_OURS_CORRECTED_SCENES"}
@@ -1020,8 +1133,14 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         ours_structure = _stream_structure_summary(frozen["scene_paths"], frozen["ours_scene_paths"], masks)
         volrn_structure = _stream_structure_summary(frozen["scene_paths"], corrected_paths, masks)
         from scripts.run_task14a_resume_13 import _transition_metrics
-        fixed_ours_rows, fixed_ours = _transition_metrics(frozen["v1_weight_paths"], frozen["scene_paths"], frozen["ours_scene_paths"], full_shape[0], full_shape[1])
-        fixed_volrn_rows, fixed_volrn = _transition_metrics(frozen["v1_weight_paths"], frozen["scene_paths"], corrected_paths, full_shape[0], full_shape[1])
+        fixed_ours_rows, fixed_ours = _transition_metrics(
+            frozen["v1_weight_paths"], frozen["scene_paths"], frozen["ours_scene_paths"],
+            full_shape[0], full_shape[1], balance_threshold=transition_balance_threshold,
+        )
+        fixed_volrn_rows, fixed_volrn = _transition_metrics(
+            frozen["v1_weight_paths"], frozen["scene_paths"], corrected_paths,
+            full_shape[0], full_shape[1], balance_threshold=transition_balance_threshold,
+        )
         metric_map = [("MAMD", ("mamd", "weighted_mean")), ("MSDD", ("msdd", "weighted_mean")), ("RDD", ("rdd", "weighted_mean")), ("Local MAMD median", ("local_mamd", "median")), ("Local RDD median", ("local_rdd", "median"))]
         comparison = [{"metric": name, "Ours_E2E": _metric_scalar(ours_metrics, path), "VOLRN_E2E": _metric_scalar(volrn_metrics, path)} for name, path in metric_map]
         comparison.extend([
@@ -1031,7 +1150,7 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
             {"metric": "Fixed V1 transition weighted MAE", "Ours_E2E": fixed_ours.get("candidate_weighted_mae"), "VOLRN_E2E": fixed_volrn.get("candidate_weighted_mae")},
             {"metric": "Fixed V1 transition weighted RDD", "Ours_E2E": fixed_ours.get("candidate_weighted_rdd"), "VOLRN_E2E": fixed_volrn.get("candidate_weighted_rdd")},
         ])
-        end_to_end_metrics = {"status": "SUCCESS", "support_definition": "V1 initial seam / V1 transition zone", "ours": ours_metrics, "volrn": volrn_metrics, "ours_structure": ours_structure, "volrn_structure": volrn_structure, "fixed_support": {"ours": {"rows": fixed_ours_rows, "metrics": fixed_ours}, "volrn": {"rows": fixed_volrn_rows, "metrics": fixed_volrn}}, "comparison": comparison}
+        end_to_end_metrics = {"status": "SUCCESS", "support_definition": "V1 initial seam / V1 transition zone", "transition_balance_threshold": transition_balance_threshold, "transition_support_definition": fixed_ours["transition_support_definition"], "ours": ours_metrics, "volrn": volrn_metrics, "ours_structure": ours_structure, "volrn_structure": volrn_structure, "fixed_support": {"ours": {"rows": fixed_ours_rows, "metrics": fixed_ours}, "volrn": {"rows": fixed_volrn_rows, "metrics": fixed_volrn}}, "comparison": comparison}
         (e2e_dir / "end_to_end_metrics.json").write_text(json.dumps(end_to_end_metrics, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
         (e2e_dir / "fixed_support_metrics.json").write_text(json.dumps({"support_definition": "V1 initial seam / V1 transition zone", "ours": end_to_end_metrics["fixed_support"]["ours"], "volrn": end_to_end_metrics["fixed_support"]["volrn"]}, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
     else:
@@ -1167,7 +1286,7 @@ def _build_report(summary: Mapping[str, Any], provenance: Mapping[str, Any], out
         f"18. Runtime: solver={summary['runtime_sec']['solver']:.3f}s; VOLRN mosaic={summary['runtime_sec']['volrn_mosaic']:.3f}s; total={summary['runtime_sec']['total_task16']:.3f}s; RAM/VRAM=NOT_MEASURED.",
         f"19. Final strict vs finite-nonconverged status: `{volrn['formal_status']}`.",
         "20. Paper wording: this report does not claim paper CD/GL; it reports the frozen Task10D metric definitions.",
-        "21. Strict ablation: A and B use identical frozen geometry, scene order, masks, canonical grid, and weighted-feather mode.",
+        "21. Strict local-normalization ablation uses the same frozen V1 label-derived cosine weight layout for A0, A1 and A2. Geometry, scene order, masks, canonical grid, label layout and blend weights are fixed; only local radiometric correction differs.",
         f"22. Ours E2E vs VOLRN E2E: status={summary.get('end_to_end_metrics', {}).get('status')}; see `05_volrn_end_to_end/end_to_end_metrics.json` and `07_comparison_tables/end_to_end_comparison.csv`.",
         f"23. Numerical invalidity: {'none' if summary['numerical_validity']['numerical_invalid_pixels'] == 0 else 'present; formal B result requires review'}.",
     ]

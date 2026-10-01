@@ -47,6 +47,13 @@ def write_final_report(root: str | Path, metrics: dict[str, Any] | None = None) 
     scene_invariance = computed.get("scene_order_invariance", {})
     correction_invariance = computed.get("correction_order_invariance", {})
     fresh_five = quality.get("fresh_five_scene_regression", {})
+    label_validity = quality.get("label_validity", {})
+
+    def label_status(route: str) -> str:
+        value = label_validity.get(route, {})
+        if not value.get("measured", False):
+            return "NOT_MEASURED"
+        return "PASS" if value.get("clean", False) else "FAIL"
 
     reference = {
         "scene_count": 13,
@@ -125,6 +132,8 @@ def write_final_report(root: str | Path, metrics: dict[str, Any] | None = None) 
         ("post-fix cycle pixels/fraction", f"{quality.get('cycle_pixels', 'NOT_MEASURED')} / {quality.get('cycle_fraction', 'NOT_MEASURED')}"),
         ("pairwise-score ties", str(quality.get("pairwise_score_tie_pixels", "NOT_MEASURED"))),
         ("clipped/unclipped/raw EDT", f"{quality.get('clipped_interiority_fallback_pixels', 'NOT_MEASURED')} / {quality.get('unclipped_normalized_interiority_pixels', 'NOT_MEASURED')} / {quality.get('raw_edt_pixels', 'NOT_MEASURED')}"),
+        ("V1 label legality", label_status("V1")),
+        ("V2 label legality", label_status("V2")),
         ("unresolved", str(quality.get("unresolved_labels", "NOT_MEASURED"))),
         ("scene-order exact invariant", f"{scene_invariance.get('status', 'NOT_MEASURED')}; reverse={scene_invariance.get('reverse_order_difference_pixels', 'NOT_MEASURED')}, fixed={scene_invariance.get('fixed_permutation_difference_pixels', 'NOT_MEASURED')}"),
         ("correction pair-order invariant", f"{correction_invariance.get('status', 'NOT_MEASURED')}; max_abs={correction_invariance.get('max_abs_difference', 'NOT_MEASURED')}"),
@@ -151,6 +160,8 @@ def write_final_report(root: str | Path, metrics: dict[str, Any] | None = None) 
         ("Labeling", "cycle pixels", quality.get("cycle_pixels", "NOT_MEASURED")),
         ("Labeling", "cycle fraction", quality.get("cycle_fraction", "NOT_MEASURED")),
         ("Labeling", "unresolved", quality.get("unresolved_labels", "NOT_MEASURED")),
+        ("Labeling", "V1 label legality", label_status("V1")),
+        ("Labeling", "V2 label legality", label_status("V2")),
         ("Radiometry", "BAGRN weighted MAE", boundary.get("weighted_bagrn_mae", "NOT_MEASURED")),
         ("Radiometry", "V2 weighted MAE", boundary.get("weighted_v2_mae", "NOT_MEASURED")),
         ("Radiometry", "BAGRN weighted RDD", boundary.get("weighted_bagrn_rdd", "NOT_MEASURED")),

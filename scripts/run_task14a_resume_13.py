@@ -34,6 +34,7 @@ STAGE12 = OUT / "stages/12_scale_summary"
 TILE = 1024
 HALO = 128
 RUNTIME_CONFIG = None
+METRIC_CONFIG = {"seam_balance_threshold": 0.25}
 
 import sys
 if str(ROOT) not in sys.path:
@@ -287,7 +288,7 @@ def _stage08_initial_variant(rows, paths, transform, height, width, p95):
         if side not in {"A", "B"}:
             continue
         pair_info.append((int(row["scene_i"]), int(row["scene_j"]), orient, centers, side == "A"))
-    summary = {"variant": "v1", "pairwise_score_tie_pixels": 0, "clipped_interiority_fallback_pixels": 0, "unclipped_normalized_interiority_pixels": 0, "raw_edt_pixels": 0, "unresolved_pixels": 0, "invalid_label_pixels": 0, "union_valid_pixels": 0, "multiscene_pixels": 0, "cycle_pixels": 0, "label_method_counts": {str(i): 0 for i in range(5)}, "score_margin_min": float("inf"), "score_margin_median_samples": [], "score_margin_p95_samples": []}
+    summary = {"variant": "v1", "pairwise_score_tie_pixels": 0, "clipped_interiority_fallback_pixels": 0, "unclipped_normalized_interiority_pixels": 0, "raw_edt_pixels": 0, "unresolved_pixels": 0, "invalid_label_pixels": 0, "two_scene_disagreement_pixels": 0, "union_valid_pixels": 0, "multiscene_pixels": 0, "cycle_pixels": 0, "label_method_counts": {str(i): 0 for i in range(5)}, "score_margin_min": float("inf"), "score_margin_median_samples": [], "score_margin_p95_samples": []}
     try:
         for r0 in range(0, height, TILE):
             hh = min(TILE, height-r0); win = Window(0, r0, width, hh)
@@ -301,7 +302,7 @@ def _stage08_initial_variant(rows, paths, transform, height, width, p95):
                 fields[(i,j)] = PairwisePreferenceField(i,j,np.where(dom,f.vote,0).astype(np.float32),f.available&dom,np.where(dom,f.confidence,0).astype(np.float32),orient)
             lab, meth, diag = aggregate_labels_with_ties(masks, fields, raw, p95_edt=p95, tie_tolerance=cfg.tie_tolerance)
             label_dst.write(lab.astype(np.int16), 1, window=win); method_dst.write(meth, 1, window=win); margin_dst.write(np.asarray(diag["score_margin"], np.float32), 1, window=win); coverage_dst.write(np.count_nonzero(masks, axis=0).astype(np.uint8), 1, window=win)
-            cov = np.count_nonzero(masks, axis=0); summary["union_valid_pixels"] += int(np.count_nonzero(cov)); summary["multiscene_pixels"] += int(np.count_nonzero(cov >= 3)); summary["cycle_pixels"] += int(diag.get("cycle_pixels", 0)); summary["pairwise_score_tie_pixels"] += int(diag.get("top_score_tie_pixels", 0)); summary["clipped_interiority_fallback_pixels"] += int(diag.get("interiority_fallback_pixels", 0)); summary["unclipped_normalized_interiority_pixels"] += int(diag.get("resolved_by_unclipped_interiority", 0)); summary["raw_edt_pixels"] += int(diag.get("resolved_by_raw_edt", 0)); summary["unresolved_pixels"] += int(diag.get("unresolved_pixels", 0)); summary["invalid_label_pixels"] += int(np.count_nonzero((cov > 0) & (lab < 0))); summary["label_method_counts"] = {str(i): summary["label_method_counts"].get(str(i), 0) + int(np.count_nonzero(meth == i)) for i in range(5)}; margins = np.asarray(diag.get("score_margin", []), dtype=float); margins = margins[np.isfinite(margins)]; summary["score_margin_min"] = min(summary["score_margin_min"], float(margins.min())) if margins.size else summary["score_margin_min"]; summary["score_margin_median_samples"].append(float(np.median(margins)) if margins.size else float("nan")); summary["score_margin_p95_samples"].append(float(np.percentile(margins, 95)) if margins.size else float("nan"))
+            cov = np.count_nonzero(masks, axis=0); summary["union_valid_pixels"] += int(np.count_nonzero(cov)); summary["multiscene_pixels"] += int(np.count_nonzero(cov >= 3)); summary["cycle_pixels"] += int(diag.get("cycle_pixels", 0)); summary["pairwise_score_tie_pixels"] += int(diag.get("top_score_tie_pixels", 0)); summary["clipped_interiority_fallback_pixels"] += int(diag.get("interiority_fallback_pixels", 0)); summary["unclipped_normalized_interiority_pixels"] += int(diag.get("resolved_by_unclipped_interiority", 0)); summary["raw_edt_pixels"] += int(diag.get("resolved_by_raw_edt", 0)); summary["unresolved_pixels"] += int(diag.get("unresolved_pixels", 0)); summary["invalid_label_pixels"] += int(np.count_nonzero((cov > 0) & (lab < 0))); summary["two_scene_disagreement_pixels"] += int(diag.get("two_scene_disagreement_pixels", 0)); summary["label_method_counts"] = {str(i): summary["label_method_counts"].get(str(i), 0) + int(np.count_nonzero(meth == i)) for i in range(5)}; margins = np.asarray(diag.get("score_margin", []), dtype=float); margins = margins[np.isfinite(margins)]; summary["score_margin_min"] = min(summary["score_margin_min"], float(margins.min())) if margins.size else summary["score_margin_min"]; summary["score_margin_median_samples"].append(float(np.median(margins)) if margins.size else float("nan")); summary["score_margin_p95_samples"].append(float(np.percentile(margins, 95)) if margins.size else float("nan"))
     finally:
         label_dst.close(); method_dst.close(); margin_dst.close(); coverage_dst.close()
         for src in srcs + dists: src.close()
@@ -452,8 +453,37 @@ def _boundary_metrics(labels_arr, paths, corrected, height, width):
     return rows,weighted
 
 
-def _transition_metrics(weight_paths, paths, candidate, height, width):
-    """Measure pair transitions on the route's actual positive-weight support."""
+def _pair_normalized_transition_zone(weight_i, weight_j, balance_threshold):
+    """Return the scale-invariant pair transition support mask."""
+
+    if not (0.0 < float(balance_threshold) < 0.5):
+        raise ValueError("balance_threshold must be in (0, 0.5)")
+    wi = np.asarray(weight_i, dtype=np.float64)
+    wj = np.asarray(weight_j, dtype=np.float64)
+    if wi.shape != wj.shape:
+        raise ValueError("pair weights must have the same shape")
+    den = wi + wj
+    pair_valid = (
+        np.isfinite(wi) & np.isfinite(wj)
+        & (wi > 0) & (wj > 0) & (den > 1e-12)
+    )
+    wi_norm = np.zeros_like(wi, dtype=np.float64)
+    wj_norm = np.zeros_like(wj, dtype=np.float64)
+    wi_norm[pair_valid] = wi[pair_valid] / den[pair_valid]
+    wj_norm[pair_valid] = wj[pair_valid] / den[pair_valid]
+    return pair_valid & (wi_norm >= float(balance_threshold)) & (wj_norm >= float(balance_threshold))
+
+
+def _transition_metrics(
+    weight_paths,
+    paths,
+    candidate,
+    height,
+    width,
+    *,
+    balance_threshold: float,
+):
+    """Measure pair transitions on pair-normalized route weight support."""
     from scipy.stats import wasserstein_distance
 
     weights = [rasterio.open(path) for path in weight_paths]
@@ -470,8 +500,9 @@ def _transition_metrics(weight_paths, paths, candidate, height, width):
             for i in range(len(paths)):
                 for j in range(i + 1, len(paths)):
                     zone = (
-                        np.isfinite(weight_tiles[i]) & np.isfinite(weight_tiles[j])
-                        & (weight_tiles[i] > 0) & (weight_tiles[j] > 0)
+                        _pair_normalized_transition_zone(
+                            weight_tiles[i], weight_tiles[j], balance_threshold
+                        )
                         & np.isfinite(source_tiles[i]) & np.isfinite(source_tiles[j])
                         & np.isfinite(candidate_tiles[i]) & np.isfinite(candidate_tiles[j])
                     )
@@ -495,13 +526,15 @@ def _transition_metrics(weight_paths, paths, candidate, height, width):
         x0 = np.concatenate([pair[0] for pair in bucket["x0"]]); y0 = np.concatenate([pair[1] for pair in bucket["x0"]])
         x2 = np.concatenate([pair[0] for pair in bucket["x2"]]); y2 = np.concatenate([pair[1] for pair in bucket["x2"]])
         candidate_mae = bucket["mae2"] / n; candidate_rmse = float(np.sqrt(bucket["mse2"] / n)); candidate_rdd = float(wasserstein_distance(x2, y2))
-        rows.append({"scene_a": a, "scene_b": b, "pixels": n,
+        rows.append({"scene_a": a, "scene_b": b, "pixels": n, "transition_pixels": n,
                      "bagrn_mae": bucket["mae0"] / n, "candidate_mae": candidate_mae, "v2_mae": candidate_mae,
                      "bagrn_rmse": float(np.sqrt(bucket["mse0"] / n)), "candidate_rmse": candidate_rmse, "v2_rmse": candidate_rmse,
                      "bagrn_rdd": float(wasserstein_distance(x0, y0)), "candidate_rdd": candidate_rdd, "v2_rdd": candidate_rdd})
     total = max(sum(row["pixels"] for row in rows), 1)
     weighted = {
-        "transition_support_pixels": int(sum(row["pixels"] for row in rows)),
+        "transition_support_pixels": int(sum(row["transition_pixels"] for row in rows)),
+        "transition_balance_threshold": float(balance_threshold),
+        "transition_support_definition": "pair-normalized weights: wi/(wi+wj)>=threshold and wj/(wi+wj)>=threshold",
         "bagrn_weighted_mae": sum(row["pixels"] * row["bagrn_mae"] for row in rows) / total,
         "candidate_weighted_mae": sum(row["pixels"] * row["candidate_mae"] for row in rows) / total,
         "bagrn_weighted_rdd": sum(row["pixels"] * row["bagrn_rdd"] for row in rows) / total,
@@ -536,10 +569,7 @@ def _stage11(rows, paths, corrected, height, width):
     from src.multiscene_sift.structural_metrics import stream_structure_metrics
 
     def label_path(variant: str) -> Path:
-        candidate = STAGE08 / variant / "source_label_map.tif"
-        if candidate.is_file():
-            return candidate
-        return STAGE08 / "source_label_map.tif"
+        return STAGE08 / variant / "source_label_map.tif"
 
     label_paths = {"V1": label_path("v1"), "V2": label_path("v2")}
     with rasterio.open(label_paths["V1"]) as src:
@@ -566,10 +596,16 @@ def _stage11(rows, paths, corrected, height, width):
     }
     route_metrics = {}
     transition_rows = []
+    balance_threshold = float(METRIC_CONFIG["seam_balance_threshold"])
+    if not (0.0 < balance_threshold < 0.5):
+        raise ValueError("seam_balance_threshold must be in (0, 0.5)")
     for route in ("V0", "V1", "V2"):
         if not all(path.is_file() for path in route_weight_paths[route]):
             raise RuntimeError(f"HARD_STOP_ROUTE_WEIGHT_MISSING: {route}")
-        rows_route, summary_route = _transition_metrics(route_weight_paths[route], paths, route_candidates[route], height, width)
+        rows_route, summary_route = _transition_metrics(
+            route_weight_paths[route], paths, route_candidates[route], height, width,
+            balance_threshold=balance_threshold,
+        )
         labels_arr = route_labels[route]
         support = _positive_weight_support(route_weight_paths[route], height, width)
         route_metrics[route] = {
@@ -577,7 +613,10 @@ def _stage11(rows, paths, corrected, height, width):
             "label_path": str(label_paths["V1"] if route == "V1" else label_paths["V2"]) if labels_arr is not None else None,
             "weight_paths": [str(path) for path in route_weight_paths[route]],
             "boundary_rows": rows_route, "boundary_metrics": summary_route,
-            "transition_support_pixels": int(np.count_nonzero(support)),
+            "transition_support_pixels": int(summary_route["transition_support_pixels"]),
+            "transition_balance_threshold": balance_threshold,
+            "transition_support_definition": summary_route["transition_support_definition"],
+            "route_positive_weight_union_pixels": int(np.count_nonzero(support)),
             "union_support": int(np.count_nonzero(labels_arr >= 0)) if labels_arr is not None else int(np.count_nonzero(support)),
         }
         for item in rows_route:
@@ -607,14 +646,24 @@ def _stage11(rows, paths, corrected, height, width):
         "unresolved_pixels": {route: int(data.get("unresolved_pixels", 0)) for route, data in label_summary.items()},
     }
     _write_json(STAGE11 / "route_metrics.json", route_metrics)
-    fixed_rows, fixed_summary = _transition_metrics(route_weight_paths["V1"], paths, corrected, height, width)
+    fixed_rows, fixed_summary = _transition_metrics(
+        route_weight_paths["V1"], paths, corrected, height, width,
+        balance_threshold=balance_threshold,
+    )
     _write_json(STAGE11 / "fixed_support_metrics.json", {
         "support_definition": "V1 initial seam / V1 transition zone",
         "weight_paths": [str(path) for path in route_weight_paths["V1"]],
+        "transition_balance_threshold": balance_threshold,
+        "transition_support_definition": fixed_summary["transition_support_definition"],
         "rows": fixed_rows, "metrics": fixed_summary,
         "baseline": "BAGRN", "candidate": "Task15 Ours corrected", "support_audit": support_audit,
     })
-    _write_json(STAGE11 / "transition_metrics.json", {"rows": transition_rows, "routes": list(route_metrics)})
+    _write_json(STAGE11 / "transition_metrics.json", {
+        "rows": transition_rows,
+        "routes": list(route_metrics),
+        "transition_balance_threshold": balance_threshold,
+        "transition_support_definition": fixed_summary["transition_support_definition"],
+    })
     _write_json(STAGE11 / "structure_preservation.json", structure_summary)
     _write_json(STAGE11 / "metric_support_audit.json", support_audit)
 

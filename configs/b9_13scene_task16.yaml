@@ -15,5 +15,6 @@ end_to_end:
   reuse_same_refine_algorithm: true
 metrics:
   protocol: configs/task10d_metric_protocol.json
+  seam_balance_threshold: 0.25
 outputs:
   root: data/output/b9_13scene_volrn_comparison_formal_v2
