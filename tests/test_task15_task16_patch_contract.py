@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import rasterio
+import inspect
 from rasterio.transform import from_origin
 
 from src.multiscene_sift.structural_metrics import stream_structure_metrics, structure_metrics
@@ -9,6 +10,7 @@ from src.pipeline.final_metrics import classify_structural_gate
 from src.seam_local.config import SeamLocalRuntimeConfig
 from src.seam_local.seam import SeamResult
 from src.task16_volrn_comparison import run_strict_local_ablation, run_volrn_end_to_end
+from scripts.run_task14_13scene_scale import run_task14
 
 
 def _grid(width: int, height: int) -> dict:
@@ -51,6 +53,14 @@ def test_streaming_structure_metrics_matches_identity_contract(tmp_path):
 def test_ncc_quality_review_does_not_fail_finite_gate():
     gate = classify_structural_gate([{"finite": True, "gradient_magnitude_ncc": 0.8}])
     assert gate == {"finite": True, "quality_review": "REVIEW"}
+
+
+def test_task14_stage02_registration_parameters_are_defined():
+    signature = inspect.signature(run_task14)
+    assert signature.parameters["band"].default == "B9"
+    assert signature.parameters["match_max_side"].default == 1024
+    assert signature.parameters["ransac_threshold"].default == 2.0
+    assert signature.parameters["random_seed"].default == 0
 
 
 def test_strict_ablation_uses_one_v1_weight_layout(tmp_path):

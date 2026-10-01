@@ -1004,7 +1004,15 @@ def _final_report(root: Path, *, decision: str, hard_stops: list[str], graph: di
     (root / "TASK14_13SCENE_SCALE_VALIDATION_REPORT.md").write_text("\n".join(report) + "\n", encoding="utf-8")
 
 
-def run_task14(*, stage: str = "all", resume: bool = False, input_root: Path = DEFAULT_INPUT_ROOT, output_root: Path = DEFAULT_OUTPUT_ROOT, device: str = "auto", expected_scene_count: int = 13, scene_selection: tuple[int, ...] | None = None, include_streaming_equivalence: bool = True) -> dict:
+def run_task14(
+    *, stage: str = "all", resume: bool = False,
+    input_root: Path = DEFAULT_INPUT_ROOT, output_root: Path = DEFAULT_OUTPUT_ROOT,
+    device: str = "auto", expected_scene_count: int = 13,
+    scene_selection: tuple[int, ...] | None = None,
+    include_streaming_equivalence: bool = True,
+    band: str = "B9", match_max_side: int = 1024,
+    ransac_threshold: float = 2.0, random_seed: int = 0,
+) -> dict:
     output_root.mkdir(parents=True, exist_ok=True)
     if resume:
         hard_payload = _validate_resume_markers(output_root)
@@ -1056,7 +1064,7 @@ def run_task14(*, stage: str = "all", resume: bool = False, input_root: Path = D
     # Stage 00: immutable source/provenance inventory.
     sdir = output_root / "stages/00_preflight"; sdir.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
-    protocol = {"task": "Task14", "scene_count": len(records), "band": "B9", "crs": records[0].get("crs") if records else None, "pixel_size_m": 14.0, "matcher": "EfficientLoFTR", "match_max_side": 1024, "global": "Translation-L2", "tile_size": TASK14_TILE_SIZE, "halo": TASK14_HALO, "input_root": str(input_root), "git_head": _git_head(), "git_status": _git_status()}
+    protocol = {"task": "Task14", "scene_count": len(records), "band": band, "crs": records[0].get("crs") if records else None, "pixel_size_m": 14.0, "matcher": "EfficientLoFTR", "match_max_side": match_max_side, "ransac_threshold": ransac_threshold, "random_seed": random_seed, "global": "Translation-L2", "tile_size": TASK14_TILE_SIZE, "halo": TASK14_HALO, "input_root": str(input_root), "git_head": _git_head(), "git_status": _git_status()}
     _write_json(output_root / "protocol.json", protocol)
     _write_csv(output_root / "scene_manifest.csv", manifest_rows)
     _write_json(sdir / "preflight_summary.json", {"protocol": protocol, "scene_count": len(records), "source_hashes": _hashes(manifest_paths)})

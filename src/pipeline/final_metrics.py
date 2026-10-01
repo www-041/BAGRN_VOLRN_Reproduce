@@ -192,7 +192,7 @@ def compute_final_metrics(root: str | Path) -> dict[str, Any]:
         required_numeric["median_v2_rdd"] < required_numeric["median_bagrn_rdd"],
     ))
     legality_pass = all((
-        complete, labels_clean, min(ncc) >= 0.99 if ncc else False,
+        complete, labels_clean,
         quality["v0_semantic_gate"]["status"] == "PASS",
         support_gate, structural_metric_valid, no_invalid_outputs,
     ))

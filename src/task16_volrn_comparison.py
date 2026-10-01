@@ -469,7 +469,11 @@ def _metric_scalar(metrics: Mapping[str, Any], path: tuple[str, ...]) -> float |
     return float(value) if isinstance(value, (int, float)) and math.isfinite(float(value)) else None
 
 
-def _task10d_rows(a_metrics: Mapping[str, Any], b_metrics: Mapping[str, Any], b_structural: Mapping[str, Any], support: int) -> list[dict[str, Any]]:
+def _task10d_rows(
+    a_metrics: Mapping[str, Any], b_metrics: Mapping[str, Any],
+    b_structural: Mapping[str, Any], support: int,
+    a_structural: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     mapping = [
         ("MAMD", ("mamd", "weighted_mean"), ("mamd", "weighted_mean")),
         ("MSDD", ("msdd", "weighted_mean"), ("msdd", "weighted_mean")),
@@ -484,7 +488,9 @@ def _task10d_rows(a_metrics: Mapping[str, Any], b_metrics: Mapping[str, Any], b_
     rows = [compare_metric_values(name, _metric_scalar(a_metrics, a_path), _metric_scalar(b_metrics, b_path)) for name, a_path, b_path in mapping]
     # Identity/no-local baseline is exactly one.  Do not duplicate the
     # measured candidate value in both columns; that hides structure loss.
-    rows.append(compare_metric_values("Gradient NCC mean", 1.0, _metric_scalar(b_structural, ("mean",))))
+    rows.append(compare_metric_values("Structure CGL degrees", _metric_scalar(a_structural or {"cgl_deg": 0.0}, ("cgl_deg",)), _metric_scalar(b_structural, ("cgl_deg",))))
+    rows.append(compare_metric_values("Gradient NCC mean", _metric_scalar(a_structural or {"mean": 1.0}, ("mean",)), _metric_scalar(b_structural, ("mean",))))
+    rows.append(compare_metric_values("Gradient orientation cosine mean", _metric_scalar(a_structural or {"orientation_cosine": 1.0}, ("orientation_cosine",)), _metric_scalar(b_structural, ("orientation_cosine",))))
     rows.append(compare_metric_values("Union support", float(support), float(support)))
     return rows
 
@@ -546,6 +552,28 @@ def _three_method_figure(path: Path, raster_paths: list[Path], labels: list[str]
     plt.close(fig)
 
 
+def _stream_structure_summary(
+    baseline_paths: list[Path], candidate_paths: list[Path], masks: list[np.ndarray],
+) -> dict[str, Any]:
+    """Aggregate canonical structure metrics scene-by-scene without stacks."""
+    rows = []
+    for index, (baseline, candidate, mask) in enumerate(zip(baseline_paths, candidate_paths, masks)):
+        rows.append({"scene": index, **stream_structure_metrics(baseline, candidate, mask, tile_size=512, halo=1)})
+    def values(key: str) -> list[float]:
+        return [float(row[key]) for row in rows if isinstance(row.get(key), (int, float)) and np.isfinite(row[key])]
+    ncc = values("gradient_magnitude_ncc")
+    cgl = values("cgl_deg")
+    orientation = values("gradient_orientation_cosine")
+    return {
+        "per_scene": rows,
+        "mean": float(np.mean(ncc)) if ncc else None,
+        "min": float(np.min(ncc)) if ncc else None,
+        "cgl_deg": float(np.mean(cgl)) if cgl else None,
+        "orientation_cosine": float(np.mean(orientation)) if orientation else None,
+        "finite": bool(rows) and len(ncc) == len(rows) and len(cgl) == len(rows) and len(orientation) == len(rows),
+    }
+
+
 def run_strict_local_ablation(
     bagrn_scene_paths: list[Path],
     ours_scene_paths: list[Path],
@@ -571,17 +599,21 @@ def run_strict_local_ablation(
     weight_hashes = [_sha256(path) for path in v1_weight_paths]
     rows = []
     route_metrics = {}
+    baseline_structure = _stream_structure_summary(bagrn_scene_paths, bagrn_scene_paths, masks)
     for route, scene_paths in routes.items():
         mosaic = output_dir / f"{route.lower()}.tif"
         _stream_weighted_mosaic(scene_paths, v1_weight_paths, mosaic, grid)
         metrics = _stream_task10d_metrics(scene_paths, masks, v1_weight_paths, scene_ids)
+        structure = _stream_structure_summary(bagrn_scene_paths, scene_paths, masks)
         route_metrics[route] = {"mosaic": str(mosaic), "mosaic_sha256": _sha256(mosaic), "metrics": metrics,
+                                "structure_preservation": structure,
                                 "scene_sha256": [_sha256(path) for path in scene_paths], "weight_sha256": weight_hashes}
     baseline_metrics = route_metrics["A0_BAGRN_V1"]["metrics"]
     support = int(np.count_nonzero(np.logical_or.reduce(masks)))
     for route, payload in route_metrics.items():
         rows.extend({"route": route, **row} for row in _task10d_rows(
-            baseline_metrics, payload["metrics"], {"mean": 1.0}, support
+            baseline_metrics, payload["metrics"], payload["structure_preservation"], support,
+            a_structural=baseline_structure,
         ))
     manifest = {"routes": list(routes), "weight_paths": [str(path) for path in v1_weight_paths],
                 "weight_sha256": weight_hashes, "same_weight_hashes": True,
@@ -607,7 +639,7 @@ def run_volrn_end_to_end(
     ``refine_fn`` is injectable for the focused contract test and defaults to
     the same ``refine_seam_after_correction`` used by the Ours pipeline.
     """
-    from src.seam_local.adapter import _cosine_weights, aggregate_labels_with_ties, blend_labeled_scenes
+    from src.seam_local.adapter import _cosine_weights, aggregate_labels_with_ties
     from src.seam_local.config import SeamLocalRuntimeConfig
     from src.seam_local.footprint import footprint_polygon_from_valid_mask
     from src.seam_local.multiscene_label import build_pairwise_preference_field
@@ -616,18 +648,34 @@ def run_volrn_end_to_end(
 
     cfg = runtime_config or SeamLocalRuntimeConfig()
     refine = refine_fn or refine_seam_after_correction
-    arrays = []
-    for path, mask in zip(corrected_scene_paths, valid_masks):
-        with rasterio.open(path) as src:
-            data = src.read(1).astype(np.float64)
-        data[~np.asarray(mask, dtype=bool)] = np.nan
-        arrays.append(data)
-    scenes = np.asarray(arrays)
-    masks = np.asarray(valid_masks, dtype=bool)
-    if scenes.shape != masks.shape:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    masks = [np.asarray(mask, dtype=bool) for mask in valid_masks]
+    if not masks or any(mask.ndim != 2 for mask in masks):
+        raise ValueError("VOLRN end-to-end valid masks must be nonempty 2D arrays")
+    shape = masks[0].shape
+    if any(mask.shape != shape for mask in masks) or len(corrected_scene_paths) != len(masks):
         raise ValueError("VOLRN end-to-end scene/mask shapes differ")
-    footprints = [footprint_polygon_from_valid_mask(mask, grid_transform(grid)) for mask in masks]
-    fields = {}
+    transform = grid_transform(grid)
+    footprints = [footprint_polygon_from_valid_mask(mask, transform) for mask in masks]
+
+    def seam_for_window(seam, r0, r1, c0, c1):
+        from src.seam_local.seam import SeamResult
+        path = np.asarray(seam.row_col_path)
+        if seam.orientation == "vertical":
+            rows = np.arange(r0, r1)
+            centers = np.interp(rows, path[:, 0], path[:, 1]) - c0
+            local = np.column_stack((np.arange(r1 - r0), np.rint(centers).astype(np.int32)))
+        else:
+            cols = np.arange(c0, c1)
+            centers = np.interp(cols, path[:, 1], path[:, 0]) - r0
+            local = np.column_stack((np.rint(centers).astype(np.int32), np.arange(c1 - c0)))
+        return SeamResult(seam.orientation, local, seam.total_cost, seam.mean_cost, seam.p95_cost, seam.status, seam.search_mode)
+
+    def seam_for_tile(record, r0, r1, c0, c1):
+        return seam_for_window(record["seam"], r0, r1, c0, c1)
+
+    refined_records = []
     refined_count = 0
     refinement_rows = []
     for record in initial_pair_records:
@@ -635,35 +683,143 @@ def run_volrn_end_to_end(
         if seam is None:
             continue
         i, j = int(record["scene_i"]), int(record["scene_j"])
-        refined = refine(scenes[i], scenes[j], masks[i], masks[j], seam,
+        shared = masks[i] & masks[j]
+        rows, cols = np.where(shared)
+        if not rows.size:
+            refinement_rows.append({"pair_id": record.get("pair_id", f"{i:02d}_{j:02d}"), "status": "NO_FINAL_SHARED_SUPPORT"})
+            continue
+        wr0, wr1 = int(rows.min()), int(rows.max()) + 1
+        wc0, wc1 = int(cols.min()), int(cols.max()) + 1
+        window = rasterio.windows.Window(wc0, wr0, wc1 - wc0, wr1 - wr0)
+        with rasterio.open(corrected_scene_paths[i]) as left, rasterio.open(corrected_scene_paths[j]) as right:
+            a = left.read(1, window=window).astype(np.float64)
+            b = right.read(1, window=window).astype(np.float64)
+        va, vb = masks[i][wr0:wr1, wc0:wc1], masks[j][wr0:wr1, wc0:wc1]
+        a[~va] = np.nan; b[~vb] = np.nan
+        local_initial = seam_for_window(seam, wr0, wr1, wc0, wc1)
+        refined = refine(a, b, va, vb, local_initial,
                          refine_half_width=cfg.refine_half_width, cost_config=cfg)
         refinement_rows.append({"pair_id": record.get("pair_id", f"{i:02d}_{j:02d}"), "status": refined.status})
         if refined.status != "OK":
             continue
         refined_count += 1
-        source = resolve_source_sides(refined, masks[i] & masks[j], masks[i], masks[j], footprints[i], footprints[j])
+        source = resolve_source_sides(refined, va & vb, va, vb, footprints[i], footprints[j])
         side = source.side_1_source or record.get("initial_side_1_source") or "A"
-        fields[(i, j)] = build_pairwise_preference_field(
-            masks[i], masks[j], refined, side, scene_a=i, scene_b=j,
-            seam_half_width=cfg.preference_distance_scale,
-        )
-    raw_edt = np.asarray([distance_transform_edt(mask) for mask in masks], dtype=np.float64)
-    labels, methods, diagnostics = aggregate_labels_with_ties(
-        masks, fields, raw_edt, tie_tolerance=cfg.tie_tolerance
-    )
-    weights = _cosine_weights(labels, masks, width=cfg.blend_half_width)
-    mosaic = blend_labeled_scenes(scenes, masks, labels, weights=weights)
-    output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=True)
-    transform = grid_transform(grid)
-    crs = str(grid["crs"])
-    _write_single_band(output_dir / "source_label_map.tif", labels, transform, crs, -1, "int16")
-    _write_single_band(output_dir / "label_method_map.tif", methods, transform, crs, 0, "uint8")
-    _write_single_band(output_dir / "mosaic.tif", mosaic, transform, crs, np.nan, "float32")
-    for index, weight in enumerate(weights):
-        _write_single_band(output_dir / f"weight_scene_{index:03d}.tif", weight, transform, crs, np.nan, "float32")
+        from src.seam_local.seam import SeamResult
+        local_path = np.asarray(refined.row_col_path).copy()
+        if refined.orientation == "vertical":
+            global_path = local_path + np.asarray([wr0, wc0])
+        else:
+            global_path = local_path + np.asarray([wr0, wc0])
+        refined_global = SeamResult(refined.orientation, global_path, refined.total_cost, refined.mean_cost, refined.p95_cost, refined.status, refined.search_mode)
+        refined_records.append({"scene_i": i, "scene_j": j, "seam": refined_global, "side": side,
+                                "window": (wr0, wr1, wc0, wc1), "source_status": source.status})
+
+    raw_dir = output_dir / "raw_edt_cache"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    raw_paths = []
+    p95_values = []
+    for index, mask in enumerate(masks):
+        distance = distance_transform_edt(mask).astype(np.float32)
+        positive = distance[mask]
+        p95_values.append(float(np.percentile(positive, 95)) if positive.size else 1.0)
+        path = raw_dir / f"distance_scene_{index:03d}.tif"
+        _write_single_band(path, distance, transform, str(grid["crs"]), 0.0, "float32")
+        raw_paths.append(path)
+        del distance, positive
+
+    profile = None
+    with rasterio.open(corrected_scene_paths[0]) as src:
+        profile = src.profile.copy()
+    label_profile = profile.copy(); label_profile.update(dtype="int16", count=1, nodata=-1, compress="deflate")
+    method_profile = profile.copy(); method_profile.update(dtype="uint8", count=1, nodata=0, compress="deflate")
+    margin_profile = profile.copy(); margin_profile.update(dtype="float32", count=1, nodata=np.nan, compress="deflate")
+    label_path = output_dir / "source_label_map.tif"
+    method_path = output_dir / "label_method_map.tif"
+    margin_path = output_dir / "score_margin.tif"
+    coverage_path = output_dir / "coverage_count.tif"
+    stats = {"unresolved_pixels": 0, "invalid_label_pixels": 0, "cycle_pixels": 0,
+             "multiscene_pixels": 0, "pairwise_score_tie_pixels": 0,
+             "resolved_by_unclipped_interiority": 0, "resolved_by_raw_edt": 0,
+             "union_valid_pixels": 0, "label_method_counts": {str(i): 0 for i in range(5)},
+             "score_margin_values": []}
+    with rasterio.open(label_path, "w", **label_profile) as label_dst, rasterio.open(method_path, "w", **method_profile) as method_dst, rasterio.open(margin_path, "w", **margin_profile) as margin_dst, rasterio.open(coverage_path, "w", **method_profile) as coverage_dst:
+        for r0 in range(0, shape[0], 512):
+            r1 = min(shape[0], r0 + 512)
+            for c0 in range(0, shape[1], 512):
+                c1 = min(shape[1], c0 + 512)
+                tile_shape = (r1 - r0, c1 - c0)
+                tile_masks = np.asarray([mask[r0:r1, c0:c1] for mask in masks], dtype=bool)
+                raw_tiles = []
+                for raw_path in raw_paths:
+                    with rasterio.open(raw_path) as raw_src:
+                        raw_tiles.append(raw_src.read(1, window=rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)))
+                raw_tile = np.asarray(raw_tiles, dtype=np.float32)
+                fields = {}
+                for record in refined_records:
+                    wr0, wr1, wc0, wc1 = record["window"]
+                    if record["scene_i"] >= len(masks) or not (wr1 > r0 and wr0 < r1 and wc1 > c0 and wc0 < c1):
+                        continue
+                    local_path = seam_for_tile(record, r0, r1, c0, c1)
+                    field = build_pairwise_preference_field(
+                        tile_masks[record["scene_i"]], tile_masks[record["scene_j"]], local_path,
+                        record["side"], orientation=record["seam"].orientation,
+                        scene_a=record["scene_i"], scene_b=record["scene_j"],
+                        seam_half_width=cfg.preference_distance_scale,
+                    )
+                    domain = np.zeros(tile_shape, dtype=bool)
+                    if record["seam"].orientation == "vertical":
+                        domain[max(0, wr0 - r0):min(r1, wr1) - r0, :] = True
+                    else:
+                        domain[:, max(0, wc0 - c0):min(c1, wc1) - c0] = True
+                    available = field.available & domain
+                    fields[(record["scene_i"], record["scene_j"])] = field.__class__(
+                        record["scene_i"], record["scene_j"], np.where(available, field.vote, 0.0).astype(np.float32),
+                        available, np.where(available, field.confidence, 0.0).astype(np.float32), field.orientation,
+                    )
+                lab, methods, diag = aggregate_labels_with_ties(tile_masks, fields, raw_tile, p95_edt=np.asarray(p95_values), tie_tolerance=cfg.tie_tolerance)
+                win = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)
+                label_dst.write(lab.astype(np.int16), 1, window=win); method_dst.write(methods.astype(np.uint8), 1, window=win)
+                margin_dst.write(np.asarray(diag["score_margin"], dtype=np.float32), 1, window=win); coverage_dst.write(np.count_nonzero(tile_masks, axis=0).astype(np.uint8), 1, window=win)
+                coverage = np.count_nonzero(tile_masks, axis=0)
+                stats["union_valid_pixels"] += int(np.count_nonzero(coverage)); stats["multiscene_pixels"] += int(np.count_nonzero(coverage >= 3)); stats["cycle_pixels"] += int(diag.get("cycle_pixels", 0)); stats["pairwise_score_tie_pixels"] += int(diag.get("top_score_tie_pixels", 0)); stats["resolved_by_unclipped_interiority"] += int(diag.get("resolved_by_unclipped_interiority", 0)); stats["resolved_by_raw_edt"] += int(diag.get("resolved_by_raw_edt", 0)); stats["unresolved_pixels"] += int(diag.get("unresolved_pixels", 0)); stats["invalid_label_pixels"] += int(np.count_nonzero((coverage > 0) & (lab < 0))); stats["label_method_counts"] = {str(i): stats["label_method_counts"].get(str(i), 0) + int(np.count_nonzero(methods == i)) for i in range(5)}
+                margin_values = np.asarray(diag.get("score_margin", []), dtype=np.float32); margin_values = margin_values[np.isfinite(margin_values)]
+                if margin_values.size: stats["score_margin_values"].extend(np.percentile(margin_values, [0, 50, 95]).tolist())
+    for raw_path in raw_paths:
+        raw_path.unlink(missing_ok=True)
+    stats["pairwise_score_tie_pixels"] = int(stats["pairwise_score_tie_pixels"])
+    stats["cycle_fraction"] = stats["cycle_pixels"] / max(stats["multiscene_pixels"], 1)
+    stats["score_margin_min"] = float(min(stats["score_margin_values"])) if stats["score_margin_values"] else None
+    stats["score_margin_median"] = float(np.median(stats["score_margin_values"])) if stats["score_margin_values"] else None
+    stats["score_margin_p95"] = float(np.percentile(stats["score_margin_values"], 95)) if stats["score_margin_values"] else None
+    stats.pop("score_margin_values", None)
+    stats["status"] = "SUCCESS" if stats["unresolved_pixels"] == 0 else "HARD_STOP_UNRESOLVED_LABELS"
+
+    weight_paths = []
+    with rasterio.open(label_path) as label_src:
+        labels = label_src.read(1)
+        for index, mask in enumerate(masks):
+            region = labels == index
+            inside = distance_transform_edt(region)
+            outside = distance_transform_edt(~region)
+            signed = inside - outside
+            weight_path = output_dir / f"weight_scene_{index:03d}.tif"; weight_paths.append(weight_path)
+            weight_profile = profile.copy(); weight_profile.update(dtype="float32", count=1, nodata=np.nan, compress="deflate")
+            with rasterio.open(weight_path, "w", **weight_profile) as dst:
+                for r0 in range(0, shape[0], 512):
+                    r1 = min(shape[0], r0 + 512); values = signed[r0:r1]
+                    active = mask[r0:r1] & (values > -cfg.blend_half_width)
+                    weights = np.zeros(values.shape, dtype=np.float32)
+                    weights[active] = np.where(values[active] >= cfg.blend_half_width, 1.0, 0.5 * (1.0 + np.cos(np.pi * np.abs(values[active]) / cfg.blend_half_width)))
+                    weights[~mask[r0:r1]] = np.nan
+                    dst.write(weights, 1, window=rasterio.windows.Window(0, r0, shape[1], r1 - r0))
+            del region, inside, outside, signed
+    mosaic_path = output_dir / "mosaic.tif"
+    _stream_weighted_mosaic(corrected_scene_paths, weight_paths, mosaic_path, grid)
     result = {"status": "SUCCESS" if refined_count else "NO_REFINED_PAIRS", "refined_pair_count": refined_count,
-              "refinement_rows": refinement_rows, "labels": diagnostics, "shared_refine_function": getattr(refine, "__name__", str(refine)),
-              "outputs": {"labels": str(output_dir / "source_label_map.tif"), "mosaic": str(output_dir / "mosaic.tif")}}
+              "refinement_rows": refinement_rows, "labels": stats, "shared_refine_function": getattr(refine, "__name__", str(refine)),
+              "weight_paths": [str(path) for path in weight_paths],
+              "outputs": {"labels": str(label_path), "mosaic": str(mosaic_path)}}
     (output_dir / "end_to_end_summary.json").write_text(json.dumps(result, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
     return result
 
@@ -855,6 +1011,32 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         end_to_end = {"status": "HARD_STOP_MISSING_TASK15_INITIAL_SEAMS", "shared_refine_function": "refine_seam_after_correction"}
     (e2e_dir / "end_to_end_manifest.json").write_text(json.dumps(end_to_end, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
 
+    end_to_end_metrics = {"status": "NOT_MEASURED", "comparison": []}
+    if isinstance(end_to_end.get("ours"), Mapping) and isinstance(end_to_end.get("volrn"), Mapping) and end_to_end["ours"].get("status") == "SUCCESS" and end_to_end["volrn"].get("status") == "SUCCESS":
+        ours_weight_paths = [Path(path) for path in end_to_end["ours"]["weight_paths"]]
+        volrn_weight_paths = [Path(path) for path in end_to_end["volrn"]["weight_paths"]]
+        ours_metrics = _stream_task10d_metrics(frozen["ours_scene_paths"], masks, ours_weight_paths, frozen["scene_ids"])
+        volrn_metrics = _stream_task10d_metrics(corrected_paths, masks, volrn_weight_paths, frozen["scene_ids"])
+        ours_structure = _stream_structure_summary(frozen["scene_paths"], frozen["ours_scene_paths"], masks)
+        volrn_structure = _stream_structure_summary(frozen["scene_paths"], corrected_paths, masks)
+        from scripts.run_task14a_resume_13 import _transition_metrics
+        fixed_ours_rows, fixed_ours = _transition_metrics(frozen["v1_weight_paths"], frozen["scene_paths"], frozen["ours_scene_paths"], full_shape[0], full_shape[1])
+        fixed_volrn_rows, fixed_volrn = _transition_metrics(frozen["v1_weight_paths"], frozen["scene_paths"], corrected_paths, full_shape[0], full_shape[1])
+        metric_map = [("MAMD", ("mamd", "weighted_mean")), ("MSDD", ("msdd", "weighted_mean")), ("RDD", ("rdd", "weighted_mean")), ("Local MAMD median", ("local_mamd", "median")), ("Local RDD median", ("local_rdd", "median"))]
+        comparison = [{"metric": name, "Ours_E2E": _metric_scalar(ours_metrics, path), "VOLRN_E2E": _metric_scalar(volrn_metrics, path)} for name, path in metric_map]
+        comparison.extend([
+            {"metric": "Structure CGL degrees", "Ours_E2E": ours_structure.get("cgl_deg"), "VOLRN_E2E": volrn_structure.get("cgl_deg")},
+            {"metric": "Gradient NCC mean", "Ours_E2E": ours_structure.get("mean"), "VOLRN_E2E": volrn_structure.get("mean")},
+            {"metric": "Gradient orientation cosine mean", "Ours_E2E": ours_structure.get("orientation_cosine"), "VOLRN_E2E": volrn_structure.get("orientation_cosine")},
+            {"metric": "Fixed V1 transition weighted MAE", "Ours_E2E": fixed_ours.get("candidate_weighted_mae"), "VOLRN_E2E": fixed_volrn.get("candidate_weighted_mae")},
+            {"metric": "Fixed V1 transition weighted RDD", "Ours_E2E": fixed_ours.get("candidate_weighted_rdd"), "VOLRN_E2E": fixed_volrn.get("candidate_weighted_rdd")},
+        ])
+        end_to_end_metrics = {"status": "SUCCESS", "support_definition": "V1 initial seam / V1 transition zone", "ours": ours_metrics, "volrn": volrn_metrics, "ours_structure": ours_structure, "volrn_structure": volrn_structure, "fixed_support": {"ours": {"rows": fixed_ours_rows, "metrics": fixed_ours}, "volrn": {"rows": fixed_volrn_rows, "metrics": fixed_volrn}}, "comparison": comparison}
+        (e2e_dir / "end_to_end_metrics.json").write_text(json.dumps(end_to_end_metrics, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
+        (e2e_dir / "fixed_support_metrics.json").write_text(json.dumps({"support_definition": "V1 initial seam / V1 transition zone", "ours": end_to_end_metrics["fixed_support"]["ours"], "volrn": end_to_end_metrics["fixed_support"]["volrn"]}, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
+    else:
+        (e2e_dir / "end_to_end_metrics.json").write_text(json.dumps(end_to_end_metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+
     _stream_weighted_mosaic(
         corrected_paths, frozen["weight_paths"], mosaic_dir / "bagrn_volrn_iter200_weighted.tif", grid
     )
@@ -877,14 +1059,13 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
     cgl_values = [row["cgl_rad"] for row in b_cgl_rows if row.get("cgl_rad") is not None]
     b_cgl = float(np.mean(cgl_values)) if cgl_values else None
     b_metrics["cgl_rad"] = {"value_rad": b_cgl, "value_deg": float(np.rad2deg(b_cgl)) if b_cgl is not None else None, "per_scene": b_cgl_rows, "status": "STREAMING"}
-    structural_rows = []
-    for index, (before, after, mask) in enumerate(zip(frozen["scene_paths"], corrected_paths, masks)):
-        ncc = _structural_ncc(before, after, mask)
-        structural_rows.append({"scene": index, "gradient_ncc": ncc, "finite": bool(np.isfinite(ncc))})
-    ncc_values = [row["gradient_ncc"] for row in structural_rows if np.isfinite(row["gradient_ncc"])]
-    structural = {"per_scene": structural_rows, "min": float(min(ncc_values)) if ncc_values else None, "median": float(np.median(ncc_values)) if ncc_values else None, "mean": float(np.mean(ncc_values)) if ncc_values else None, "worst": float(min(ncc_values)) if ncc_values else None}
+    structural = _stream_structure_summary(frozen["scene_paths"], corrected_paths, masks)
+    ncc_values = [row["gradient_magnitude_ncc"] for row in structural["per_scene"] if isinstance(row.get("gradient_magnitude_ncc"), (int, float)) and np.isfinite(row["gradient_magnitude_ncc"])]
+    structural["median"] = float(np.median(ncc_values)) if ncc_values else None
+    structural["worst"] = float(min(ncc_values)) if ncc_values else None
     (metrics_dir / "task10d_metrics.json").write_text(json.dumps({"BAGRN_weighted": a_metrics, "BAGRN_VOLRN_iter200_weighted": b_metrics, "diagnostics_A": a_diag, "diagnostics_B": b_diag, "structure_preservation": structural, "finite_outputs": finite_outputs}, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
-    task10d_rows = _task10d_rows(a_metrics, b_metrics, structural, frozen["union_support"])
+    a_structural = _stream_structure_summary(frozen["scene_paths"], frozen["scene_paths"], masks)
+    task10d_rows = _task10d_rows(a_metrics, b_metrics, structural, frozen["union_support"], a_structural=a_structural)
     _write_csv(metrics_dir / "radiometric_ablation.csv", task10d_rows, ["metric", "baseline", "candidate", "absolute_change", "relative_change_percent"])
 
     # Reuse the exact Task15 source-label boundary definition for A/B.
@@ -906,7 +1087,7 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
     shutil.copy2(frozen["v2_path"], reference_dir / "v2_local_corrected_multiscene.tif")
     (reference_dir / "reference_metrics.json").write_text(json.dumps({"source": str(frozen["v2_path"]), "source_sha256": _sha256(frozen["v2_path"]), "stage11_boundary_metrics": task15_boundary, "stage11_structural": task15_structural}, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
 
-    end_rows = []
+    legacy_end_rows = []
     def c_value(key: str) -> float | None:
         value = task15_boundary.get(key)
         return float(value) if isinstance(value, (int, float)) else None
@@ -922,8 +1103,13 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         ("runtime total B seconds", None, float(solver_runtime + mosaic_runtime), None),
     ]
     for metric, a_value, b_value, c_value_ in end_map:
-        end_rows.append({"metric": metric, "BAGRN_weighted": a_value, "BAGRN_VOLRN_iter200_weighted": b_value, "Task15_V2": c_value_})
-    _write_csv(output_root / "07_comparison_tables/end_to_end_comparison.csv", end_rows)
+        legacy_end_rows.append({"metric": metric, "BAGRN_weighted": a_value, "BAGRN_VOLRN_iter200_weighted": b_value, "Task15_V2": c_value_})
+    _write_csv(output_root / "07_comparison_tables/legacy_weighted_comparison.csv", legacy_end_rows)
+    endpoint_rows = end_to_end_metrics.get("comparison", []) if isinstance(end_to_end_metrics, Mapping) else []
+    if endpoint_rows:
+        _write_csv(output_root / "07_comparison_tables/end_to_end_comparison.csv", endpoint_rows, ["metric", "Ours_E2E", "VOLRN_E2E"])
+    else:
+        _write_csv(output_root / "07_comparison_tables/end_to_end_comparison.csv", [{"metric": "status", "Ours_E2E": end_to_end_metrics.get("status"), "VOLRN_E2E": end_to_end_metrics.get("status")}], ["metric", "Ours_E2E", "VOLRN_E2E"])
     _write_csv(output_root / "07_comparison_tables/radiometric_ablation.csv", task10d_rows, ["metric", "baseline", "candidate", "absolute_change", "relative_change_percent"])
 
     figures_dir = output_root / "08_figures"
@@ -942,6 +1128,7 @@ def run_task16(task15_root: str | Path, output_root: str | Path, *, protocol_pat
         "task10d": {"A": a_metrics, "B": b_metrics},
         "strict_local_ablation": strict_ablation,
         "volrn_end_to_end": end_to_end,
+        "end_to_end_metrics": end_to_end_metrics,
         "boundary_A_vs_B": boundary_ab,
         "task15_v2_reference": {"boundary_metrics": task15_boundary, "minimum_gradient_ncc": c_min_ncc},
         "numerical_validity": finite_outputs,
@@ -974,20 +1161,20 @@ def _build_report(summary: Mapping[str, Any], provenance: Mapping[str, Any], out
         "12. BAGRN→VOLRN MAMD/MSDD/RDD: see `05_radiometric_metrics/radiometric_ablation.csv`.",
         "13. Local MAMD/RDD: see the same ablation table and full JSON diagnostics.",
         "14. Seam MAE/RMSE/RDD: see `05_radiometric_metrics/boundary_metrics_summary.json` and the ablation table.",
-        f"15. Structure preservation: min/median/mean NCC={structure['min']} / {structure['median']} / {structure['mean']}; threshold review={structure['min'] is not None and structure['min'] >= 0.99}.",
+        f"15. Structure preservation: min/median/mean NCC={structure['min']} / {structure['median']} / {structure['mean']}; CGL/orientation={structure.get('cgl_deg')} / {structure.get('orientation_cosine')}; threshold review={structure['min'] is not None and structure['min'] >= 0.99}.",
         f"16. Task15 V2 boundary final MAE/RDD: {task15.get('v2_weighted_mae')} / {task15.get('v2_weighted_rdd')}.",
         f"17. VOLRN weighted boundary MAE/RDD: {boundary.get('v2_weighted_mae')} / {boundary.get('v2_weighted_rdd')}.",
         f"18. Runtime: solver={summary['runtime_sec']['solver']:.3f}s; VOLRN mosaic={summary['runtime_sec']['volrn_mosaic']:.3f}s; total={summary['runtime_sec']['total_task16']:.3f}s; RAM/VRAM=NOT_MEASURED.",
         f"19. Final strict vs finite-nonconverged status: `{volrn['formal_status']}`.",
         "20. Paper wording: this report does not claim paper CD/GL; it reports the frozen Task10D metric definitions.",
         "21. Strict ablation: A and B use identical frozen geometry, scene order, masks, canonical grid, and weighted-feather mode.",
-        "22. End-to-end comparison: C is Task15 V2 reference only; no Task15 geometry or label/correction stage was rerun.",
+        f"22. Ours E2E vs VOLRN E2E: status={summary.get('end_to_end_metrics', {}).get('status')}; see `05_volrn_end_to_end/end_to_end_metrics.json` and `07_comparison_tables/end_to_end_comparison.csv`.",
         f"23. Numerical invalidity: {'none' if summary['numerical_validity']['numerical_invalid_pixels'] == 0 else 'present; formal B result requires review'}.",
     ]
     return "\n".join([
         "# Task16 — 13-Scene BAGRN + VOLRN Weighted-Feather Radiometric Comparison", "",
         f"Decision/status: **{summary['status']}**.", "",
-        "This experiment consumes Task15 Stage06 BAGRN scenes as read-only inputs. Geometry, BAGRN, seam search, labels, and local correction were not rerun.", "",
+        "The fixed A/B comparison consumes Task15 Stage06 BAGRN scenes as read-only inputs. The separate endpoint section explicitly reruns shared seam refinement, source-side labeling, weights, and mosaic on Ours/VOLRN corrected scenes.", "",
         "## Final report answers", "", *[f"- {item}" for item in questions], "",
         "## Artifact map", "",
         "- `00_protocol/`: provenance and frozen Task10D protocol.",
@@ -995,6 +1182,8 @@ def _build_report(summary: Mapping[str, Any], provenance: Mapping[str, Any], out
         "- `02_volrn_solver/`: coefficients, complete history, convergence plots, and diagnostics.",
         "- `03_volrn_corrected_scenes/`: B corrected scenes and application audit.",
         "- `04_volrn_weighted_mosaic/`: B mosaic and support products.",
+        "- `04_strict_local_ablation/`: A0/A1/A2 using the identical V1 weight layout and actual structure metrics.",
+        "- `05_volrn_end_to_end/`: Ours/VOLRN shared-refinement endpoint artifacts, fixed-support metrics, and endpoint comparison.",
         "- `05_radiometric_metrics/`: Task10D metrics, boundary diagnostics, and summary.",
         "- `06_task15_v2_reference/`: copied read-only V2 reference and source metrics.",
         "- `07_comparison_tables/` and `08_figures/`: comparison tables and figures.",

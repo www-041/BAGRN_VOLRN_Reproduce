@@ -327,6 +327,8 @@ def _stage09(rows, paths, transform, height, width):
     correction_width = cfg.corridor_half_width
     useful=[]
     for row in rows:
+        if row.get("local_correction_status") != "OK":
+            continue
         if int(row.get("local_segment_count",0))<=0 or row.get("status") in {"NO_FINAL_SHARED_SUPPORT","UNSUPPORTED_TOPOLOGY"}: continue
         pid=row["pair_id"]; pdir=STAGE07/"pairs"/pid
         orient, rr, cc=_seam_pixels(pdir/"seam_initial.geojson",transform); coeff=_coefficients(pdir/"local_coefficients.csv")
@@ -450,6 +452,85 @@ def _boundary_metrics(labels_arr, paths, corrected, height, width):
     return rows,weighted
 
 
+def _transition_metrics(weight_paths, paths, candidate, height, width):
+    """Measure pair transitions on the route's actual positive-weight support."""
+    from scipy.stats import wasserstein_distance
+
+    weights = [rasterio.open(path) for path in weight_paths]
+    srcs = [rasterio.open(path) for path in paths]
+    candidates = [rasterio.open(path) for path in candidate]
+    buckets = {}
+    try:
+        for r0 in range(0, height, TILE):
+            hh = min(TILE, height - r0)
+            win = Window(0, r0, width, hh)
+            weight_tiles = [src.read(1, window=win).astype(np.float64) for src in weights]
+            source_tiles = [src.read(1, window=win).astype(np.float64) for src in srcs]
+            candidate_tiles = [src.read(1, window=win).astype(np.float64) for src in candidates]
+            for i in range(len(paths)):
+                for j in range(i + 1, len(paths)):
+                    zone = (
+                        np.isfinite(weight_tiles[i]) & np.isfinite(weight_tiles[j])
+                        & (weight_tiles[i] > 0) & (weight_tiles[j] > 0)
+                        & np.isfinite(source_tiles[i]) & np.isfinite(source_tiles[j])
+                        & np.isfinite(candidate_tiles[i]) & np.isfinite(candidate_tiles[j])
+                    )
+                    if not np.any(zone):
+                        continue
+                    key = (i, j)
+                    bucket = buckets.setdefault(key, {"n": 0, "mae0": 0.0, "mse0": 0.0, "mae2": 0.0, "mse2": 0.0, "x0": [], "x2": []})
+                    a0, b0 = source_tiles[i][zone], source_tiles[j][zone]
+                    a2, b2 = candidate_tiles[i][zone], candidate_tiles[j][zone]
+                    d0, d2 = a0 - b0, a2 - b2
+                    bucket["n"] += int(d0.size)
+                    bucket["mae0"] += float(np.abs(d0).sum()); bucket["mse0"] += float(np.square(d0).sum())
+                    bucket["mae2"] += float(np.abs(d2).sum()); bucket["mse2"] += float(np.square(d2).sum())
+                    bucket["x0"].append((a0, b0)); bucket["x2"].append((a2, b2))
+    finally:
+        for handle in weights + srcs + candidates:
+            handle.close()
+    rows = []
+    for (a, b), bucket in buckets.items():
+        n = bucket["n"]
+        x0 = np.concatenate([pair[0] for pair in bucket["x0"]]); y0 = np.concatenate([pair[1] for pair in bucket["x0"]])
+        x2 = np.concatenate([pair[0] for pair in bucket["x2"]]); y2 = np.concatenate([pair[1] for pair in bucket["x2"]])
+        candidate_mae = bucket["mae2"] / n; candidate_rmse = float(np.sqrt(bucket["mse2"] / n)); candidate_rdd = float(wasserstein_distance(x2, y2))
+        rows.append({"scene_a": a, "scene_b": b, "pixels": n,
+                     "bagrn_mae": bucket["mae0"] / n, "candidate_mae": candidate_mae, "v2_mae": candidate_mae,
+                     "bagrn_rmse": float(np.sqrt(bucket["mse0"] / n)), "candidate_rmse": candidate_rmse, "v2_rmse": candidate_rmse,
+                     "bagrn_rdd": float(wasserstein_distance(x0, y0)), "candidate_rdd": candidate_rdd, "v2_rdd": candidate_rdd})
+    total = max(sum(row["pixels"] for row in rows), 1)
+    weighted = {
+        "transition_support_pixels": int(sum(row["pixels"] for row in rows)),
+        "bagrn_weighted_mae": sum(row["pixels"] * row["bagrn_mae"] for row in rows) / total,
+        "candidate_weighted_mae": sum(row["pixels"] * row["candidate_mae"] for row in rows) / total,
+        "bagrn_weighted_rdd": sum(row["pixels"] * row["bagrn_rdd"] for row in rows) / total,
+        "candidate_weighted_rdd": sum(row["pixels"] * row["candidate_rdd"] for row in rows) / total,
+        "median_bagrn_mae": float(np.median([row["bagrn_mae"] for row in rows])) if rows else None,
+        "median_candidate_mae": float(np.median([row["candidate_mae"] for row in rows])) if rows else None,
+        "median_bagrn_rdd": float(np.median([row["bagrn_rdd"] for row in rows])) if rows else None,
+        "median_candidate_rdd": float(np.median([row["candidate_rdd"] for row in rows])) if rows else None,
+    }
+    return rows, weighted
+
+
+def _positive_weight_support(weight_paths, height, width):
+    support = np.zeros((height, width), dtype=bool)
+    handles = [rasterio.open(path) for path in weight_paths]
+    try:
+        for r0 in range(0, height, TILE):
+            hh = min(TILE, height - r0); win = Window(0, r0, width, hh)
+            tile = np.zeros((hh, width), dtype=bool)
+            for handle in handles:
+                values = handle.read(1, window=win)
+                tile |= np.isfinite(values) & (values > 0)
+            support[r0:r0 + hh] = tile
+    finally:
+        for handle in handles:
+            handle.close()
+    return support
+
+
 def _stage11(rows, paths, corrected, height, width):
     started = time.perf_counter(); STAGE11.mkdir(parents=True, exist_ok=True)
     from src.multiscene_sift.structural_metrics import stream_structure_metrics
@@ -471,20 +552,33 @@ def _stage11(rows, paths, corrected, height, width):
         "other_failure": sum(r.get("status") not in {"PASS", "REQUIRES_MULTISCENE_LABELING"} for r in rows),
     }
 
-    route_inputs = {
-        "V0": (labels_v1, paths, "BAGRN + frozen distance-weight baseline"),
-        "V1": (labels_v1, paths, "initial seam/source-side + frozen V1 weights"),
-        "V2": (labels_v2, corrected, "refined seam/source-side + local correction + V2 weights"),
+    route_weight_paths = {
+        "V0": [OUT / f"stages/05_valid_distance_cache/distance_scene_{i:03d}.tif" for i in range(len(paths))],
+        "V1": [STAGE10 / "weights" / "v1" / f"weight_scene_{i:03d}.tif" for i in range(len(paths))],
+        "V2": [STAGE10 / "weights" / "v2" / f"weight_scene_{i:03d}.tif" for i in range(len(paths))],
+    }
+    route_labels = {"V0": None, "V1": labels_v1, "V2": labels_v2}
+    route_candidates = {"V0": paths, "V1": paths, "V2": corrected}
+    route_semantics = {
+        "V0": "BAGRN + Stage05 distance weights",
+        "V1": "initial seam/source-side + V1 multilabel cosine weights",
+        "V2": "refined seam/source-side + local correction + V2 multilabel cosine weights",
     }
     route_metrics = {}
     transition_rows = []
-    for route, (labels_arr, candidate_paths, semantics) in route_inputs.items():
-        rows_route, summary_route = _boundary_metrics(labels_arr, paths, candidate_paths, height, width)
+    for route in ("V0", "V1", "V2"):
+        if not all(path.is_file() for path in route_weight_paths[route]):
+            raise RuntimeError(f"HARD_STOP_ROUTE_WEIGHT_MISSING: {route}")
+        rows_route, summary_route = _transition_metrics(route_weight_paths[route], paths, route_candidates[route], height, width)
+        labels_arr = route_labels[route]
+        support = _positive_weight_support(route_weight_paths[route], height, width)
         route_metrics[route] = {
-            "route": route, "semantics": semantics,
-            "label_path": str(label_paths["V1"] if route in {"V0", "V1"} else label_paths["V2"]),
+            "route": route, "semantics": route_semantics[route],
+            "label_path": str(label_paths["V1"] if route == "V1" else label_paths["V2"]) if labels_arr is not None else None,
+            "weight_paths": [str(path) for path in route_weight_paths[route]],
             "boundary_rows": rows_route, "boundary_metrics": summary_route,
-            "union_support": int(np.count_nonzero(labels_arr >= 0)),
+            "transition_support_pixels": int(np.count_nonzero(support)),
+            "union_support": int(np.count_nonzero(labels_arr >= 0)) if labels_arr is not None else int(np.count_nonzero(support)),
         }
         for item in rows_route:
             transition_rows.append({"route": route, **item})
@@ -513,12 +607,24 @@ def _stage11(rows, paths, corrected, height, width):
         "unresolved_pixels": {route: int(data.get("unresolved_pixels", 0)) for route, data in label_summary.items()},
     }
     _write_json(STAGE11 / "route_metrics.json", route_metrics)
-    _write_json(STAGE11 / "fixed_support_metrics.json", {"routes": {key: value["boundary_metrics"] for key, value in route_metrics.items()}, "support_audit": support_audit})
+    fixed_rows, fixed_summary = _transition_metrics(route_weight_paths["V1"], paths, corrected, height, width)
+    _write_json(STAGE11 / "fixed_support_metrics.json", {
+        "support_definition": "V1 initial seam / V1 transition zone",
+        "weight_paths": [str(path) for path in route_weight_paths["V1"]],
+        "rows": fixed_rows, "metrics": fixed_summary,
+        "baseline": "BAGRN", "candidate": "Task15 Ours corrected", "support_audit": support_audit,
+    })
     _write_json(STAGE11 / "transition_metrics.json", {"rows": transition_rows, "routes": list(route_metrics)})
     _write_json(STAGE11 / "structure_preservation.json", structure_summary)
     _write_json(STAGE11 / "metric_support_audit.json", support_audit)
 
     v2_summary_metrics = route_metrics["V2"]["boundary_metrics"]
+    v2_summary_metrics.update({
+        "v2_weighted_mae": v2_summary_metrics.get("candidate_weighted_mae"),
+        "v2_weighted_rdd": v2_summary_metrics.get("candidate_weighted_rdd"),
+        "median_v2_mae": v2_summary_metrics.get("median_candidate_mae"),
+        "median_v2_rdd": v2_summary_metrics.get("median_candidate_rdd"),
+    })
     v2_structural = structural_routes["V2"]
     structural_quality = "PASS" if structure_summary["V2"]["finite"] and all(float(row["gradient_magnitude_ncc"]) >= 0.99 for row in v2_structural) else "REVIEW"
     legality = bool(pair_counts["PASS"] > 0 and structure_summary["V2"]["finite"])

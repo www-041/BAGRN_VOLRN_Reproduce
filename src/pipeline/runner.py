@@ -79,6 +79,10 @@ def _run_existing_prefix(root: Path, config: PipelineConfig) -> dict[str, Any]:
         expected_scene_count=config.dataset.expected_scene_count,
         scene_selection=config.dataset.scene_selection,
         include_streaming_equivalence=False,
+        band=config.dataset.band,
+        match_max_side=config.registration.match_max_side,
+        ransac_threshold=config.registration.ransac_threshold_px,
+        random_seed=config.registration.random_seed,
     )
     prefix_stops = [str(item) for item in prefix.get("hard_stops", []) if str(item) != "HARD_STOP_TASK14_STAGE_NOT_IMPLEMENTED"]
     if prefix_stops:
