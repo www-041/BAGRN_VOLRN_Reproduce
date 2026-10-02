@@ -11,7 +11,13 @@ from src.pipeline.final_metrics import _label_legality, classify_structural_gate
 from src.seam_local.config import SeamLocalRuntimeConfig
 from src.seam_local.seam import SeamResult
 from src.seam_local.source_side import SourceSideResult
-from src.task16_volrn_comparison import _build_report, _tile_local_seam, run_strict_local_ablation, run_volrn_end_to_end
+from src.task16_volrn_comparison import (
+    _build_report,
+    _build_tile_pairwise_field_from_global_seam,
+    run_strict_local_ablation,
+    run_volrn_end_to_end,
+)
+from src.seam_local.multiscene_label import build_pairwise_preference_field
 from scripts.run_task14_13scene_scale import run_task14
 from scripts.run_task14a_resume_13 import _pair_normalized_transition_zone
 
@@ -111,16 +117,53 @@ def test_volrn_end_to_end_calls_shared_refinement(tmp_path):
     assert (tmp_path / "e2e/mosaic.tif").is_file()
 
 
-def test_e2e_tile_seam_is_inside_grid_even_when_global_path_crosses_tile_boundary():
-    seam = SeamResult(
-        "vertical",
-        np.column_stack((np.arange(4), np.array([6, 10, 10, 6]))),
-        0.0, 0.0, 0.0, "OK",
-    )
-    local, inside_lines = _tile_local_seam(seam, 0, 4, 0, 8)
-    assert np.array_equal(local.row_col_path[:, 0], np.arange(4))
-    assert np.all((local.row_col_path[:, 1] >= 0) & (local.row_col_path[:, 1] < 8))
-    assert np.array_equal(inside_lines, np.array([True, False, False, True]))
+def test_e2e_tiled_pairwise_fields_match_full_grid_for_global_seams():
+    height, width = 8, 10
+    rows, cols = np.indices((height, width))
+    valid_a = (rows + 2 * cols) % 7 != 0
+    valid_b = (2 * rows + cols) % 9 != 0
+    cases = [
+        ("vertical", np.full(height, 7), "vertical seam outside the left tile"),
+        ("vertical", np.array([2, 3, 4, 5, 6, 5, 4, 3]), "vertical seam crossing a tile boundary"),
+        ("horizontal", np.full(width, 6), "horizontal seam outside the top tile"),
+        ("horizontal", np.array([1, 2, 3, 4, 5, 4, 3, 2, 1, 2]), "horizontal seam crossing a tile boundary"),
+        ("vertical", np.full(height, 4), "seam centered on a tile boundary"),
+    ]
+
+    for orientation, centers, _case_name in cases:
+        if orientation == "vertical":
+            path = np.column_stack((np.arange(height), centers))
+        else:
+            path = np.column_stack((centers, np.arange(width)))
+        seam = SeamResult(orientation, path, 0.0, 0.0, 0.0, "OK")
+        full = build_pairwise_preference_field(
+            valid_a, valid_b, seam, "A", scene_a=2, scene_b=5, seam_half_width=3.0,
+        )
+        tiled_vote = np.zeros_like(full.vote)
+        tiled_available = np.zeros_like(full.available)
+        tiled_confidence = np.zeros_like(full.confidence)
+
+        for r0 in range(0, height, 3):
+            r1 = min(height, r0 + 3)
+            for c0 in range(0, width, 4):
+                c1 = min(width, c0 + 4)
+                tile = _build_tile_pairwise_field_from_global_seam(
+                    valid_a[r0:r1, c0:c1],
+                    valid_b[r0:r1, c0:c1],
+                    seam,
+                    "A",
+                    tile_origin=(r0, c0),
+                    seam_half_width=3.0,
+                    scene_a=2,
+                    scene_b=5,
+                )
+                tiled_vote[r0:r1, c0:c1] = tile.vote
+                tiled_available[r0:r1, c0:c1] = tile.available
+                tiled_confidence[r0:r1, c0:c1] = tile.confidence
+
+        np.testing.assert_allclose(tiled_vote, full.vote, err_msg=_case_name)
+        np.testing.assert_array_equal(tiled_available, full.available, err_msg=_case_name)
+        np.testing.assert_allclose(tiled_confidence, full.confidence, err_msg=_case_name)
 
 
 def test_e2e_unresolved_source_side_has_no_initial_or_scene_fallback(monkeypatch, tmp_path):

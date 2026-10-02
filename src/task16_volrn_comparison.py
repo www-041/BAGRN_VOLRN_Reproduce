@@ -303,56 +303,91 @@ def _stream_mosaic_validity(
     }
 
 
-def _tile_local_seam(
+def _build_tile_pairwise_field_from_global_seam(
+    valid_a: np.ndarray,
+    valid_b: np.ndarray,
     seam: Any,
-    r0: int,
-    r1: int,
-    c0: int,
-    c1: int,
-) -> tuple[Any, np.ndarray]:
-    """Map one global seam to a tile-safe path and return its in-tile lines.
+    side_1_source: Any,
+    *,
+    tile_origin: tuple[int, int],
+    seam_half_width: float,
+    scene_a: int,
+    scene_b: int,
+) -> Any:
+    """Build a tile field using the original global seam and pixel coordinates.
 
-    The seam path must span the complete tile line axis for the frozen
-    pairwise-field helper.  Centers that lie outside the tile are clipped only
-    for constructing that required path; ``inside_lines`` masks those lines
-    out again before the field is published.  Thus no scientific vote is
-    created outside the original global seam/tile intersection.
+    This reproduces ``build_pairwise_preference_field`` on a tile without
+    clipping seam centers to tile bounds. A seam outside a tile still gives
+    valid one-sided votes there, exactly as the full-grid field does.
     """
 
-    from src.seam_local.seam import SeamResult
+    from src.seam_local.multiscene_label import PairwisePreferenceField, _side_assignment
 
+    va = np.asarray(valid_a, dtype=bool)
+    vb = np.asarray(valid_b, dtype=bool)
+    if va.ndim != 2 or vb.shape != va.shape:
+        raise ValueError("valid_a and valid_b must be same-shape 2D arrays")
+    if seam.status != "OK":
+        raise ValueError("a successful seam is required")
     path = np.asarray(seam.row_col_path)
-    tile_height = int(r1 - r0)
-    tile_width = int(c1 - c0)
-    if tile_height <= 0 or tile_width <= 0:
-        raise ValueError("tile bounds must have positive size")
-    if seam.orientation == "vertical":
-        line_coordinates = np.arange(r0, r1)
-        centers = np.interp(line_coordinates, path[:, 0], path[:, 1])
-        inside_lines = (centers >= c0) & (centers < c1)
-        local_centers = np.rint(centers - c0).astype(np.int32)
-        local_centers = np.clip(local_centers, 0, tile_width - 1)
-        local_path = np.column_stack((np.arange(tile_height), local_centers))
-    elif seam.orientation == "horizontal":
-        line_coordinates = np.arange(c0, c1)
-        centers = np.interp(line_coordinates, path[:, 1], path[:, 0])
-        inside_lines = (centers >= r0) & (centers < r1)
-        local_centers = np.rint(centers - r0).astype(np.int32)
-        local_centers = np.clip(local_centers, 0, tile_height - 1)
-        local_path = np.column_stack((local_centers, np.arange(tile_width)))
+    if path.ndim != 2 or path.shape[1] != 2 or not path.size:
+        raise ValueError("seam path must be a nonempty (N, 2) array")
+    r0, c0 = (int(tile_origin[0]), int(tile_origin[1]))
+    tile_height, tile_width = va.shape
+    if tile_height <= 0 or tile_width <= 0 or r0 < 0 or c0 < 0:
+        raise ValueError("tile origin and dimensions must be nonnegative and nonempty")
+
+    orientation = str(seam.orientation)
+    if orientation == "vertical":
+        if not np.all(np.diff(path[:, 0]) > 0):
+            raise ValueError("vertical seam line coordinates must be strictly increasing")
+        global_rows = r0 + np.arange(tile_height)
+        centers = np.interp(global_rows, path[:, 0], path[:, 1]).astype(np.float32)
+        global_cols = c0 + np.arange(tile_width)
+        coordinates = global_cols
+        distance = np.abs(coordinates[None, :] - centers[:, None])
+        side1 = coordinates[None, :] < centers[:, None]
+        side2 = coordinates[None, :] > centers[:, None]
+    elif orientation == "horizontal":
+        if not np.all(np.diff(path[:, 1]) > 0):
+            raise ValueError("horizontal seam line coordinates must be strictly increasing")
+        global_cols = c0 + np.arange(tile_width)
+        centers = np.interp(global_cols, path[:, 1], path[:, 0]).astype(np.float32)
+        global_rows = r0 + np.arange(tile_height)
+        coordinates = global_rows
+        distance = np.abs(coordinates[None, :] - centers[:, None])
+        side1 = coordinates[None, :] < centers[:, None]
+        side2 = coordinates[None, :] > centers[:, None]
     else:
-        raise ValueError(f"unsupported seam orientation: {seam.orientation}")
-    return (
-        SeamResult(
-            seam.orientation,
-            local_path,
-            seam.total_cost,
-            seam.mean_cost,
-            seam.p95_cost,
-            seam.status,
-            seam.search_mode,
-        ),
-        inside_lines,
+        raise ValueError(f"unsupported seam orientation: {orientation}")
+
+    confidence_oriented = np.minimum(distance / float(seam_half_width), 1.0).astype(np.float32)
+    side_a_is_side1 = _side_assignment(side_1_source) if side_1_source is not None else True
+    sign_oriented = np.where(
+        side1,
+        1.0 if side_a_is_side1 else -1.0,
+        np.where(side2, -1.0 if side_a_is_side1 else 1.0, 0.0),
+    )
+    if orientation == "vertical":
+        confidence = confidence_oriented
+        signed = sign_oriented
+    else:
+        confidence = confidence_oriented.T
+        signed = sign_oriented.T
+
+    available = va & vb & np.isfinite(signed)
+    if side_1_source is None:
+        available[:] = False
+        signed = np.zeros_like(signed)
+        confidence = np.zeros_like(confidence)
+    vote = np.where(available, signed * confidence, 0.0).astype(np.float32)
+    return PairwisePreferenceField(
+        scene_a=int(scene_a),
+        scene_b=int(scene_b),
+        vote=vote,
+        available=available,
+        confidence=np.where(available, confidence, 0.0).astype(np.float32),
+        orientation=orientation,
     )
 
 
@@ -763,7 +798,6 @@ def run_volrn_end_to_end(
     from src.seam_local.adapter import _cosine_weights, aggregate_labels_with_ties
     from src.seam_local.config import SeamLocalRuntimeConfig
     from src.seam_local.footprint import footprint_polygon_from_valid_mask
-    from src.seam_local.multiscene_label import build_pairwise_preference_field
     from src.seam_local.pipeline import refine_seam_after_correction
     from src.seam_local.source_side import resolve_source_sides
 
@@ -792,9 +826,6 @@ def run_volrn_end_to_end(
             centers = np.interp(cols, path[:, 1], path[:, 0]) - r0
             local = np.column_stack((np.rint(centers).astype(np.int32), np.arange(c1 - c0)))
         return SeamResult(seam.orientation, local, seam.total_cost, seam.mean_cost, seam.p95_cost, seam.status, seam.search_mode)
-
-    def seam_for_tile(record, r0, r1, c0, c1):
-        return _tile_local_seam(record["seam"], r0, r1, c0, c1)
 
     refined_records = []
     refined_count = 0
@@ -906,22 +937,17 @@ def run_volrn_end_to_end(
                     wr0, wr1, wc0, wc1 = record["window"]
                     if record["scene_i"] >= len(masks) or not (wr1 > r0 and wr0 < r1 and wc1 > c0 and wc0 < c1):
                         continue
-                    local_path, inside_lines = seam_for_tile(record, r0, r1, c0, c1)
-                    if not np.any(inside_lines):
-                        continue
-                    field = build_pairwise_preference_field(
-                        tile_masks[record["scene_i"]], tile_masks[record["scene_j"]], local_path,
-                        record["side"], orientation=record["seam"].orientation,
+                    field = _build_tile_pairwise_field_from_global_seam(
+                        tile_masks[record["scene_i"]], tile_masks[record["scene_j"]], record["seam"],
+                        record["side"], tile_origin=(r0, c0),
                         scene_a=record["scene_i"], scene_b=record["scene_j"],
                         seam_half_width=cfg.preference_distance_scale,
                     )
                     domain = np.zeros(tile_shape, dtype=bool)
                     if record["seam"].orientation == "vertical":
                         domain[max(0, wr0 - r0):min(r1, wr1) - r0, :] = True
-                        domain &= inside_lines[:, None]
                     else:
                         domain[:, max(0, wc0 - c0):min(c1, wc1) - c0] = True
-                        domain &= inside_lines[None, :]
                     available = field.available & domain
                     fields[(record["scene_i"], record["scene_j"])] = field.__class__(
                         record["scene_i"], record["scene_j"], np.where(available, field.vote, 0.0).astype(np.float32),
