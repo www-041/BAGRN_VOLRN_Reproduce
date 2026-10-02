@@ -11,7 +11,7 @@ from src.pipeline.final_metrics import _label_legality, classify_structural_gate
 from src.seam_local.config import SeamLocalRuntimeConfig
 from src.seam_local.seam import SeamResult
 from src.seam_local.source_side import SourceSideResult
-from src.task16_volrn_comparison import _build_report, run_strict_local_ablation, run_volrn_end_to_end
+from src.task16_volrn_comparison import _build_report, _tile_local_seam, run_strict_local_ablation, run_volrn_end_to_end
 from scripts.run_task14_13scene_scale import run_task14
 from scripts.run_task14a_resume_13 import _pair_normalized_transition_zone
 
@@ -109,6 +109,18 @@ def test_volrn_end_to_end_calls_shared_refinement(tmp_path):
     assert len(calls) == 1
     assert result["shared_refine_function"] == "fake_refine"
     assert (tmp_path / "e2e/mosaic.tif").is_file()
+
+
+def test_e2e_tile_seam_is_inside_grid_even_when_global_path_crosses_tile_boundary():
+    seam = SeamResult(
+        "vertical",
+        np.column_stack((np.arange(4), np.array([6, 10, 10, 6]))),
+        0.0, 0.0, 0.0, "OK",
+    )
+    local, inside_lines = _tile_local_seam(seam, 0, 4, 0, 8)
+    assert np.array_equal(local.row_col_path[:, 0], np.arange(4))
+    assert np.all((local.row_col_path[:, 1] >= 0) & (local.row_col_path[:, 1] < 8))
+    assert np.array_equal(inside_lines, np.array([True, False, False, True]))
 
 
 def test_e2e_unresolved_source_side_has_no_initial_or_scene_fallback(monkeypatch, tmp_path):

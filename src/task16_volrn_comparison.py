@@ -303,6 +303,59 @@ def _stream_mosaic_validity(
     }
 
 
+def _tile_local_seam(
+    seam: Any,
+    r0: int,
+    r1: int,
+    c0: int,
+    c1: int,
+) -> tuple[Any, np.ndarray]:
+    """Map one global seam to a tile-safe path and return its in-tile lines.
+
+    The seam path must span the complete tile line axis for the frozen
+    pairwise-field helper.  Centers that lie outside the tile are clipped only
+    for constructing that required path; ``inside_lines`` masks those lines
+    out again before the field is published.  Thus no scientific vote is
+    created outside the original global seam/tile intersection.
+    """
+
+    from src.seam_local.seam import SeamResult
+
+    path = np.asarray(seam.row_col_path)
+    tile_height = int(r1 - r0)
+    tile_width = int(c1 - c0)
+    if tile_height <= 0 or tile_width <= 0:
+        raise ValueError("tile bounds must have positive size")
+    if seam.orientation == "vertical":
+        line_coordinates = np.arange(r0, r1)
+        centers = np.interp(line_coordinates, path[:, 0], path[:, 1])
+        inside_lines = (centers >= c0) & (centers < c1)
+        local_centers = np.rint(centers - c0).astype(np.int32)
+        local_centers = np.clip(local_centers, 0, tile_width - 1)
+        local_path = np.column_stack((np.arange(tile_height), local_centers))
+    elif seam.orientation == "horizontal":
+        line_coordinates = np.arange(c0, c1)
+        centers = np.interp(line_coordinates, path[:, 1], path[:, 0])
+        inside_lines = (centers >= r0) & (centers < r1)
+        local_centers = np.rint(centers - r0).astype(np.int32)
+        local_centers = np.clip(local_centers, 0, tile_height - 1)
+        local_path = np.column_stack((local_centers, np.arange(tile_width)))
+    else:
+        raise ValueError(f"unsupported seam orientation: {seam.orientation}")
+    return (
+        SeamResult(
+            seam.orientation,
+            local_path,
+            seam.total_cost,
+            seam.mean_cost,
+            seam.p95_cost,
+            seam.status,
+            seam.search_mode,
+        ),
+        inside_lines,
+    )
+
+
 def _load_frozen_inputs(task15_root: Path) -> dict[str, Any]:
     canonical_path = task15_root / "stages/04_canonical_warp/canonical_output_grid.json"
     source_path = task15_root / "stages/04_canonical_warp/task14_source_config.json"
@@ -741,7 +794,7 @@ def run_volrn_end_to_end(
         return SeamResult(seam.orientation, local, seam.total_cost, seam.mean_cost, seam.p95_cost, seam.status, seam.search_mode)
 
     def seam_for_tile(record, r0, r1, c0, c1):
-        return seam_for_window(record["seam"], r0, r1, c0, c1)
+        return _tile_local_seam(record["seam"], r0, r1, c0, c1)
 
     refined_records = []
     refined_count = 0
@@ -853,7 +906,9 @@ def run_volrn_end_to_end(
                     wr0, wr1, wc0, wc1 = record["window"]
                     if record["scene_i"] >= len(masks) or not (wr1 > r0 and wr0 < r1 and wc1 > c0 and wc0 < c1):
                         continue
-                    local_path = seam_for_tile(record, r0, r1, c0, c1)
+                    local_path, inside_lines = seam_for_tile(record, r0, r1, c0, c1)
+                    if not np.any(inside_lines):
+                        continue
                     field = build_pairwise_preference_field(
                         tile_masks[record["scene_i"]], tile_masks[record["scene_j"]], local_path,
                         record["side"], orientation=record["seam"].orientation,
@@ -863,8 +918,10 @@ def run_volrn_end_to_end(
                     domain = np.zeros(tile_shape, dtype=bool)
                     if record["seam"].orientation == "vertical":
                         domain[max(0, wr0 - r0):min(r1, wr1) - r0, :] = True
+                        domain &= inside_lines[:, None]
                     else:
                         domain[:, max(0, wc0 - c0):min(c1, wc1) - c0] = True
+                        domain &= inside_lines[None, :]
                     available = field.available & domain
                     fields[(record["scene_i"], record["scene_j"])] = field.__class__(
                         record["scene_i"], record["scene_j"], np.where(available, field.vote, 0.0).astype(np.float32),
