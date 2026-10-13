@@ -1,0 +1,66 @@
+schema_version: 1
+protocol_id: DZ01V_UNIFIED_A_B_V1_20261013
+status: FROZEN_INPUT_PROTOCOL
+scope:
+  scene_count: 13
+  band: B9
+  sensor: DZ01V_L2_VNIR
+  physical_unit: UNKNOWN
+  expected_total_pairs: 78
+  expected_positive_overlaps_native: 48
+  expected_no_overlap_native: 30
+paths:
+  source_root: 'D:/科研/地质一号/文献/BAGRN_VOLRN_Reproduce/data/input/B9_reference_13scenes_full'
+  source_inventory: docs/benchmark/v1/phase2/input_identity_manifest.csv
+  temporal_inventory: docs/benchmark/v1/temporal_pair_inventory.csv
+  task15_root: data/output/final_pipeline/b9_13scene_formal_v2
+  aligned_grid_manifest: data/output/final_pipeline/b9_13scene_formal_v2/stages/04_canonical_warp/canonical_output_grid.json
+  source_transform_manifest: data/output/final_pipeline/b9_13scene_formal_v2/stages/03_global_adjustment/global/translation_l2/global_transforms.json
+  task15_source_config: data/output/final_pipeline/b9_13scene_formal_v2/stages/04_canonical_warp/task14_source_config.json
+  task15_input_masks: data/output/final_pipeline/b9_13scene_formal_v2/stages/06_bagrn/bagrn/normalized_scenes/input_valid_masks
+geometry:
+  crs: EPSG:32650
+  pixel_resolution_m: 14
+  resampling_intensity: bilinear
+  resampling_mask: nearest
+  mask_definition: source_declared_nodata_zero_and_finite_reprojected_value
+  allow_undocumented_extra_warp: false
+identity:
+  require_current_sha256_match: true
+  freeze_all_13_b9_hashes: true
+pair_scoring:
+  source_support: frozen_input_mask_intersection
+  full_support_required_for_primary: true
+  metric_ids: [MAE_V1, RMSE_V1, BIAS_V1, P95AE_V1, MAMD_V1, MSDD_V1, RDD_W1_EXACT_V1]
+  std_ddof: 0
+  quantile_method: linear
+  exact_wasserstein: true
+  aggregation_primary: pair_macro
+windows:
+  width_px: 128
+  height_px: 128
+  stride_px: 128
+  origin_row_col: [0, 0]
+  min_input_pair_valid_fraction: 0.95
+  max_per_pair: 32
+  selection_seed: 20261013
+  selection_algorithm: input_only_spatial_hash_distributed_v1
+structure:
+  kernel: sobel_3x3_divisor_8
+  required_halo_pixels: 1
+  direction_loss: 1_minus_cos_on_input_edges
+  input_edge_threshold: max_1e_minus_12_and_input_p50_gradient_mag
+  relative_grad_mae: true
+  robust_range_quantiles: [0.05, 0.95]
+  optional_ssim: false
+  optional_gradient_ncc: false
+simulation:
+  cases: [S1, S2, S3, S4]
+  fixed_seed: 20261013
+runtime:
+  sample_interval_s: 0.5
+  missing_memory_value: NOT_MEASURED
+status_policy:
+  no_paper_cd_or_gl_claim_without_verified_reference: true
+  no_method_output_based_support: true
+  missing_metrics_must_be_null_with_status: true
