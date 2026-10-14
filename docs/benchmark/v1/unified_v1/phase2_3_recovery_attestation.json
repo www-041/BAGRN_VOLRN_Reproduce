@@ -1,0 +1,88 @@
+{
+  "phase": "Spectralmatch Phase 2.3",
+  "date": "2026-10-14",
+  "status": "PARTIAL_RECOVERY_ENVIRONMENT_BLOCKED",
+  "protocol_id": "DZ01V_UNIFIED_A_B_V1_20261013",
+  "freeze": "data/output/benchmark_v1_unified/freeze_20261013_v3/",
+  "historical_freeze_head": "3c9f4e30888445ce783f56f4f26cb064e1add887",
+  "historical_provenance_note": "The six restored paths are absent from the named historical commit; exact bytes were recovered from Git objects and committed separately.",
+  "recovery_branch": "recovery/spectralmatch-phase2-3-20261014",
+  "recovery_commit": "a6352037a43125fa64a83a32053463db1e4ff1ae",
+  "recovery_commit_files": [
+    "docs/benchmark/v1/unified_v1/benchmark_protocol_draft.md",
+    "docs/benchmark/v1/unified_v1/plan.md",
+    "src/benchmark_v1_unified/__init__.py",
+    "src/benchmark_v1_unified/identity.py",
+    "src/benchmark_v1_unified/structure.py",
+    "tests/benchmark_v1_unified/test_core.py"
+  ],
+  "locked_file_verification": {
+    "original_worktree": {"checked": 38, "matched": 38, "mismatched": 0, "missing": 0},
+    "clean_worktree_default_windows_checkout": {
+      "path": "%TEMP%/phase2_3_recovery_clean_20261014",
+      "head": "a6352037a43125fa64a83a32053463db1e4ff1ae",
+      "git_status_clean": true,
+      "checked": 38,
+      "raw_sha_matched": 0,
+      "crlf_to_lf_normalized_matched": 29,
+      "missing": 9,
+      "interpretation": "The global core.autocrlf=true checkout rewrites line endings for 29 tracked files. Nine manifest paths are absent from Git."
+    },
+    "clean_worktree_lf_checkout": {
+      "path": "%TEMP%/phase2_3_recovery_clean_lf_20261014",
+      "head": "a6352037a43125fa64a83a32053463db1e4ff1ae",
+      "git_status_clean": true,
+      "checkout_core_autocrlf": false,
+      "checked": 38,
+      "matched": 29,
+      "mismatched": 0,
+      "missing": 9,
+      "interpretation": "All 29 manifest files tracked in this commit match exact SHA256, including all six recovered files; nine untracked R1/R1.5 scripts are absent. Therefore the complete 38-file freeze set is not reproducible from Git alone."
+    }
+  },
+  "clean_worktree_frozen_core_tests": {"command": "python -m pytest tests/benchmark_v1_unified -q -p no:cacheprovider", "result": "27 passed", "lf_checkout": true},
+  "spectralmatch_environment": {
+    "status": "ENVIRONMENT_BLOCKED",
+    "new_environment_created": false,
+    "existing_environment_accepted": false,
+    "rejected_environment": {
+      "python": "3.11.17",
+      "osgeo_gdal": "3.11.5",
+      "rasterio": "1.4.4",
+      "rasterio_linked_gdal": "3.10.3",
+      "pyproj_proj": "9.5.1",
+      "spectralmatch": "1.6.0",
+      "psutil": null,
+      "scikit_image": null
+    },
+    "blockers": [
+      "Available micromamba 2.9.0 exits on --version with Windows status 0xC0000409 (-1073740791).",
+      "Direct GitHub release download was unreachable.",
+      "The configured PyPI index has no compatible binary Windows wheel for GDAL 3.11.5.",
+      "WSL status/list checks returned E_ACCESSDENIED; no usable WSL distribution could be verified."
+    ],
+    "official_spectralmatch_example": "NOT_RUN_PREREQUISITES_INCOMPATIBLE",
+    "official_source_commit": "2c35fef0d8c324cd2c06fbc5b1a78e36e2853ff3",
+    "official_requirements": {"python": ">=3.10, <=3.12", "gdal": ">=3.11", "proj": ">=9.3"}
+  },
+  "resource_monitor": {
+    "phase2_1_tests": "6 passed",
+    "psutil_version": "7.2.2 (existing registration environment; read-only test use)",
+    "synthetic_process_cases": {
+      "normal": {"peak_rss_bytes": 27475968, "samples": 7, "tree_terminated": false, "polling_guard_triggered": false, "os_hard_limit": false},
+      "rss_threshold_96_mib": {"peak_rss_bytes": 182657024, "samples": 3, "tree_terminated": true, "polling_guard_triggered": true, "os_hard_limit": false},
+      "timeout_0_7_seconds": {"peak_rss_bytes": 40275968, "samples": 15, "tree_terminated": true, "polling_guard_triggered": false, "os_hard_limit": false}
+    }
+  },
+  "regression_results": {
+    "phase2_1": "42 passed",
+    "frozen_core": "27 passed",
+    "combined": "69 passed",
+    "full_repository": "1325 passed, 4 skipped",
+    "compileall": "passed",
+    "diff_check": "exact frozen whitespace is intentionally retained; git diff --check reports those locked whitespace bytes"
+  },
+  "real_imagery_experiments_started": false,
+  "real_crop_rerun_decision": "NO-GO",
+  "full_freeze_reproducibility": "NOT_ESTABLISHED"
+}
