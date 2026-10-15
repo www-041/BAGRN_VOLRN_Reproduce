@@ -1,0 +1,64 @@
+{
+  "smoke_kind": "SYNTHETIC_GEOTIFF_ONLY",
+  "real_algorithm_run": false,
+  "synthetic_scene_count": 13,
+  "synthetic_pair_rows": 78,
+  "synthetic_positive_overlap_pairs": 66,
+  "synthetic_no_overlap_pairs": 12,
+  "synthetic_frozen_windows": 66,
+  "A_status": "EVALUABLE",
+  "A_coverage": {
+    "status": "EVALUABLE",
+    "coverage": 1.0,
+    "input_union_pixels": 16384,
+    "output_valid_pixels": 16384,
+    "holes": 0,
+    "extras": 0
+  },
+  "A_seam_status": "EVALUABLE",
+  "B1_status": "EVALUABLE",
+  "B1_metrics": [
+    "bias",
+    "mae",
+    "mamd",
+    "msdd",
+    "p95ae",
+    "rdd",
+    "rmse"
+  ],
+  "B2_status": "EVALUABLE",
+  "B2_window_count": 66,
+  "B_scene_structure_rows": 13,
+  "B2_scene_window_structure_rows": 132,
+  "runtime_provenance": {
+    "runtime_status": "NOT_MEASURED",
+    "wall_seconds": null,
+    "wall_measurement_source": "NOT_MEASURED",
+    "peak_rss_bytes": null,
+    "rss_status": "NOT_MEASURED",
+    "rss_sample_count": 0,
+    "rss_measurement_source": "NOT_MEASURED",
+    "peak_gpu_memory_bytes": null,
+    "gpu_status": "NOT_MEASURED",
+    "gpu_sample_count": 0,
+    "gpu_measurement_source": "NOT_MEASURED",
+    "resource_budget": {
+      "max_rss_bytes": 2000000000,
+      "gpu_memory_bytes": null
+    },
+    "estimated_evaluator_working_set_bytes": 7634944,
+    "budget_preflight_status": "PASS",
+    "hard_os_memory_limit": false,
+    "measurement_provenance_status": "INCOMPLETE"
+  },
+  "B3_status": "NOT_RUN_SYNTHETIC_METHOD_OUTPUT_REQUIRED",
+  "ranking_eligible": false,
+  "assertions": {
+    "all_13_scenes": true,
+    "all_fixture_pairs_retained": true,
+    "all_fixture_windows_scored": true,
+    "B3_explicitly_not_run": true,
+    "not_a_real_method_result": true
+  },
+  "status": "PASS"
+}

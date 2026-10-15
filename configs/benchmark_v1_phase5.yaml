@@ -1,0 +1,26 @@
+pair_ids: ['00_01', '02_03', '05_07', '08_10']
+method_ids: [SIFT, KARIOS, AROSICS_GLOBAL, LoFTR, EfficientLoFTR, LightGlue+DISK]
+crs: EPSG:32650
+native_pixel_m: 14
+stretch_percentiles: [2, 98]
+max_view_side: 1600
+seed: 20261011
+ransac_hypotheses: 1000
+ransac_radius_native_px: 2.0
+min_matches: 12
+min_inliers: 8
+min_inlier_fraction: 0.10
+coverage_grid: [4, 4]
+min_coverage_cells: 4
+min_coverage_rows: 2
+min_coverage_columns: 2
+smoke_seconds: 900
+smoke_rss_gib: 12
+external_python: {KARIOS: null, AROSICS_GLOBAL: null}
+method_settings:
+  SIFT: {nfeatures: 8000, ratio: 0.75}
+  KARIOS: {large_shift: false}
+  AROSICS_GLOBAL: {center_window: [256, 256], max_iter: 5, max_shift: 5}
+  LoFTR: {weights: outdoor, confidence: 0.2, max_matches: 5000}
+  EfficientLoFTR: {resolution: full, precision: fp32, confidence: 0.0}
+  LightGlue+DISK: {features: 2048, extractor_resize: 1024, confidence: 0.0}

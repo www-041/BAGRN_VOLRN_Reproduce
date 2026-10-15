@@ -1,0 +1,849 @@
+{
+  "type": "FeatureCollection",
+  "name": "benchmark_v1_unverified_region_candidates",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              119.11175159997254,
+              29.69411725055161
+            ],
+            [
+              119.31217273003699,
+              29.69076917113842
+            ],
+            [
+              119.31334018951183,
+              29.741671829672942
+            ],
+            [
+              119.11281805527706,
+              29.74502679118883
+            ],
+            [
+              119.11175159997254,
+              29.69411725055161
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_00_01",
+        "pair_id": "00_01",
+        "scene_i": "DZ01V_L2_E119.3_N29.9_20251114023847_01_T1",
+        "scene_j": "DZ01V_L2_E119.2_N29.5_20251114023853_01_T1",
+        "bbox_intersecting_scene_indices": [
+          0,
+          1,
+          2,
+          5,
+          8,
+          10
+        ],
+        "bbox_coverage_scene_count": 6,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 6.6e-05,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              119.03652413542099,
+              29.802872622561072
+            ],
+            [
+              119.13386986125556,
+              29.801336278368318
+            ],
+            [
+              119.13801538717387,
+              29.995622676211106
+            ],
+            [
+              119.04048087245494,
+              29.997171063101227
+            ],
+            [
+              119.03652413542099,
+              29.802872622561072
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_00_05",
+        "pair_id": "00_05",
+        "scene_i": "DZ01V_L2_E119.3_N29.9_20251114023847_01_T1",
+        "scene_j": "DZ01V_L2_E118.9_N29.9_20251214025253_01_T1",
+        "bbox_intersecting_scene_indices": [
+          0,
+          2,
+          3,
+          5,
+          7,
+          8,
+          10
+        ],
+        "bbox_coverage_scene_count": 7,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 30.009789,
+        "quality_i": "PASS",
+        "quality_j": "RISK",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.95050917220651,
+              29.441800671311107
+            ],
+            [
+              119.03908887947661,
+              29.44047327466643
+            ],
+            [
+              119.04287455930974,
+              29.628923070926355
+            ],
+            [
+              118.95413065967523,
+              29.630260635665262
+            ],
+            [
+              118.95050917220651,
+              29.441800671311107
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_01_06",
+        "pair_id": "01_06",
+        "scene_i": "DZ01V_L2_E119.2_N29.5_20251114023853_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.5_20251214025259_01_T1",
+        "bbox_intersecting_scene_indices": [
+          1,
+          2,
+          4,
+          5,
+          6,
+          8,
+          9,
+          10,
+          11
+        ],
+        "bbox_coverage_scene_count": 9,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 30.009796,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.71931758247439,
+              29.81996254141546
+            ],
+            [
+              118.90683165644771,
+              29.817388748670943
+            ],
+            [
+              118.90996972939672,
+              29.982002313539514
+            ],
+            [
+              118.72214745529784,
+              29.98459318935613
+            ],
+            [
+              118.71931758247439,
+              29.81996254141546
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_02_03",
+        "pair_id": "02_03",
+        "scene_i": "DZ01V_L2_E118.9_N29.9_20251120024226_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.9_20251208025056_01_T1",
+        "bbox_intersecting_scene_indices": [
+          2,
+          3,
+          4,
+          5,
+          7,
+          8,
+          10
+        ],
+        "bbox_coverage_scene_count": 7,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 18.005909,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.69180768581302,
+              29.688084805647826
+            ],
+            [
+              118.84541041141699,
+              29.68603374601072
+            ],
+            [
+              118.84708788691601,
+              29.777614792366737
+            ],
+            [
+              118.69334570661177,
+              29.779673440902677
+            ],
+            [
+              118.69180768581302,
+              29.688084805647826
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_02_04",
+        "pair_id": "02_04",
+        "scene_i": "DZ01V_L2_E118.9_N29.9_20251120024226_01_T1",
+        "scene_j": "DZ01V_L2_E118.7_N29.6_20251208025102_01_T1",
+        "bbox_intersecting_scene_indices": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          8,
+          10,
+          11
+        ],
+        "bbox_coverage_scene_count": 8,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 18.005975,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.81698304555395,
+              29.909551422991964
+            ],
+            [
+              118.99943654743454,
+              29.90691079833465
+            ],
+            [
+              119.00169424677607,
+              30.0195923222529
+            ],
+            [
+              118.81903501499353,
+              30.022244916135453
+            ],
+            [
+              118.81698304555395,
+              29.909551422991964
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_02_07",
+        "pair_id": "02_07",
+        "scene_i": "DZ01V_L2_E118.9_N29.9_20251120024226_01_T1",
+        "scene_j": "DZ01V_L2_E119.0_N30.1_20251215023725_01_T1",
+        "bbox_intersecting_scene_indices": [
+          0,
+          2,
+          3,
+          5,
+          7,
+          8,
+          10
+        ],
+        "bbox_coverage_scene_count": 7,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 24.996516,
+        "quality_i": "PASS",
+        "quality_j": "RISK",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.73175482360408,
+              29.776712661964233
+            ],
+            [
+              118.91166004630738,
+              29.774233725747287
+            ],
+            [
+              118.91370195597625,
+              29.881417805338103
+            ],
+            [
+              118.73360481702915,
+              29.883907458315598
+            ],
+            [
+              118.73175482360408,
+              29.776712661964233
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_03_08",
+        "pair_id": "03_08",
+        "scene_i": "DZ01V_L2_E118.8_N29.9_20251208025056_01_T1",
+        "scene_j": "DZ01V_L2_E118.9_N29.7_20251215023731_01_T1",
+        "bbox_intersecting_scene_indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          7,
+          8,
+          10
+        ],
+        "bbox_coverage_scene_count": 8,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 6.99068,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.6190642548298,
+              29.47073962458184
+            ],
+            [
+              118.81183087299603,
+              29.468254268192847
+            ],
+            [
+              118.81494745772152,
+              29.642735881769703
+            ],
+            [
+              118.62184963102524,
+              29.645238852724777
+            ],
+            [
+              118.6190642548298,
+              29.47073962458184
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_04_06",
+        "pair_id": "04_06",
+        "scene_i": "DZ01V_L2_E118.7_N29.6_20251208025102_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.5_20251214025259_01_T1",
+        "bbox_intersecting_scene_indices": [
+          2,
+          4,
+          5,
+          6,
+          8,
+          9,
+          10,
+          11
+        ],
+        "bbox_coverage_scene_count": 8,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 6.001356,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.64493874459208,
+              29.408344599238596
+            ],
+            [
+              118.82223871198379,
+              29.406037484131414
+            ],
+            [
+              118.82387911843139,
+              29.497775134254606
+            ],
+            [
+              118.64641972812989,
+              29.50009085088481
+            ],
+            [
+              118.64493874459208,
+              29.408344599238596
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_04_09",
+        "pair_id": "04_09",
+        "scene_i": "DZ01V_L2_E118.7_N29.6_20251208025102_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.3_20251215023737_01_T1",
+        "bbox_intersecting_scene_indices": [
+          4,
+          6,
+          8,
+          9,
+          11
+        ],
+        "bbox_coverage_scene_count": 5,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 6.990687,
+        "quality_i": "PASS",
+        "quality_j": "RISK",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.73311025641546,
+              29.661010739589308
+            ],
+            [
+              118.9484917273371,
+              29.658018968801713
+            ],
+            [
+              118.94974576908055,
+              29.72297590654367
+            ],
+            [
+              118.73422585932822,
+              29.725975531381334
+            ],
+            [
+              118.73311025641546,
+              29.661010739589308
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_05_06",
+        "pair_id": "05_06",
+        "scene_i": "DZ01V_L2_E118.9_N29.9_20251214025253_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.5_20251214025259_01_T1",
+        "bbox_intersecting_scene_indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          8,
+          10,
+          11
+        ],
+        "bbox_coverage_scene_count": 9,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 7.3e-05,
+        "quality_i": "RISK",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.83917787230297,
+              29.92675069859707
+            ],
+            [
+              119.05082504297705,
+              29.923627382937333
+            ],
+            [
+              119.053623811006,
+              30.059638283362194
+            ],
+            [
+              118.84168822537282,
+              30.062778685399007
+            ],
+            [
+              118.83917787230297,
+              29.92675069859707
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_05_07",
+        "pair_id": "05_07",
+        "scene_i": "DZ01V_L2_E118.9_N29.9_20251214025253_01_T1",
+        "scene_j": "DZ01V_L2_E119.0_N30.1_20251215023725_01_T1",
+        "bbox_intersecting_scene_indices": [
+          0,
+          2,
+          3,
+          5,
+          7,
+          8,
+          10
+        ],
+        "bbox_coverage_scene_count": 7,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 0.989259,
+        "quality_i": "RISK",
+        "quality_j": "RISK",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.75419699040408,
+              29.67596754356505
+            ],
+            [
+              118.96613734730815,
+              29.672991660780063
+            ],
+            [
+              118.96935315614421,
+              29.83755252402245
+            ],
+            [
+              118.75706661088513,
+              29.840548211552534
+            ],
+            [
+              118.75419699040408,
+              29.67596754356505
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_08_10",
+        "pair_id": "08_10",
+        "scene_i": "DZ01V_L2_E118.9_N29.7_20251215023731_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.8_20260114024138_01_T1",
+        "bbox_intersecting_scene_indices": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          10,
+          11
+        ],
+        "bbox_coverage_scene_count": 11,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 30.002854,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.6403622376326,
+              29.116663978809076
+            ],
+            [
+              118.81727531414316,
+              29.114382435730292
+            ],
+            [
+              118.8192123382851,
+              29.224260392728677
+            ],
+            [
+              118.64211090867035,
+              29.226552190011393
+            ],
+            [
+              118.6403622376326,
+              29.116663978809076
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_09_12",
+        "pair_id": "09_12",
+        "scene_i": "DZ01V_L2_E118.8_N29.3_20251215023737_01_T1",
+        "scene_j": "DZ01V_L2_E118.7_N29.1_20260114024150_01_T1",
+        "bbox_intersecting_scene_indices": [
+          6,
+          9,
+          11,
+          12
+        ],
+        "bbox_coverage_scene_count": 4,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 30.002921,
+        "quality_i": "RISK",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.70910246901829,
+              29.59515469191851
+            ],
+            [
+              118.89885908681802,
+              29.592575125476472
+            ],
+            [
+              118.89991090911927,
+              29.648644388324048
+            ],
+            [
+              118.71004931248302,
+              29.651229807616392
+            ],
+            [
+              118.70910246901829,
+              29.59515469191851
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_10_11",
+        "pair_id": "10_11",
+        "scene_i": "DZ01V_L2_E118.8_N29.8_20260114024138_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.4_20260114024144_01_T1",
+        "bbox_intersecting_scene_indices": [
+          1,
+          2,
+          4,
+          5,
+          6,
+          8,
+          10,
+          11
+        ],
+        "bbox_coverage_scene_count": 8,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 7.1e-05,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.619887143409,
+              29.210917914212388
+            ],
+            [
+              118.80951672375846,
+              29.208487452896907
+            ],
+            [
+              118.81050528986763,
+              29.26466382921992
+            ],
+            [
+              118.62077222903874,
+              29.267099861049473
+            ],
+            [
+              118.619887143409,
+              29.210917914212388
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_11_12",
+        "pair_id": "11_12",
+        "scene_i": "DZ01V_L2_E118.8_N29.4_20260114024144_01_T1",
+        "scene_j": "DZ01V_L2_E118.7_N29.1_20260114024150_01_T1",
+        "bbox_intersecting_scene_indices": [
+          6,
+          9,
+          11,
+          12
+        ],
+        "bbox_coverage_scene_count": 4,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 7e-05,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified"
+      }
+    }
+  ]
+}

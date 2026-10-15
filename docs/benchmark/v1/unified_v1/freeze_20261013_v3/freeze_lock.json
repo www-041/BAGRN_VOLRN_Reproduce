@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\configs\\benchmark_v1_unified.yaml",
+      "sha256": "162daa69bf2283ae4580693030256229d55f7204eca34eb5c7df5d57d1b94416"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\docs\\benchmark\\v1\\phase2\\input_identity_manifest.csv",
+      "sha256": "df35ee36de6d4913a6e1d89b98de9a2fd4e3cb280453ea4357018ffbc9c280b0"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\docs\\benchmark\\v1\\temporal_pair_inventory.csv",
+      "sha256": "139c26be49e65571da91251dad574172369467e41e68177539674efecf4c76a2"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\final_pipeline\\b9_13scene_formal_v2\\stages\\04_canonical_warp\\canonical_output_grid.json",
+      "sha256": "01bf1575241f649a8d6e2d64fd9a50cf595451966161346d610e1c57756785f4"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\final_pipeline\\b9_13scene_formal_v2\\stages\\03_global_adjustment\\global\\translation_l2\\global_transforms.json",
+      "sha256": "0ce6030b4f4254eb9304707cf15a75cdf80fb9fadd6f23c69ff4011924e0d54e"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\src\\benchmark_v1_radiometric_r1\\synthetic.py",
+      "sha256": "305fb967c69943a3cc15e838952518dd901075bd8568455ab32cb53179daad7a"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\synthetic_smoke\\s1_s4_fixture.npz",
+      "sha256": "7098f1e95eff8a18c5e5e86004a14c402f3c61c461aa39bf218bd7acc86e1521"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\code_manifest.json",
+      "sha256": "540c7b01fa95444919521e8275b3ef927ca76deb50f1d8f7783bd41c317b8702"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\source_identity.json",
+      "sha256": "59bd36e58e562d312b6a55b5f0c167bd8b5162151570c9496ae78fa4b40f9729"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\mask_manifest.json",
+      "sha256": "fcd605ce639d2e54ffd8e4745c234eb577fe8ed126828b4a9e3e6ca93599cdf7"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\metric_spec.json",
+      "sha256": "d7ad57ac5e9658205b05a67f094d503f7d7e148649eed1d7cc04408ad9e6a069"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\synthetic_truth_manifest.json",
+      "sha256": "0606ad14cd8660310e57072ee721c8a2c8ebbaa15501cc5d7f2b49477800ce07"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\pair_overlap_inventory.csv",
+      "sha256": "d40933a3690bc8108eb9ae4c69e20ebc739ad24768a2cc8fba16b4a85339b315"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\fixed_windows.csv",
+      "sha256": "1632df3551cdf3fe62b6207c3c947961140f145fbc86b0a57fe3c3a1266f27ca"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\frozen_manifest.json",
+      "sha256": "b568ffee9095f6731c710dc2dd1e489026d9683f240b3646970bfde6db5dd21e"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B9.TIF",
+      "sha256": "5b2cfa54261e9e34687624fa11ce044fdaf83ea058bc0ceae48876060d7d3923"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B9.TIF",
+      "sha256": "31497939fd11b7116b36a20341679b71463c6ed799ed85f888b50b7e5a1d3f89"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B9.TIF",
+      "sha256": "cfa4a610e0df80ca3ec53f0d74cdbd8c99289fe2788452e0d70a45838457d465"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B9.TIF",
+      "sha256": "3659acd79285d9042d4fb9772dfb1ebf384837c0e953f937fef6cbc0f4421cb9"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025102\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1_B9.TIF",
+      "sha256": "3785b1bd5732e5f7f5472e5acc265cf9fa525a19575dff604caf25051c04f3a1"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B9.TIF",
+      "sha256": "8ba6eeb51b79ce0af6052d48257cf9bd68b6284794df31da8f61d834aea1700b"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025259\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1_B9.TIF",
+      "sha256": "16253f1f198a25acf1d9d018e9a55eb172e0ee4826409ccfcd69375810d4161d"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B9.TIF",
+      "sha256": "cf144e0d7a9766fe413a8e385b88acd807714ea10ff0b838876420e7ffd6f829"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B9.TIF",
+      "sha256": "cec1b3b73496aa721ae999e37c56337e0bdd1fe0806dcb91e845b7a08b177b4a"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023737\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1_B9.TIF",
+      "sha256": "ba3004832a671eca602d75757395e7ed5fee6c5bda1a33eff4172962dfd75560"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B9.TIF",
+      "sha256": "fe08c54c3392ee7d5a379649f5f3968b79c1498f959486a50454c6d3e6ca4eca"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024144\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1_B9.TIF",
+      "sha256": "6f2a85362c5af07a9f135ec36d0c2d6924a19afecc0fe8cfa641fdd831e1c391"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024150\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1_B9.TIF",
+      "sha256": "95c54df3101f100175cfac39414f91def0c105dd823cd024c1b996cb1cb6628a"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_000_B9_input.tif",
+      "sha256": "6121740db7c751ddf6cfb766c0d2eb989a90a081a38017086cef1dedb925173c"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_000_input_mask.tif",
+      "sha256": "6f6937ed59ff866bf741bbce3a7bb7fb5cc975947e2fb5ba000c29878b0dfb6e"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_001_B9_input.tif",
+      "sha256": "1f3332f4bc0d520e752285b7567cf5d4ceec258362b094e9e12f2a7a2d393a51"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_001_input_mask.tif",
+      "sha256": "73d1719f15e8f598366f05598ef2e32fbf7b90d70e1babc1d3296b4b47f4ee10"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_002_B9_input.tif",
+      "sha256": "89e753992270a3b7df9e96bb9e1b856d3f581f2d08dc6cdafe54d4528090c8df"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_002_input_mask.tif",
+      "sha256": "321b8af39ca06bbbc65931ad2cd6c0df4f87ddf073e59fa8c9e65291b88b892c"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_003_B9_input.tif",
+      "sha256": "d84a30b1d30e3223ebb4a282be25e5f34bece1e430d4dd4ad1b8a03d0222c394"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_003_input_mask.tif",
+      "sha256": "1fcd5416fd6100e316f575cb32463f58d1ae51437e421d8af1e611da4f67f644"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_004_B9_input.tif",
+      "sha256": "47aa98714d662c3ac92c5e67e862dea3136ad18fe9e052f114dc8c31072f82b0"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_004_input_mask.tif",
+      "sha256": "7a552e96218255a7f625833f11ecf0a2227622f7b27a058e4d516bfaa760a52e"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_005_B9_input.tif",
+      "sha256": "7f9021c83775064fbd9569addc181574510d86dee367099285cf0b9424692eb7"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_005_input_mask.tif",
+      "sha256": "0c8dee0b6103e90d658031454216b52c6712f0ec0fb7e8f15bbb751b40e1b060"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_006_B9_input.tif",
+      "sha256": "3deb6f9a3919c4716e8852d2b90ff8e2c364fec6cefcdf432198dea581847c32"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_006_input_mask.tif",
+      "sha256": "6c0f3f4ca793924c748bfe019957e8f6c06f203e0d2b0dae69aafb32687e1f0c"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_007_B9_input.tif",
+      "sha256": "ff0654eca331d85e9ad9ef4fa0d4326a9ef17b2631dbd3f2df79dc3a4fe37005"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_007_input_mask.tif",
+      "sha256": "a45f196f5eae1f9fb487739f46cf0beb86d25745dc3c571cee5bd3695eefe798"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_008_B9_input.tif",
+      "sha256": "c7d01a2fd89ecb20509562577224142b6fab82273a99e7451cefb8555606c59f"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_008_input_mask.tif",
+      "sha256": "5efe62975a6ad9be065abce2f489faae23c0ec6c094e4a729d5d8d6cd27739ed"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_009_B9_input.tif",
+      "sha256": "fe15814b8479fa86fbf648ac4bbbcd8bbc090c16c05abbdefdf37efd43793f0e"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_009_input_mask.tif",
+      "sha256": "9a76916c59e9d94b88d6e1f62805a4a5bdf852b8e5bb7b40fdcef5ccbf58e6d7"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_010_B9_input.tif",
+      "sha256": "2d9c5b26c7df04558c335101ff69e943ec524573787b4e003aa4af2c3780c904"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_010_input_mask.tif",
+      "sha256": "b9669682c355d2b9b4eef7bbdeebff9143a4afbe66d2a273aa9365f586777c82"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_011_B9_input.tif",
+      "sha256": "c93f55209d98f4ac50106f8c6fc285464e8af28b5754bc8fbcf334f7c7a9be50"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_011_input_mask.tif",
+      "sha256": "93fd0d93cd3b4c58ea93305d004b05ddb39bcb4a925158386a13d5c8219e6e2e"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_012_B9_input.tif",
+      "sha256": "c39d2ad98c5c94efe8dfc0a5782205604bea8673d1ddc37105293b8a9c466c61"
+    },
+    {
+      "path": "D:\\\u79d1\u7814\\\u5730\u8d28\u4e00\u53f7\\\u6587\u732e\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_012_input_mask.tif",
+      "sha256": "eb63418f07f5980b3afab0b1e5624f19e589c3e87714f7b62968653d8e5cdfdf"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+version: 1
+grid_crs: EPSG:32650
+native_reference_band: B9
+native_pixel_size_m: 14
+window_px: 32
+window_size_m: 448
+grid_rows: 8
+grid_cols: 8
+search_subdivisions: 4
+valid_fraction_min: 0.95
+strong_edge_fraction_max: 0.10
+edge_buffer_px: 2
+max_candidates_per_pair: 15
+texture_min: 0.000001
+deterministic_spatial_selection: true
+geometry_verified: false
+band_coreg_verified: false
+data_unit: UNKNOWN
+initial_review_status: UNVERIFIED
+landcover: UNKNOWN
+terrain: UNKNOWN
+allow_real_change_suggestion: false
+notes:
+  - Do not relax support/edge gates to reach a target candidate count.
+  - Cross-scene geometry and cross-band co-registration are not independently confirmed.
+  - Fixed-size windowing and edge filtering may under-sample narrow, boundary-rich, low-texture, shadowed, or small fragmented targets.

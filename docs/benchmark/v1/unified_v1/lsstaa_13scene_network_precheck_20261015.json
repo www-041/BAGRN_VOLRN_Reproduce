@@ -1,0 +1,1245 @@
+{
+  "task": "LSSTAA_DZ01V_13_SCENE_NETWORK_FEASIBILITY_PRECHECK",
+  "created_date": "2026-10-15",
+  "status": "COMPLETED_NETWORK_DIAGNOSTIC",
+  "method": "LSSTAA_PY_ADAPTED_DN_PROXY_UNVERIFIED",
+  "official_reference_equivalence": "UNRESOLVED_MISMATCH_FROM_PRIOR_GATE",
+  "input": {
+    "scene_count": 13,
+    "band_order": [
+      "B9",
+      "B4",
+      "B7",
+      "B14"
+    ],
+    "factor": 10,
+    "absolute_day_offsets": [
+      0,
+      0,
+      6,
+      24,
+      24,
+      30,
+      30,
+      31,
+      31,
+      31,
+      61,
+      61,
+      61
+    ],
+    "pif_threshold": 35.48979591836735,
+    "scene_records": [
+      {
+        "scene_index": 0,
+        "scene_id": "DZ01V_L2_E119.3_N29.9_20251114023847_01_T1",
+        "date": "2025-11-14",
+        "coarse_joint_valid_pixels": 108203,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 1,
+        "scene_id": "DZ01V_L2_E119.2_N29.5_20251114023853_01_T1",
+        "date": "2025-11-14",
+        "coarse_joint_valid_pixels": 103936,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 2,
+        "scene_id": "DZ01V_L2_E118.9_N29.9_20251120024226_01_T1",
+        "date": "2025-11-20",
+        "coarse_joint_valid_pixels": 100563,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 3,
+        "scene_id": "DZ01V_L2_E118.8_N29.9_20251208025056_01_T1",
+        "date": "2025-12-08",
+        "coarse_joint_valid_pixels": 109838,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 4,
+        "scene_id": "DZ01V_L2_E118.7_N29.6_20251208025102_01_T1",
+        "date": "2025-12-08",
+        "coarse_joint_valid_pixels": 106746,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025102\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025102\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025102\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025102\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 5,
+        "scene_id": "DZ01V_L2_E118.9_N29.9_20251214025253_01_T1",
+        "date": "2025-12-14",
+        "coarse_joint_valid_pixels": 129369,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 6,
+        "scene_id": "DZ01V_L2_E118.8_N29.5_20251214025259_01_T1",
+        "date": "2025-12-14",
+        "coarse_joint_valid_pixels": 130098,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025259\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025259\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025259\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025259\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 7,
+        "scene_id": "DZ01V_L2_E119.0_N30.1_20251215023725_01_T1",
+        "date": "2025-12-15",
+        "coarse_joint_valid_pixels": 125547,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 8,
+        "scene_id": "DZ01V_L2_E118.9_N29.7_20251215023731_01_T1",
+        "date": "2025-12-15",
+        "coarse_joint_valid_pixels": 125442,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 9,
+        "scene_id": "DZ01V_L2_E118.8_N29.3_20251215023737_01_T1",
+        "date": "2025-12-15",
+        "coarse_joint_valid_pixels": 126071,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023737\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023737\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023737\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023737\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 10,
+        "scene_id": "DZ01V_L2_E118.8_N29.8_20260114024138_01_T1",
+        "date": "2026-01-14",
+        "coarse_joint_valid_pixels": 112781,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 11,
+        "scene_id": "DZ01V_L2_E118.8_N29.4_20260114024144_01_T1",
+        "date": "2026-01-14",
+        "coarse_joint_valid_pixels": 112967,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024144\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024144\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024144\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024144\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1_B14.TIF"
+        }
+      },
+      {
+        "scene_index": 12,
+        "scene_id": "DZ01V_L2_E118.7_N29.1_20260114024150_01_T1",
+        "date": "2026-01-14",
+        "coarse_joint_valid_pixels": 110055,
+        "source_paths": {
+          "B9": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024150\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1_B9.TIF",
+          "B4": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024150\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1_B4.TIF",
+          "B7": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024150\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1_B7.TIF",
+          "B14": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024150\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1_B14.TIF"
+        }
+      }
+    ],
+    "provenance": {
+      "grid": {
+        "crs": "EPSG:32650",
+        "transform": [
+          14.0,
+          0.0,
+          633346.0,
+          0.0,
+          -14.0,
+          3359874.0
+        ],
+        "width": 7992,
+        "height": 12404
+      },
+      "factor": 10,
+      "band_order": [
+        "B9",
+        "B4",
+        "B7",
+        "B14"
+      ],
+      "freeze_lock_valid": true,
+      "freeze_lock_entries": 54,
+      "input_sha256": {
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B9.TIF": "5b2cfa54261e9e34687624fa11ce044fdaf83ea058bc0ceae48876060d7d3923",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B4.TIF": "abcd04081681f9ba4915d89a86c99f8e6bb8969fba96d4caae9f10cc6c17f246",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B7.TIF": "12cef016342f4784f84e813bf4b9a3235be2811e26627d3145340322963a9865",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B14.TIF": "58e9fdccbb28789d4bb3d6abb822716bc126199878a5d83c77f169a9eb593ea7",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_000_B9_input.tif": "6121740db7c751ddf6cfb766c0d2eb989a90a081a38017086cef1dedb925173c",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_000_input_mask.tif": "6f6937ed59ff866bf741bbce3a7bb7fb5cc975947e2fb5ba000c29878b0dfb6e",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B9.TIF": "31497939fd11b7116b36a20341679b71463c6ed799ed85f888b50b7e5a1d3f89",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B4.TIF": "083b448066d0f39e1604d2e368846e3c40866e9ac0f80d6ca0429efc20c4340d",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B7.TIF": "fbca21fe1ea1ac1a86e0f8167141c6fc4e6872cf8c89b1d7212ddd3fb0f71cfb",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B14.TIF": "751ad76fe0a6f06de3f22f854f501c7e6dff2d63b1c0a53daa9d2964f9664b40",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_001_B9_input.tif": "1f3332f4bc0d520e752285b7567cf5d4ceec258362b094e9e12f2a7a2d393a51",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_001_input_mask.tif": "73d1719f15e8f598366f05598ef2e32fbf7b90d70e1babc1d3296b4b47f4ee10",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B9.TIF": "cfa4a610e0df80ca3ec53f0d74cdbd8c99289fe2788452e0d70a45838457d465",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B4.TIF": "bde325c7d2d67a8edb0c75c9cdfc3315df2658fc77c45016f0c299ed3bff7ef5",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B7.TIF": "7be4d08a891c64b59a1b316fd2a27d3ba81ae86cd4454380c1b4fd97e13426a2",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B14.TIF": "9d131797caff6453e0f8951f3414b6308e2535250fbe360048962f09087ef1e3",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_002_B9_input.tif": "89e753992270a3b7df9e96bb9e1b856d3f581f2d08dc6cdafe54d4528090c8df",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_002_input_mask.tif": "321b8af39ca06bbbc65931ad2cd6c0df4f87ddf073e59fa8c9e65291b88b892c",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B9.TIF": "3659acd79285d9042d4fb9772dfb1ebf384837c0e953f937fef6cbc0f4421cb9",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B4.TIF": "fbcf1f45f0e61b36a135cd1803dfd47f80033e47980542fc6636c5268dbfa0d2",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B7.TIF": "3a7563303722d648657a81b6a019f82b1b13f7c7359b9dcba730e87e6475617d",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B14.TIF": "a6978863e1f4dee7fe3fba558d647b756bec8e992efb8afdd8bc7bd3e700e235",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_003_B9_input.tif": "d84a30b1d30e3223ebb4a282be25e5f34bece1e430d4dd4ad1b8a03d0222c394",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_003_input_mask.tif": "1fcd5416fd6100e316f575cb32463f58d1ae51437e421d8af1e611da4f67f644",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025102\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1_B9.TIF": "3785b1bd5732e5f7f5472e5acc265cf9fa525a19575dff604caf25051c04f3a1",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025102\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1_B4.TIF": "82d0169d53788eb1ea77e48c99ae8c5a52440d0ac660118e5faa678cc8308a72",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025102\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1_B7.TIF": "e97a36e60cb39c47c96783505925ff84c7fb000f766217c4ac0d1525d8bf75d4",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025102\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1_B14.TIF": "2e4f7bb374dc2211010e672e718931f20f05c30ba53b08d1ec206d76191b27b9",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_004_B9_input.tif": "47aa98714d662c3ac92c5e67e862dea3136ad18fe9e052f114dc8c31072f82b0",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_004_input_mask.tif": "7a552e96218255a7f625833f11ecf0a2227622f7b27a058e4d516bfaa760a52e",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B9.TIF": "8ba6eeb51b79ce0af6052d48257cf9bd68b6284794df31da8f61d834aea1700b",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B4.TIF": "f21130a0c0ae4251027deca5c91793513f69795851975e4f7221a22dff429d00",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B7.TIF": "39289a6061d9bf3e15a060871ea4294555652b9e760de4a278b691118c479fdd",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B14.TIF": "a8d99a06d2c0b895d2e2493638b7af0b662e2d257c2b222dbe23a19f4ab85b6e",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_005_B9_input.tif": "7f9021c83775064fbd9569addc181574510d86dee367099285cf0b9424692eb7",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_005_input_mask.tif": "0c8dee0b6103e90d658031454216b52c6712f0ec0fb7e8f15bbb751b40e1b060",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025259\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1_B9.TIF": "16253f1f198a25acf1d9d018e9a55eb172e0ee4826409ccfcd69375810d4161d",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025259\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1_B4.TIF": "67fee36d70aa91e8a1fd1195654b9a6fbdcd53a541b3eedf5c9d390581fd774d",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025259\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1_B7.TIF": "68294da1a0b3fdeddd5f37b929c869c3cea317947eba63faa64518ccafd7419f",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025259\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1_B14.TIF": "5d51eae79af81a5b89909e7c8ce6876c74a0d03523b30cad0bb4eb7db3d88c9a",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_006_B9_input.tif": "3deb6f9a3919c4716e8852d2b90ff8e2c364fec6cefcdf432198dea581847c32",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_006_input_mask.tif": "6c0f3f4ca793924c748bfe019957e8f6c06f203e0d2b0dae69aafb32687e1f0c",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B9.TIF": "cf144e0d7a9766fe413a8e385b88acd807714ea10ff0b838876420e7ffd6f829",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B4.TIF": "19ea05eeeffd4165be9be416713740dffb36171fbd657a585e50a6e947e9d1df",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B7.TIF": "e2d412996024db86eb002c9980bfd6cb50011093b9d6210e9211d150fc40d814",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B14.TIF": "509c038b087296d2423b279a67b05384c7dfca1a5326a683e9bd1678b4a4e58d",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_007_B9_input.tif": "ff0654eca331d85e9ad9ef4fa0d4326a9ef17b2631dbd3f2df79dc3a4fe37005",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_007_input_mask.tif": "a45f196f5eae1f9fb487739f46cf0beb86d25745dc3c571cee5bd3695eefe798",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B9.TIF": "cec1b3b73496aa721ae999e37c56337e0bdd1fe0806dcb91e845b7a08b177b4a",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B4.TIF": "37801ccda552a44858fe92e81f859fa480ad27b4de1d1b44417a13125f17e9b4",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B7.TIF": "ff9c0f19ed24b010fc18954de0a1dbd9b6a4d8a8a5be6dbd4a9bc11c88130450",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B14.TIF": "76cf721ad58ad0be14877deca6f7485a80177c2edcce0203f58f5d6b8a88eb21",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_008_B9_input.tif": "c7d01a2fd89ecb20509562577224142b6fab82273a99e7451cefb8555606c59f",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_008_input_mask.tif": "5efe62975a6ad9be065abce2f489faae23c0ec6c094e4a729d5d8d6cd27739ed",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023737\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1_B9.TIF": "ba3004832a671eca602d75757395e7ed5fee6c5bda1a33eff4172962dfd75560",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023737\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1_B4.TIF": "50621b3b975bcadecf2313b5a63a5e1d9d27256ae4d5e2b11fe98e5e4efe5a99",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023737\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1_B7.TIF": "5b15c2fbea6256090b90c3919cadd9b3f8df1b65fdff8fd6c88627d61f18c8ec",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023737\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1_B14.TIF": "36870381fb0608267800f1e89191481beb26460207dd18bbaa19a2a2e2fdb0a9",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_009_B9_input.tif": "fe15814b8479fa86fbf648ac4bbbcd8bbc090c16c05abbdefdf37efd43793f0e",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_009_input_mask.tif": "9a76916c59e9d94b88d6e1f62805a4a5bdf852b8e5bb7b40fdcef5ccbf58e6d7",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B9.TIF": "fe08c54c3392ee7d5a379649f5f3968b79c1498f959486a50454c6d3e6ca4eca",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B4.TIF": "7f0f1b2232351c164c7ae6efe95e81472a80c60c12a6c0b62c9d9804369fec8b",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B7.TIF": "67d5ac7ce0e67a327f04f0a690169af7d4b02e97c90598beabd8a3ffeb9fdb42",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B14.TIF": "6ce83132aca53c834308e31f49824305743f29664f00ecf11e4b77114d01ba69",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_010_B9_input.tif": "2d9c5b26c7df04558c335101ff69e943ec524573787b4e003aa4af2c3780c904",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_010_input_mask.tif": "b9669682c355d2b9b4eef7bbdeebff9143a4afbe66d2a273aa9365f586777c82",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024144\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1_B9.TIF": "6f2a85362c5af07a9f135ec36d0c2d6924a19afecc0fe8cfa641fdd831e1c391",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024144\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1_B4.TIF": "9b963cc8775821e5654fade40fe6c2014d040e4ab488af0b64eb9a128f16cb65",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024144\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1_B7.TIF": "2a7e2e0d59559fbb14f3a7fa5787455f10b0886b2595c3f248807b3d89b6acde",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024144\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1_B14.TIF": "c1b30cbb5d0bbe44a5cdfc540d95ad76e6b8710a5bff68ae7761ab6293c1d49c",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_011_B9_input.tif": "c93f55209d98f4ac50106f8c6fc285464e8af28b5754bc8fbcf334f7c7a9be50",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_011_input_mask.tif": "93fd0d93cd3b4c58ea93305d004b05ddb39bcb4a925158386a13d5c8219e6e2e",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024150\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1_B9.TIF": "95c54df3101f100175cfac39414f91def0c105dd823cd024c1b996cb1cb6628a",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024150\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1_B4.TIF": "e40a6dc4c24b043417dffb34aaded398a3fe48cba456a52909e2ca8425baed31",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024150\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1_B7.TIF": "5f3407d2996eccee6e7dec7e52fca9a0ed66037093a06561a76513d92f76a6b7",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024150\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1_B14.TIF": "51ad343cb2037c31e26a1d988200ca68ca484a25dc613f0d7e853a0b29cfc7b4",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_012_B9_input.tif": "c39d2ad98c5c94efe8dfc0a5782205604bea8673d1ddc37105293b8a9c466c61",
+        "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_012_input_mask.tif": "eb63418f07f5980b3afab0b1e5624f19e589c3e87714f7b62968653d8e5cdfdf"
+      },
+      "transform_sha256": "0ce6030b4f4254eb9304707cf15a75cdf80fb9fadd6f23c69ff4011924e0d54e",
+      "freeze_manifest_sha256": "b568ffee9095f6731c710dc2dd1e489026d9683f240b3646970bfde6db5dd21e",
+      "freeze_lock_sha256": "acf1019d274fb0d745fec05c40824550bca43ffd8338e2ebb8f64ce35040d639"
+    }
+  },
+  "control": {
+    "scene_index": 6,
+    "scene_id": "DZ01V_L2_E118.8_N29.5_20251214025259_01_T1"
+  },
+  "configurations": [
+    {
+      "day_threshold": 14,
+      "configuration_label": "OFFICIAL_DEFAULT_14_DAY",
+      "pif_count": 15422,
+      "control_scene_index": 6,
+      "bands": {
+        "B9": {
+          "component_count": 6,
+          "components_scene_indices": [
+            [
+              0,
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3,
+              4,
+              5
+            ],
+            [
+              6,
+              8,
+              9
+            ],
+            [
+              7
+            ],
+            [
+              10,
+              11,
+              12
+            ]
+          ],
+          "control_component_scene_indices": [
+            6,
+            8,
+            9
+          ],
+          "control_reachable_count": 3,
+          "effective_edge_count": 8,
+          "edges": [
+            {
+              "scene_i": 0,
+              "scene_j": 1,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 171
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 4,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 202
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 5,
+              "day_gap": 6,
+              "selected_pif_subset_samples": 142
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 8,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 123
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 9,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 201
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 9,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 84
+            },
+            {
+              "scene_i": 10,
+              "scene_j": 11,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 95
+            },
+            {
+              "scene_i": 11,
+              "scene_j": 12,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 204
+            }
+          ],
+          "joint_system": {
+            "unknown_count": 24,
+            "rank": 17,
+            "rank_deficiency": 7,
+            "normal_matrix_condition_number": null,
+            "condition_number_finite": false,
+            "selected_tie_count": 1222,
+            "ties_exceed_unknown_count": true,
+            "full_rank": false
+          },
+          "solvable_without_coefficients": false
+        },
+        "B4": {
+          "component_count": 6,
+          "components_scene_indices": [
+            [
+              0,
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3,
+              4,
+              5
+            ],
+            [
+              6,
+              8,
+              9
+            ],
+            [
+              7
+            ],
+            [
+              10,
+              11,
+              12
+            ]
+          ],
+          "control_component_scene_indices": [
+            6,
+            8,
+            9
+          ],
+          "control_reachable_count": 3,
+          "effective_edge_count": 8,
+          "edges": [
+            {
+              "scene_i": 0,
+              "scene_j": 1,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 181
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 4,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 203
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 5,
+              "day_gap": 6,
+              "selected_pif_subset_samples": 142
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 8,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 151
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 9,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 198
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 9,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 80
+            },
+            {
+              "scene_i": 10,
+              "scene_j": 11,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 89
+            },
+            {
+              "scene_i": 11,
+              "scene_j": 12,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 204
+            }
+          ],
+          "joint_system": {
+            "unknown_count": 24,
+            "rank": 17,
+            "rank_deficiency": 7,
+            "normal_matrix_condition_number": null,
+            "condition_number_finite": false,
+            "selected_tie_count": 1248,
+            "ties_exceed_unknown_count": true,
+            "full_rank": false
+          },
+          "solvable_without_coefficients": false
+        },
+        "B7": {
+          "component_count": 6,
+          "components_scene_indices": [
+            [
+              0,
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3,
+              4,
+              5
+            ],
+            [
+              6,
+              8,
+              9
+            ],
+            [
+              7
+            ],
+            [
+              10,
+              11,
+              12
+            ]
+          ],
+          "control_component_scene_indices": [
+            6,
+            8,
+            9
+          ],
+          "control_reachable_count": 3,
+          "effective_edge_count": 8,
+          "edges": [
+            {
+              "scene_i": 0,
+              "scene_j": 1,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 188
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 4,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 203
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 5,
+              "day_gap": 6,
+              "selected_pif_subset_samples": 149
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 8,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 139
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 9,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 201
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 9,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 98
+            },
+            {
+              "scene_i": 10,
+              "scene_j": 11,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 96
+            },
+            {
+              "scene_i": 11,
+              "scene_j": 12,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 204
+            }
+          ],
+          "joint_system": {
+            "unknown_count": 24,
+            "rank": 17,
+            "rank_deficiency": 7,
+            "normal_matrix_condition_number": null,
+            "condition_number_finite": false,
+            "selected_tie_count": 1278,
+            "ties_exceed_unknown_count": true,
+            "full_rank": false
+          },
+          "solvable_without_coefficients": false
+        },
+        "B14": {
+          "component_count": 6,
+          "components_scene_indices": [
+            [
+              0,
+              1
+            ],
+            [
+              2
+            ],
+            [
+              3,
+              4,
+              5
+            ],
+            [
+              6,
+              8,
+              9
+            ],
+            [
+              7
+            ],
+            [
+              10,
+              11,
+              12
+            ]
+          ],
+          "control_component_scene_indices": [
+            6,
+            8,
+            9
+          ],
+          "control_reachable_count": 3,
+          "effective_edge_count": 8,
+          "edges": [
+            {
+              "scene_i": 0,
+              "scene_j": 1,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 198
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 4,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 199
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 5,
+              "day_gap": 6,
+              "selected_pif_subset_samples": 159
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 8,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 165
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 9,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 204
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 9,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 107
+            },
+            {
+              "scene_i": 10,
+              "scene_j": 11,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 93
+            },
+            {
+              "scene_i": 11,
+              "scene_j": 12,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 204
+            }
+          ],
+          "joint_system": {
+            "unknown_count": 24,
+            "rank": 17,
+            "rank_deficiency": 7,
+            "normal_matrix_condition_number": null,
+            "condition_number_finite": false,
+            "selected_tie_count": 1329,
+            "ties_exceed_unknown_count": true,
+            "full_rank": false
+          },
+          "solvable_without_coefficients": false
+        }
+      },
+      "all_four_bands_solvable": false
+    },
+    {
+      "day_threshold": 30,
+      "configuration_label": "EXPLORATORY_NETWORK_CONNECTIVITY_ONLY_30_DAY",
+      "pif_count": 15422,
+      "control_scene_index": 6,
+      "bands": {
+        "B9": {
+          "component_count": 4,
+          "components_scene_indices": [
+            [
+              0,
+              1,
+              6,
+              8,
+              9,
+              10,
+              11,
+              12
+            ],
+            [
+              2
+            ],
+            [
+              3,
+              4,
+              5
+            ],
+            [
+              7
+            ]
+          ],
+          "control_component_scene_indices": [
+            0,
+            1,
+            6,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "control_reachable_count": 8,
+          "effective_edge_count": 13,
+          "edges": [
+            {
+              "scene_i": 0,
+              "scene_j": 1,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 171
+            },
+            {
+              "scene_i": 1,
+              "scene_j": 6,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 81
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 4,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 202
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 5,
+              "day_gap": 6,
+              "selected_pif_subset_samples": 142
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 8,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 123
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 9,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 201
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 9,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 84
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 10,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 112
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 11,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 118
+            },
+            {
+              "scene_i": 9,
+              "scene_j": 11,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 204
+            },
+            {
+              "scene_i": 9,
+              "scene_j": 12,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 204
+            },
+            {
+              "scene_i": 10,
+              "scene_j": 11,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 95
+            },
+            {
+              "scene_i": 11,
+              "scene_j": 12,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 204
+            }
+          ],
+          "joint_system": {
+            "unknown_count": 24,
+            "rank": 19,
+            "rank_deficiency": 5,
+            "normal_matrix_condition_number": null,
+            "condition_number_finite": false,
+            "selected_tie_count": 1941,
+            "ties_exceed_unknown_count": true,
+            "full_rank": false
+          },
+          "solvable_without_coefficients": false
+        },
+        "B4": {
+          "component_count": 4,
+          "components_scene_indices": [
+            [
+              0,
+              1,
+              6,
+              8,
+              9,
+              10,
+              11,
+              12
+            ],
+            [
+              2
+            ],
+            [
+              3,
+              4,
+              5
+            ],
+            [
+              7
+            ]
+          ],
+          "control_component_scene_indices": [
+            0,
+            1,
+            6,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "control_reachable_count": 8,
+          "effective_edge_count": 13,
+          "edges": [
+            {
+              "scene_i": 0,
+              "scene_j": 1,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 181
+            },
+            {
+              "scene_i": 1,
+              "scene_j": 6,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 103
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 4,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 203
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 5,
+              "day_gap": 6,
+              "selected_pif_subset_samples": 142
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 8,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 151
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 9,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 198
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 9,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 80
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 10,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 109
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 11,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 133
+            },
+            {
+              "scene_i": 9,
+              "scene_j": 11,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 203
+            },
+            {
+              "scene_i": 9,
+              "scene_j": 12,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 204
+            },
+            {
+              "scene_i": 10,
+              "scene_j": 11,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 89
+            },
+            {
+              "scene_i": 11,
+              "scene_j": 12,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 204
+            }
+          ],
+          "joint_system": {
+            "unknown_count": 24,
+            "rank": 19,
+            "rank_deficiency": 5,
+            "normal_matrix_condition_number": null,
+            "condition_number_finite": false,
+            "selected_tie_count": 2000,
+            "ties_exceed_unknown_count": true,
+            "full_rank": false
+          },
+          "solvable_without_coefficients": false
+        },
+        "B7": {
+          "component_count": 4,
+          "components_scene_indices": [
+            [
+              0,
+              1,
+              6,
+              8,
+              9,
+              10,
+              11,
+              12
+            ],
+            [
+              2
+            ],
+            [
+              3,
+              4,
+              5
+            ],
+            [
+              7
+            ]
+          ],
+          "control_component_scene_indices": [
+            0,
+            1,
+            6,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "control_reachable_count": 8,
+          "effective_edge_count": 13,
+          "edges": [
+            {
+              "scene_i": 0,
+              "scene_j": 1,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 188
+            },
+            {
+              "scene_i": 1,
+              "scene_j": 6,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 84
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 4,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 203
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 5,
+              "day_gap": 6,
+              "selected_pif_subset_samples": 149
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 8,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 139
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 9,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 201
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 9,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 98
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 10,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 103
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 11,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 133
+            },
+            {
+              "scene_i": 9,
+              "scene_j": 11,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 204
+            },
+            {
+              "scene_i": 9,
+              "scene_j": 12,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 204
+            },
+            {
+              "scene_i": 10,
+              "scene_j": 11,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 96
+            },
+            {
+              "scene_i": 11,
+              "scene_j": 12,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 204
+            }
+          ],
+          "joint_system": {
+            "unknown_count": 24,
+            "rank": 19,
+            "rank_deficiency": 5,
+            "normal_matrix_condition_number": null,
+            "condition_number_finite": false,
+            "selected_tie_count": 2006,
+            "ties_exceed_unknown_count": true,
+            "full_rank": false
+          },
+          "solvable_without_coefficients": false
+        },
+        "B14": {
+          "component_count": 4,
+          "components_scene_indices": [
+            [
+              0,
+              1,
+              6,
+              8,
+              9,
+              10,
+              11,
+              12
+            ],
+            [
+              2
+            ],
+            [
+              3,
+              4,
+              5
+            ],
+            [
+              7
+            ]
+          ],
+          "control_component_scene_indices": [
+            0,
+            1,
+            6,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "control_reachable_count": 8,
+          "effective_edge_count": 13,
+          "edges": [
+            {
+              "scene_i": 0,
+              "scene_j": 1,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 198
+            },
+            {
+              "scene_i": 1,
+              "scene_j": 6,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 96
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 4,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 199
+            },
+            {
+              "scene_i": 3,
+              "scene_j": 5,
+              "day_gap": 6,
+              "selected_pif_subset_samples": 159
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 8,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 165
+            },
+            {
+              "scene_i": 6,
+              "scene_j": 9,
+              "day_gap": 1,
+              "selected_pif_subset_samples": 204
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 9,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 107
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 10,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 109
+            },
+            {
+              "scene_i": 8,
+              "scene_j": 11,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 156
+            },
+            {
+              "scene_i": 9,
+              "scene_j": 11,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 204
+            },
+            {
+              "scene_i": 9,
+              "scene_j": 12,
+              "day_gap": 30,
+              "selected_pif_subset_samples": 204
+            },
+            {
+              "scene_i": 10,
+              "scene_j": 11,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 93
+            },
+            {
+              "scene_i": 11,
+              "scene_j": 12,
+              "day_gap": 0,
+              "selected_pif_subset_samples": 204
+            }
+          ],
+          "joint_system": {
+            "unknown_count": 24,
+            "rank": 19,
+            "rank_deficiency": 5,
+            "normal_matrix_condition_number": null,
+            "condition_number_finite": false,
+            "selected_tie_count": 2098,
+            "ties_exceed_unknown_count": true,
+            "full_rank": false
+          },
+          "solvable_without_coefficients": false
+        }
+      },
+      "all_four_bands_solvable": false
+    }
+  ],
+  "guardrails": {
+    "thresholds_tested_only": [
+      14,
+      30
+    ],
+    "30_day_is_exploratory_network_connectivity_only": true,
+    "threshold_selected_using_mae": false,
+    "full_resolution_corrected_geotiffs_generated": false,
+    "formal_benchmark_scoring_performed": false,
+    "official_reference_coefficient_investigation_performed": false,
+    "coefficients_emitted": false,
+    "frozen_inputs_or_masks_modified": false,
+    "three_scene_outputs_modified": false
+  },
+  "cloud_trial_recommendation": "NOT_SUITABLE_YET"
+}

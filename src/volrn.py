@@ -50,6 +50,44 @@ class BlockPairInfo:
     grid_n: int
 
 
+def _validate_north_up_aligned_transforms(transforms: List, tol: float = 1e-8) -> None:
+    """Require all VOLRN inputs to use one aligned north-up pixel lattice.
+
+    Scheme A performs the geometric warp before BAGRN/VOLRN.  VOLRN's
+    separable row/column IDW coordinate construction is valid only after that
+    warp, so rotated/sheared or sub-pixel-shifted grids are rejected here.
+    """
+    if not transforms:
+        return
+
+    ref = transforms[0]
+    if abs(ref.b) > tol or abs(ref.d) > tol:
+        raise ValueError("VOLRN requires north-up registered rasters (b=d=0)")
+    if ref.a <= 0 or ref.e >= 0:
+        raise ValueError("VOLRN north-up grid must have a>0 and e<0")
+
+    res_x = float(ref.a)
+    res_y = float(abs(ref.e))
+    for idx, tr in enumerate(transforms):
+        if abs(tr.b) > tol or abs(tr.d) > tol:
+            raise ValueError(
+                f"VOLRN requires north-up registered rasters (b=d=0); "
+                f"scene {idx} has b={tr.b}, d={tr.d}"
+            )
+        if not np.isclose(tr.a, ref.a, rtol=0.0, atol=tol) or not np.isclose(tr.e, ref.e, rtol=0.0, atol=tol):
+            raise ValueError("VOLRN requires identical x/y resolution on all registered rasters")
+
+        col_offset = (tr.c - ref.c) / res_x
+        row_offset = (ref.f - tr.f) / res_y
+        if not np.isclose(col_offset, round(col_offset), rtol=0.0, atol=1e-7) or not np.isclose(
+            row_offset, round(row_offset), rtol=0.0, atol=1e-7
+        ):
+            raise ValueError(
+                f"VOLRN requires one aligned north-up pixel lattice; scene {idx} "
+                "has a sub-pixel origin offset"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Step 2.3.1: 图像分块
 # ---------------------------------------------------------------------------
@@ -70,17 +108,30 @@ def _pixel_window_from_bounds(
     transform,
     img_shape: Tuple[int, int],
 ) -> Optional[Tuple[int, int, int, int]]:
-    """根据地理包围盒，计算在影像中的像素窗口。"""
+    """根据地理包围盒，计算在影像中的像素窗口。
+
+    使用全部四个地理角点转换为像素坐标，正确处理 affine
+    旋转/剪切/缩放变换。
+    """
     rows, cols = img_shape
     left, bottom, right, top = geo_bounds
 
-    c_min, r_min = ~transform * (left, top)
-    c_max, r_max = ~transform * (right, bottom)
+    # All four geographic corners
+    geo_corners = [
+        (left, top),
+        (right, top),
+        (left, bottom),
+        (right, bottom),
+    ]
+    # Convert to pixel coordinates
+    pixel_corners = [~transform * p for p in geo_corners]
+    all_cols = [p[0] for p in pixel_corners]
+    all_rows = [p[1] for p in pixel_corners]
 
-    r_s = max(0, int(np.floor(min(r_min, r_max))))
-    r_e = min(rows, int(np.ceil(max(r_min, r_max))))
-    c_s = max(0, int(np.floor(min(c_min, c_max))))
-    c_e = min(cols, int(np.ceil(max(c_min, c_max))))
+    r_s = max(0, int(np.floor(min(all_rows))))
+    r_e = min(rows, int(np.ceil(max(all_rows))))
+    c_s = max(0, int(np.floor(min(all_cols))))
+    c_e = min(cols, int(np.ceil(max(all_cols))))
 
     if r_e <= r_s or c_e <= c_s:
         return None
@@ -94,10 +145,32 @@ def image_blocking(
     nodata_values: List[Optional[float]],
     block_size: int,
     bands: List[int],
+    cloud_masks: Optional[List[np.ndarray]] = None,
+    valid_masks: Optional[List[np.ndarray]] = None,
 ) -> Tuple[List[BlockInfo], List[BlockPairInfo]]:
     """
     对所有影像进行规则网格分块（Section 2.3.1）。
     """
+    if cloud_masks is not None:
+        if len(cloud_masks) != len(arrays):
+            raise ValueError("cloud_masks length must match arrays length")
+        for idx, (arr, cm) in enumerate(zip(arrays, cloud_masks)):
+            if np.asarray(cm).shape != arr.shape[1:]:
+                raise ValueError(
+                    f"cloud mask {idx} shape {np.asarray(cm).shape} != "
+                    f"array spatial shape {arr.shape[1:]}"
+                )
+
+    if valid_masks is not None:
+        if len(valid_masks) != len(arrays):
+            raise ValueError("valid_masks length must match arrays length")
+        for idx, (arr, vm) in enumerate(zip(arrays, valid_masks)):
+            if np.asarray(vm).shape not in (arr.shape[1:], arr.shape):
+                raise ValueError(
+                    f"valid mask {idx} shape {np.asarray(vm).shape} != "
+                    f"array spatial shape {arr.shape[1:]}"
+                )
+
     left, bottom, right, top = _compute_combined_bounds(bounds_list)
     width_geo = right - left
     height_geo = top - bottom
@@ -155,10 +228,21 @@ def image_blocking(
 
                 for b_idx, band in enumerate(bands):
                     patch = arr[band, r_s:r_e, c_s:c_e]
-                    if nd is not None:
+                    if valid_masks is not None:
+                        mask = np.asarray(valid_masks[img_idx], dtype=bool)
+                        if mask.ndim == 3:
+                            mask = mask[band]
+                        # Copy before applying the cloud exclusion so the
+                        # scientific output-valid mask is not mutated.
+                        valid = mask[r_s:r_e, c_s:c_e].copy()
+                        valid &= np.isfinite(patch)
+                    elif nd is not None:
                         valid = (patch != nd) & np.isfinite(patch)
                     else:
                         valid = np.isfinite(patch)
+                    if cloud_masks is not None:
+                        cloud_patch = cloud_masks[img_idx][r_s:r_e, c_s:c_e]
+                        valid &= ~np.asarray(cloud_patch, dtype=bool)
 
                     block_mask[b_idx] = valid
                     if valid.sum() > 0:
@@ -283,6 +367,51 @@ def _soft_threshold(v: np.ndarray, kappa: float) -> np.ndarray:
     return np.sign(v) * np.maximum(np.abs(v) - kappa, 0.0)
 
 
+def build_jacobi_preconditioner(
+    matrix: sparse.spmatrix, eps_scale: float = 1e-12
+) -> LinearOperator:
+    """Build an objective-preserving diagonal inverse for an SPD system."""
+    diagonal = np.asarray(matrix.diagonal(), dtype=np.float64)
+    if diagonal.size == 0 or not np.isfinite(diagonal).all():
+        raise ValueError("preconditioner matrix diagonal must be finite and non-empty")
+    scale = max(1.0, float(np.max(np.abs(diagonal))))
+    floor = float(eps_scale) * scale
+    inverse = np.ones_like(diagonal)
+    usable = np.abs(diagonal) > floor
+    inverse[usable] = 1.0 / diagonal[usable]
+    inverse[~np.isfinite(inverse)] = 1.0
+    return LinearOperator(
+        matrix.shape,
+        matvec=lambda vector: inverse * np.asarray(vector, dtype=np.float64),
+        rmatvec=lambda vector: inverse * np.asarray(vector, dtype=np.float64),
+        dtype=np.float64,
+    )
+
+
+def _adaptive_rho_update(
+    rho: float,
+    primal_residual: float,
+    dual_residual: float,
+    *,
+    mu: float = 10.0,
+    tau_increase: float = 2.0,
+    tau_decrease: float = 2.0,
+    rho_min: float = 1e-4,
+    rho_max: float = 1e4,
+) -> float:
+    """Standard residual-balancing ADMM penalty update."""
+    if primal_residual > mu * dual_residual:
+        return min(float(rho) * tau_increase, rho_max)
+    if dual_residual > mu * primal_residual:
+        return max(float(rho) / tau_decrease, rho_min)
+    return float(rho)
+
+
+def _rescale_scaled_dual(u: np.ndarray, rho_old: float, rho_new: float) -> np.ndarray:
+    """Keep the unscaled dual rho*u invariant when rho changes."""
+    return np.asarray(u, dtype=np.float64) * (float(rho_old) / float(rho_new))
+
+
 def _admm_solver(
     B: sparse.csr_matrix,
     A: sparse.csr_matrix,
@@ -292,10 +421,30 @@ def _admm_solver(
     max_iter: int = 200,
     tol: float = 1e-4,
     verbose: bool = False,
+    return_diagnostics: bool = False,
+    use_preconditioner: bool = False,
+    adaptive_rho: bool = False,
+    rho_mu: float = 10.0,
+    rho_tau_increase: float = 2.0,
+    rho_tau_decrease: float = 2.0,
+    rho_min: float = 1e-4,
+    rho_max: float = 1e4,
 ) -> Tuple[np.ndarray, bool, int]:
     """
     用 ADMM 求解变分模型（Eq.30-33）。
+
+    ``tol`` is used as both the absolute and relative residual tolerance in
+    the standard ADMM stopping rules.  The legacy three-value return is kept
+    for callers that do not request diagnostics; the VOLRN public pipeline
+    requests the fourth diagnostics value explicitly.
     """
+    if rho <= 0:
+        raise ValueError("rho must be > 0")
+    if lambda_param < 0:
+        raise ValueError("lambda_param must be >= 0")
+    if tol <= 0:
+        raise ValueError("tol must be > 0")
+
     n_vars = B.shape[1]
     n_eqs_A = A.shape[0]
 
@@ -307,29 +456,166 @@ def _admm_solver(
     BtB = B.T @ B
     AtA = A.T @ A
     At = A.T
-    M = BtB + rho * AtA
-    M = M.tocsr()
+    def _system(current_rho: float):
+        matrix = (BtB + current_rho * AtA).tocsr()
+        preconditioner = build_jacobi_preconditioner(matrix) if use_preconditioner else None
+        return matrix, preconditioner
+
+    rho_initial = float(rho)
+    M, preconditioner = _system(rho)
 
     converged = False
+    cg_failed = False
+    finite_state = True
+    failure_reason = None
+    cg_status_history = []
+    primal_history = []
+    dual_history = []
+    objective_history = []
+    x_change_history = []
+    history = []
+    primal_residual = np.inf
+    dual_residual = np.inf
+    primal_tolerance = np.inf
+    dual_tolerance = np.inf
+    x_relative_change = np.inf
+    n_iters = 0
+    rho_history = []
+    rho_change_count = 0
+    objective_start = None
+    relative_objective_change = np.inf
+    last_cg_residual = np.inf
+
     for it in range(max_iter):
         rhs = rho * (At @ (z - u + b))
-        x_new, cg_info = cg(M, rhs, x0=x, rtol=1e-6, maxiter=500, atol=1e-10)
+        cg_iterations = 0
+
+        def _count_cg_iteration(xk):
+            nonlocal cg_iterations
+            cg_iterations += 1
+
+        x_new, cg_info = cg(
+            M,
+            rhs,
+            x0=x,
+            rtol=1e-6,
+            maxiter=500,
+            atol=1e-10,
+            callback=_count_cg_iteration,
+            M=preconditioner,
+        )
+        cg_info = int(cg_info)
+        cg_status_history.append(cg_info)
+        if cg_info != 0:
+            cg_failed = True
         if cg_info != 0 and verbose:
             print(f"  [警告] CG 未收敛 (info={cg_info})，迭代 {it+1}")
+
+        if not np.isfinite(x_new).all():
+            finite_state = False
+            failure_reason = "NONFINITE_X"
+            if verbose:
+                print(f"  [警告] ADMM 产生非有限 x，保留上一个有限迭代，迭代 {it+1}")
+            n_iters = it + 1
+            break
 
         Az_minus_b = A @ x_new - b
         z_new = _soft_threshold(Az_minus_b + u, lambda_param / rho)
         u_new = u + Az_minus_b - z_new
 
         x_diff = np.linalg.norm(x_new - x) / (np.linalg.norm(x) + 1e-12)
-        if x_diff < tol:
+        primal_vec = Az_minus_b - z_new
+        dual_vec = rho * (At @ (z_new - z))
+        primal_residual = float(np.linalg.norm(primal_vec))
+        dual_residual = float(np.linalg.norm(dual_vec))
+        primal_tolerance = float(
+            np.sqrt(n_eqs_A) * tol
+            + tol * max(np.linalg.norm(Az_minus_b), np.linalg.norm(z_new))
+        )
+        dual_tolerance = float(
+            np.sqrt(n_vars) * tol + tol * np.linalg.norm(rho * (At @ u_new))
+        )
+        objective = float(
+            0.5 * np.linalg.norm(B @ x_new) ** 2
+            + lambda_param * np.linalg.norm(A @ x_new - b, ord=1)
+        )
+        if not np.isfinite(
+            [primal_residual, dual_residual, primal_tolerance, dual_tolerance, objective, x_diff]
+        ).all():
+            finite_state = False
+            failure_reason = "NONFINITE_DIAGNOSTICS"
+            n_iters = it + 1
+            break
+
+        previous_objective = objective_history[-1] if objective_history else None
+        primal_history.append(primal_residual)
+        dual_history.append(dual_residual)
+        x_change_history.append(float(x_diff))
+        z_update_norm = float(np.linalg.norm(z_new - z))
+        dual_update_norm = float(np.linalg.norm(u_new - u))
+        cg_residual = float(np.linalg.norm(M @ x_new - rhs))
+        last_cg_residual = cg_residual
+        if objective_start is None:
+            objective_start = objective
+        elif previous_objective is not None:
+            relative_objective_change = abs(objective - previous_objective) / (abs(previous_objective) + 1e-12)
+        objective_history.append(objective)
+        rho_changed = False
+        current_rho = float(rho)
+        if adaptive_rho:
+            proposed_rho = _adaptive_rho_update(
+                rho, primal_residual, dual_residual, mu=rho_mu,
+                tau_increase=rho_tau_increase, tau_decrease=rho_tau_decrease,
+                rho_min=rho_min, rho_max=rho_max,
+            )
+            rho_changed = not np.isclose(proposed_rho, rho, rtol=0.0, atol=0.0)
+            if rho_changed:
+                rho_old = rho
+                rho = proposed_rho
+                u_new = _rescale_scaled_dual(u_new, rho_old, rho)
+                M, preconditioner = _system(rho)
+                rho_change_count += 1
+        history.append({
+            "iteration": int(it + 1),
+            "objective": objective,
+            "primal_residual": primal_residual,
+            "dual_residual": dual_residual,
+            "primal_tolerance": primal_tolerance,
+            "dual_tolerance": dual_tolerance,
+            "primal_ratio": float(primal_residual / max(primal_tolerance, 1e-12)),
+            "dual_ratio": float(dual_residual / max(dual_tolerance, 1e-12)),
+            "x_update_norm": float(np.linalg.norm(x_new - x)),
+            "z_update_norm": z_update_norm,
+            "dual_update_norm": dual_update_norm,
+            "cg_iterations": int(cg_iterations),
+            "cg_residual": cg_residual,
+            "relative_change": float(x_diff),
+            "cg_info": cg_info,
+            "cg_final_residual_norm": cg_residual,
+            "preconditioner_type": "jacobi" if use_preconditioner else "none",
+            "rho": current_rho,
+            "rho_changed": bool(rho_changed),
+            "finite_state": True,
+        })
+        rho_history.append(float(current_rho))
+        n_iters = it + 1
+
+        # ADMM convergence requires both standard primal and dual residuals;
+        # x-relative-change alone is not a valid stopping rule.
+        if (
+            primal_residual <= primal_tolerance
+            and dual_residual <= dual_tolerance
+            and not cg_failed
+        ):
             if verbose:
-                print(f"ADMM 收敛于迭代 {it + 1}, rel_diff={x_diff:.2e}")
+                print(
+                    f"ADMM 收敛于迭代 {it + 1}, "
+                    f"r={primal_residual:.2e}, s={dual_residual:.2e}"
+                )
             x = x_new
             z = z_new
             u = u_new
             converged = True
-            n_iters = it + 1
             break
 
         x = x_new
@@ -338,8 +624,65 @@ def _admm_solver(
     else:
         if verbose:
             print(f"ADMM 达到最大迭代 {max_iter}")
-        n_iters = max_iter
 
+    if n_iters > 0 and x_change_history:
+        x_relative_change = x_change_history[-1]
+    elif max_iter == 0:
+        x_relative_change = 0.0
+
+    diagnostics = {
+        "iterations": int(n_iters),
+        "primal_residual": float(primal_residual),
+        "dual_residual": float(dual_residual),
+        "primal_tolerance": float(primal_tolerance),
+        "dual_tolerance": float(dual_tolerance),
+        "objective": float(objective_history[-1]) if objective_history else float(
+            0.5 * np.linalg.norm(B @ x) ** 2
+            + lambda_param * np.linalg.norm(A @ x - b, ord=1)
+        ),
+        "x_relative_change": float(x_relative_change),
+        "primal_residual_history": primal_history,
+        "dual_residual_history": dual_history,
+        "objective_history": objective_history,
+        "x_relative_change_history": x_change_history,
+        "history": history,
+        "cg_status_history": cg_status_history,
+        "cg_failed": bool(cg_failed),
+        "cg_failed_any": bool(cg_failed),
+        "cg_final_residual_norm": float(last_cg_residual),
+        "preconditioner_type": "jacobi" if use_preconditioner else "none",
+        "rho_mode": "adaptive" if adaptive_rho else "fixed",
+        "rho_initial": float(rho_initial),
+        "rho_final": float(rho),
+        "rho_history": rho_history,
+        "rho_change_count": int(rho_change_count),
+        "rho_min_observed": float(min(rho_history)) if rho_history else float(rho_initial),
+        "rho_max_observed": float(max(rho_history)) if rho_history else float(rho_initial),
+        "objective_start": float(objective_start) if objective_start is not None else None,
+        "objective_end": float(objective_history[-1]) if objective_history else None,
+        "relative_objective_change": float(relative_objective_change),
+        "finite_state": bool(finite_state and np.isfinite(x).all()),
+        "failure_reason": failure_reason,
+        "converged": bool(converged),
+        "strict_admm_converged": bool(converged),
+        "coefficient_stable": bool(
+            finite_state and np.isfinite(x_relative_change) and x_relative_change <= 1e-4
+        ),
+        "science_pass": bool(
+            converged and not cg_failed and finite_state and np.isfinite(x).all()
+        ),
+    }
+    if not diagnostics["finite_state"] or diagnostics["cg_failed_any"]:
+        diagnostics["science_status"] = "NUMERICAL_INVALID"
+    elif diagnostics["strict_admm_converged"]:
+        diagnostics["science_status"] = "STRICT_ADMM_CONVERGED"
+    elif diagnostics["coefficient_stable"]:
+        diagnostics["science_status"] = "STABLE_BUT_STRICT_NONCONVERGED"
+    else:
+        diagnostics["science_status"] = "NONCONVERGED_AFTER_ALIGNMENT"
+
+    if return_diagnostics:
+        return x, converged, n_iters, diagnostics
     return x, converged, n_iters
 
 
@@ -503,6 +846,7 @@ def _interpolate_and_apply(
     transforms: List,
     bounds_list: List[Tuple[float, float, float, float]],
     bands: List[int],
+    valid_masks: Optional[List[np.ndarray]] = None,
 ) -> List[np.ndarray]:
     """
     逐波段 IDW 插值并应用 f' = a*f + b。
@@ -578,7 +922,12 @@ def _interpolate_and_apply(
 
             # 应用 f' = a*f + b，仅对有效像素
             val = result[band]
-            if nd is not None:
+            if valid_masks is not None:
+                mask = np.asarray(valid_masks[img_idx], dtype=bool)
+                if mask.ndim == 3:
+                    mask = mask[b_idx]
+                valid = mask & np.isfinite(val)
+            elif nd is not None:
                 valid = (val != nd) & np.isfinite(val)
             else:
                 valid = np.isfinite(val)
@@ -607,6 +956,10 @@ def volrn_normalize(
     tol: float = 1e-4,
     verbose: bool = False,
     return_diagnostics: bool = False,
+    cloud_masks: Optional[List[np.ndarray]] = None,
+    valid_masks: Optional[List[np.ndarray]] = None,
+    use_preconditioner: bool = False,
+    adaptive_rho: bool = False,
 ) -> Tuple[List[np.ndarray], np.ndarray]:
     """
     VOLRN 局部辐射归一化主函数。
@@ -637,65 +990,67 @@ def volrn_normalize(
             return [], np.array([]), {}
         return [], np.array([])
 
+    _validate_north_up_aligned_transforms(transforms)
+
+    if cloud_masks is not None:
+        if len(cloud_masks) != len(arrays):
+            raise ValueError("cloud_masks length must match arrays length")
+        for idx, (arr, cm) in enumerate(zip(arrays, cloud_masks)):
+            if np.asarray(cm).shape != arr.shape[1:]:
+                raise ValueError(
+                    f"cloud mask {idx} shape {np.asarray(cm).shape} != "
+                    f"array spatial shape {arr.shape[1:]}"
+                    )
+
+    if valid_masks is not None:
+        if len(valid_masks) != len(arrays):
+            raise ValueError("valid_masks length must match arrays length")
+        for idx, (arr, vm) in enumerate(zip(arrays, valid_masks)):
+            if np.asarray(vm).shape != arr.shape[1:]:
+                raise ValueError(
+                    f"valid mask {idx} shape {np.asarray(vm).shape} != "
+                    f"array spatial shape {arr.shape[1:]}"
+                )
+
     n_bands = arrays[0].shape[0]
     bands = list(range(n_bands))
 
-    # ---- Step 0: 同波段共同缩放归一化 ----
-    # 关键修复：所有影像的同一波段使用相同的 vmin 和 scale，
-    # 不能逐影像各自计算，否则会破坏 BAGRN 已建立的共同辐射尺度。
-    common_ranges = []  # 每个波段的 (vmin, scale)
-    for b_idx in range(n_bands):
-        all_valid_vals = []
-        for img_idx, arr in enumerate(arrays):
-            nd = nodata_values[img_idx]
-            patch = arr[b_idx]
-            if nd is not None:
-                valid = (patch != nd) & np.isfinite(patch)
-            else:
-                valid = np.isfinite(patch)
-            if valid.any():
-                all_valid_vals.append(patch[valid])
-        if all_valid_vals:
-            all_vals = np.concatenate(all_valid_vals)
-            vmin = float(np.percentile(all_vals, 1))
-            vmax = float(np.percentile(all_vals, 99))
-            scale = vmax - vmin
-            if scale < 1e-10:
-                scale = 1.0
-        else:
-            vmin, scale = 0.0, 1.0
-        common_ranges.append((vmin, scale))
+    # ---- Step 0: 保持论文目标函数的原始辐射单位 ----
+    # 目标函数是 0.5||Bx||_2^2 + lambda||Ax-b||_1。此前的 1%--99%
+    # 公共缩放会分别改变二次项和 L1 项的相对权重；在没有同步推导
+    # lambda/rho 变换时不能宣称与该目标函数等价，因此严格 baseline
+    # 不做全局百分位缩放。保留单位范围结构仅用于兼容后面的输出代码。
+    common_ranges = [(0.0, 1.0) for _ in range(n_bands)]
 
-    if verbose:
-        for b_idx in range(n_bands):
-            vmin, scale = common_ranges[b_idx]
-            print(f"  波段 {b_idx}: 公共范围 [{vmin:.1f}, {vmin+scale:.1f}], scale={scale:.1f}")
-
-    # 归一化所有影像，同时保护 NoData
+    # 转为 float64 求解，同时保护 NoData；有效 DN 值保持原始数值。
     norm_arrays = []
     nodata_masks = []  # 保存每幅影像每个波段的有效掩膜
+    explicit_valid_masks = []
     for img_idx, arr in enumerate(arrays):
         nd = nodata_values[img_idx]
         arr_norm = np.zeros_like(arr, dtype=np.float64)
         img_masks = np.zeros((n_bands, arr.shape[1], arr.shape[2]), dtype=bool)
         for b_idx in range(n_bands):
-            vmin, scale = common_ranges[b_idx]
             patch = arr[b_idx].astype(np.float64)
-            if nd is not None:
+            if valid_masks is not None:
+                valid = np.asarray(valid_masks[img_idx], dtype=bool) & np.isfinite(patch)
+            elif nd is not None:
                 valid = (patch != nd) & np.isfinite(patch)
             else:
                 valid = np.isfinite(patch)
             img_masks[b_idx] = valid
-            # 有效像素归一化，无效像素设为 0（后续不参与计算）
-            arr_norm[b_idx, valid] = (patch[valid] - vmin) / scale
+            # 有效像素保持原始辐射单位，无效像素设为 NaN（不参与统计）
+            arr_norm[b_idx, valid] = patch[valid]
             arr_norm[b_idx, ~valid] = np.nan
         norm_arrays.append(arr_norm)
         nodata_masks.append(img_masks)
+        explicit_valid_masks.append(img_masks)
 
     # ---- Step 1: 图像分块 ----
     blocks, pairs = image_blocking(
-        norm_arrays, transforms, bounds_list, nodata_values,
-        block_size_pixels, bands,
+        norm_arrays, transforms, bounds_list, [None] * len(norm_arrays),
+        block_size_pixels, bands, cloud_masks=cloud_masks,
+        valid_masks=explicit_valid_masks,
     )
 
     if len(blocks) == 0 or len(pairs) == 0:
@@ -722,22 +1077,32 @@ def volrn_normalize(
     all_x = np.zeros((n_bands, n_coeffs))
     band_converged = np.zeros(n_bands, dtype=bool)
     band_iterations = np.zeros(n_bands, dtype=int)
+    solver_diagnostics = []
 
     for b_idx, band in enumerate(bands):
         B, A, b_vec, mu_scale = _build_volrn_system(blocks, pairs, b_idx)
 
         if verbose:
-            print(f"  波段 {band}: μ_scale={mu_scale:.3f} (归一化后), λ={lambda_param}, ρ={rho}")
+            print(f"  波段 {band}: μ_scale={mu_scale:.3f} (原始单位), λ={lambda_param}, ρ={rho}")
 
-        x, converged, n_iters = _admm_solver(B, A, b_vec, lambda_param, rho, max_iter, tol, verbose)
+        x, converged, n_iters, solver_diag = _admm_solver(
+            B,
+            A,
+            b_vec,
+            lambda_param,
+            rho,
+            max_iter,
+            tol,
+            verbose,
+            return_diagnostics=True,
+            use_preconditioner=use_preconditioner,
+            adaptive_rho=adaptive_rho,
+        )
         band_converged[b_idx] = converged
         band_iterations[b_idx] = n_iters
-        if not converged:
-            if verbose:
-                print(f"  波段 {band}: ADMM 未收敛，使用单位变换")
-            x = np.zeros(n_coeffs)
-            x[0::2] = 1.0
-            x[1::2] = 0.0
+        # 非收敛时保留最后有限解，供诊断和诚实的 COMPLETED_NONCONVERGED
+        # 状态传播；绝不静默替换为 identity。
+        solver_diagnostics.append(solver_diag)
         all_x[b_idx, :] = x
 
     all_converged = bool(band_converged.all())
@@ -748,9 +1113,10 @@ def volrn_normalize(
     results = _interpolate_and_apply(
         norm_arrays, nodata_values, blocks, all_x,
         block_size_pixels, transforms, bounds_list, bands,
+        valid_masks=explicit_valid_masks,
     )
 
-    # ---- Step 6: 反归一化回原始数据范围 ----
+    # ---- Step 6: 输出仍处于原始辐射单位 ----
     for img_idx in range(len(results)):
         for b_idx in range(n_bands):
             vmin, scale = common_ranges[b_idx]
@@ -812,6 +1178,7 @@ def volrn_normalize(
             'all_converged': all_converged,
             'band_converged': band_converged.tolist(),
             'band_iterations': band_iterations.tolist(),
+            'band_solver_diagnostics': solver_diagnostics,
             'block_details': diag_blocks,
         }
         return results, block_coeffs, diagnostics

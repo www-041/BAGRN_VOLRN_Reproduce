@@ -1,0 +1,1155 @@
+"""Offline global geometric-adjustment diagnostics for an existing five-scene run.
+
+This module deliberately consumes saved artifacts only.  It never invokes a
+matcher or reconstructs pairwise correspondences from imagery.
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import csv
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+try:
+    import pandas as pd
+except ModuleNotFoundError:  # pragma: no cover - exercised in minimal test envs
+    pd = None
+
+
+class _SimpleLoc:
+    def __init__(self, frame):
+        self._frame = frame
+
+    def __getitem__(self, key):
+        row, column = key
+        return self._frame._rows[row][column]
+
+
+class _SimpleDataFrame:
+    """Small pandas-compatible subset used when pandas is unavailable."""
+
+    def __init__(self, rows: list[dict], columns: list[str]):
+        self._rows = rows
+        self.columns = columns
+        self.loc = _SimpleLoc(self)
+
+    def __getitem__(self, column):
+        return [row[column] for row in self._rows]
+
+    def __len__(self):
+        return len(self._rows)
+
+    def to_dict(self, orient="records"):
+        if orient != "records":
+            raise ValueError("fallback dataframe only supports orient='records'")
+        return [dict(row) for row in self._rows]
+
+    def to_csv(self, path, index=False):
+        if index:
+            raise ValueError("fallback dataframe does not support index output")
+        with open(path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=self.columns)
+            writer.writeheader()
+            writer.writerows(self._rows)
+
+def _read_json(path: Path, default: Any) -> Any:
+    if not path.is_file():
+        return default
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _edge_key(i: int, j: int) -> tuple[int, int]:
+    return min(i, j), max(i, j)
+
+
+def _point_artifact_edges(run_dir: Path) -> set[tuple[int, int]]:
+    """Find edges explicitly represented by stored point-level CSVs.
+
+    A CSV is accepted only when it contains ``edge_i``/``edge_j`` columns.
+    A generic residual CSV without edge identity is intentionally not guessed
+    to belong to an accepted edge.
+    """
+    found: set[tuple[int, int]] = set()
+    for path in run_dir.rglob("*.csv"):
+        try:
+            with path.open("r", newline="", encoding="utf-8") as handle:
+                reader = csv.DictReader(handle)
+                fields = set(reader.fieldnames or ())
+                point_fields = {"point_id", "ref_x", "ref_y", "tgt_x", "tgt_y"}
+                if not {"edge_i", "edge_j"}.issubset(fields) or not point_fields.issubset(fields):
+                    continue
+                for row in reader:
+                    if row.get("edge_i") in (None, "") or row.get("edge_j") in (None, ""):
+                        continue
+                    found.add(_edge_key(int(row["edge_i"]), int(row["edge_j"])))
+        except (OSError, ValueError, UnicodeError):
+            continue
+    return found
+
+
+def discover_five_scene_adjustment_inputs(five_scene_run_dir: str | Path) -> dict:
+    """Audit saved five-scene inputs before any global adjustment.
+
+    The returned manifest is ``READY`` only when every accepted direct edge
+    has explicitly recoverable point-level observations.  Missing point data
+    is a hard stop; this function has no rematching fallback by design.
+    """
+    run_dir = Path(five_scene_run_dir)
+    dataset = _read_json(run_dir / "dataset_manifest.json", {})
+    registration = _read_json(run_dir / "global_registration.json", {})
+    spanning = _read_json(run_dir / "spanning_tree.json", {})
+    pairwise = _read_json(run_dir / "pairwise_summary.json", {})
+    results = pairwise.get("results", []) if isinstance(pairwise, dict) else []
+    accepted = [row for row in results if row.get("status") == "OK"]
+    point_edges = _point_artifact_edges(run_dir)
+
+    accepted_edges = []
+    for row in accepted:
+        i, j = int(row["idx_i"]), int(row["idx_j"])
+        key = _edge_key(i, j)
+        accepted_edges.append(
+            {
+                "edge": [i, j],
+                "status": row.get("status"),
+                "inliers": int(row.get("inliers", 0)),
+                "point_artifact_status": "READY" if key in point_edges else "MISSING",
+            }
+        )
+
+    missing = [row["edge"] for row in accepted_edges if row["point_artifact_status"] == "MISSING"]
+    return {
+        "status": "READY" if not missing else "INSUFFICIENT_EXISTING_ARTIFACTS",
+        "rematch_allowed": False,
+        "run_dir": str(run_dir),
+        "scene_indices": [int(scene["index"]) for scene in dataset.get("scenes", [])],
+        "reference_idx": registration.get("reference_index", spanning.get("reference_index")),
+        "spanning_tree_edges": spanning.get("edges", []),
+        "accepted_edges": accepted_edges,
+        "missing_point_edges": missing,
+    }
+
+
+def write_adjustment_input_manifest(manifest: dict, output_dir: str | Path) -> Path:
+    """Write the Task 0 audit without changing the source run artifacts."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "00_adjustment_input_manifest.json"
+    path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def load_historical_pair_baselines(five_scene_run_dir: str | Path) -> dict:
+    """Freeze the historical pair summary without re-running registration."""
+    run_dir = Path(five_scene_run_dir)
+    summary_path = run_dir / "pairwise_summary.json"
+    if not summary_path.is_file():
+        raise FileNotFoundError(summary_path)
+    payload = _read_json(summary_path, {})
+    rows = payload.get("results", []) if isinstance(payload, dict) else []
+
+    def convert(row: dict) -> dict:
+        i, j = int(row["idx_i"]), int(row["idx_j"])
+        return {
+            "edge": [i, j],
+            "status": row.get("status"),
+            "raw_matches": int(row.get("raw_matches", 0)),
+            "inliers": int(row.get("inliers", 0)),
+            "inlier_ratio": float(row.get("inlier_ratio", 0.0)),
+            "coverage": float(row.get("coverage", 0.0)),
+            "rmse_px": row.get("residual_rmse"),
+            "p95_px": row.get("residual_p95"),
+            "affine_matrix": row.get("pixel_matrix"),
+            "artifact_sources": [str(summary_path)],
+        }
+
+    converted = [convert(row) for row in rows]
+    return {
+        "run_dir": str(run_dir),
+        "source": str(summary_path),
+        "accepted_edges": [row for row in converted if row["status"] == "OK"],
+        "rejected_edges": [row for row in converted if row["status"] != "OK"],
+    }
+
+
+def write_historical_pair_baselines(baselines: dict, output_dir: str | Path) -> Path:
+    """Persist the frozen historical pair baseline artifact."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "00_historical_pair_baselines.json"
+    path.write_text(json.dumps(baselines, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def load_frozen_registration_config(five_scene_run_dir: str | Path) -> dict:
+    """Recover the exact historical registration configuration.
+
+    Values absent from the run manifest are read only from the production
+    call-chain constants and implementations, never from this function's
+    defaults.
+    """
+    run_dir = Path(five_scene_run_dir)
+    config_path = run_dir / "run_config.json"
+    dataset_path = run_dir / "dataset_manifest.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(config_path)
+    if not dataset_path.is_file():
+        raise ValueError("FROZEN_CONFIG_INCOMPLETE: dataset_manifest.json")
+    run_config = _read_json(config_path, {})
+    required_run_keys = {
+        "matcher", "registration_band", "match_max_side", "random_seed",
+        "ransac_threshold",
+    }
+    missing = sorted(key for key in required_run_keys if key not in run_config)
+    if missing:
+        raise ValueError(
+            "FROZEN_CONFIG_INCOMPLETE: missing historical keys " + ", ".join(missing)
+        )
+
+    from src.multiscene_sift.pairwise import (
+        LOWE_RATIO,
+        MIN_INLIER_RATIO,
+        MIN_INLIERS,
+        RANSAC_MAX_TRIALS,
+        SIFT_NFEATURES,
+    )
+
+    dataset = _read_json(dataset_path, {})
+    nodata_by_band: dict[str, list[float | None]] = {}
+    for scene in dataset.get("scenes", []):
+        for band, metadata in scene.get("bands", {}).items():
+            if "nodata" not in metadata:
+                raise ValueError(f"FROZEN_CONFIG_INCOMPLETE: nodata for {band}")
+            value = metadata["nodata"]
+            if value not in nodata_by_band.setdefault(band, []):
+                nodata_by_band[band].append(value)
+
+    return {
+        "matcher": str(run_config["matcher"]).upper(),
+        "registration_band": run_config["registration_band"],
+        "match_max_side": int(run_config["match_max_side"]),
+        "sift_nfeatures": int(SIFT_NFEATURES),
+        "lowe_ratio": float(LOWE_RATIO),
+        "mutual_check": True,
+        "ransac_model": "AffineTransform",
+        "ransac_residual_threshold": float(run_config["ransac_threshold"]),
+        "ransac_max_trials": int(RANSAC_MAX_TRIALS),
+        "minimum_inliers": int(MIN_INLIERS),
+        "minimum_inlier_ratio": float(MIN_INLIER_RATIO),
+        "seed": int(run_config["random_seed"]),
+        "nodata_policy": nodata_by_band,
+        "valid_mask_policy": "nodata exclusion plus finite-value mask",
+        "pair_common_grid_policy": {
+            "resolution": "finer input resolution",
+            "extent": "union extent",
+            "data_resampling": "bilinear",
+            "mask_resampling": "nearest",
+            "match_view": "overlap crop, percentile stretch 2-98, shared max-side resize",
+        },
+        "source_artifacts": [str(config_path), str(dataset_path)],
+        "source_code": [
+            "src/multiscene_sift/pairwise.py",
+            "src/registration_benchmark/matchers/sift.py",
+            "src/registration_benchmark/geometry.py",
+            "src/registration_benchmark/common_grid.py",
+        ],
+    }
+
+
+def write_frozen_registration_config(config: dict, output_dir: str | Path) -> Path:
+    """Persist the frozen registration configuration artifact."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "01_frozen_registration_config.json"
+    path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _transform_points(matrix: np.ndarray, points: np.ndarray) -> np.ndarray:
+    arr = np.asarray(points, dtype=np.float64)
+    homogeneous = np.column_stack([arr, np.ones(len(arr))])
+    mapped = (np.asarray(matrix, dtype=np.float64) @ homogeneous.T).T
+    return mapped[:, :2] / mapped[:, 2:3]
+
+
+def evaluate_edge_point_residuals(
+    global_transforms: dict[int, np.ndarray],
+    edge_observations: dict,
+) -> pd.DataFrame:
+    """Evaluate every saved inlier in the supplied global frame."""
+    rows: list[dict] = []
+    for edge, observation in edge_observations.items():
+        i, j = (int(edge[0]), int(edge[1]))
+        points_i = np.asarray(observation["x_i"], dtype=np.float64)
+        points_j = np.asarray(observation["x_j"], dtype=np.float64)
+        if points_i.shape != points_j.shape or points_i.ndim != 2 or points_i.shape[1] != 2:
+            raise ValueError(f"invalid point arrays for edge {i}-{j}")
+        pair_to_world = np.asarray(
+            observation.get("pair_common_transform", np.eye(3)), dtype=np.float64
+        )
+        global_i = _transform_points(global_transforms[i] @ pair_to_world, points_i)
+        global_j = _transform_points(global_transforms[j] @ pair_to_world, points_j)
+        delta_world = global_i - global_j
+        pixel_size = float(observation.get("pixel_size", 1.0))
+        delta = delta_world / pixel_size
+        errors = np.linalg.norm(delta, axis=1)
+        for point_id, (pi, pj, gi, gj, d, error) in enumerate(
+            zip(points_i, points_j, global_i, global_j, delta, errors)
+        ):
+            rows.append({
+                "edge_i": i, "edge_j": j, "point_id": point_id,
+                "x_i": float(pi[0]), "y_i": float(pi[1]),
+                "x_j": float(pj[0]), "y_j": float(pj[1]),
+                "global_x_i": float(gi[0]), "global_y_i": float(gi[1]),
+                "global_x_j": float(gj[0]), "global_y_j": float(gj[1]),
+                "dx": float(d[0]), "dy": float(d[1]),
+                "residual_px": float(error),
+                "is_tree_edge": bool(observation.get("is_tree_edge", False)),
+            })
+    columns = [
+        "edge_i", "edge_j", "point_id", "x_i", "y_i", "x_j", "y_j",
+        "global_x_i", "global_y_i", "global_x_j", "global_y_j", "dx", "dy",
+        "residual_px", "is_tree_edge",
+    ]
+    if pd is not None:
+        return pd.DataFrame(rows, columns=columns)
+    return _SimpleDataFrame(rows, columns)
+
+
+def _residual_stats(rows: list[dict]) -> dict:
+    errors = np.asarray([row["residual_px"] for row in rows], dtype=np.float64)
+    if errors.size == 0:
+        return {
+            "n_points": 0, "median_px": None, "rmse_px": None, "p95_px": None,
+            "max_px": None, "dx_mean": None, "dy_mean": None,
+        }
+    return {
+        "n_points": int(errors.size),
+        "median_px": float(np.median(errors)),
+        "rmse_px": float(np.sqrt(np.mean(errors ** 2))),
+        "p95_px": float(np.percentile(errors, 95)),
+        "max_px": float(np.max(errors)),
+        "dx_mean": float(np.mean([row["dx"] for row in rows])),
+        "dy_mean": float(np.mean([row["dy"] for row in rows])),
+    }
+
+
+def summarize_network_residuals(
+    point_residuals, *, metric_frame: str = "mst_global_frame"
+) -> dict:
+    """Return point-weighted, edge-balanced, and explicitly split aggregates."""
+    rows = point_residuals.to_dict(orient="records")
+    grouped: dict[tuple[int, int], list[dict]] = {}
+    for row in rows:
+        grouped.setdefault((int(row["edge_i"]), int(row["edge_j"])), []).append(row)
+    edge_summary = []
+    for (i, j), edge_rows in sorted(grouped.items()):
+        stats = _residual_stats(edge_rows)
+        edge_summary.append({"edge_i": i, "edge_j": j,
+                             "is_tree_edge": bool(edge_rows[0]["is_tree_edge"]), **stats})
+
+    def aggregate(selected):
+        selected_rows = [row for edge_rows in selected for row in edge_rows]
+        stats = _residual_stats(selected_rows)
+        selected_stats = [_residual_stats(edge_rows) for edge_rows in selected]
+        rmses = [item["rmse_px"] for item in selected_stats if item["rmse_px"] is not None]
+        p95s = [item["p95_px"] for item in selected_stats if item["p95_px"] is not None]
+        return {
+            **stats,
+            "edge_count": len(selected),
+            "mean_edge_rmse_px": float(np.mean(rmses)) if rmses else None,
+            "mean_edge_p95_px": float(np.mean(p95s)) if p95s else None,
+            "max_edge_rmse_px": float(np.max(rmses)) if rmses else None,
+            "max_edge_p95_px": float(np.max(p95s)) if p95s else None,
+        }
+
+    tree = [edge_rows for edge_rows in grouped.values()
+            if edge_rows[0]["is_tree_edge"]]
+    non_tree = [edge_rows for edge_rows in grouped.values()
+                if not edge_rows[0]["is_tree_edge"]]
+    zero_one = grouped.get((0, 1), [])
+    return {
+        "metric_frame": str(metric_frame),
+        "point_weighted": _residual_stats(rows),
+        "edge_balanced": aggregate(list(grouped.values())),
+        "zero_one": _residual_stats(zero_one),
+        "tree_edges": aggregate(tree),
+        "non_tree_edges": aggregate(non_tree),
+        "per_edge": edge_summary,
+    }
+
+
+def write_mst_residual_artifacts(point_residuals, summary: dict, output_dir: str | Path) -> dict:
+    return _write_residual_artifacts(point_residuals, summary, output_dir, "01_mst")
+
+
+def write_translation_residual_artifacts(point_residuals, summary: dict, output_dir: str | Path) -> dict:
+    return _write_residual_artifacts(point_residuals, summary, output_dir, "05_translation")
+
+
+def write_affine_residual_artifacts(point_residuals, summary: dict, output_dir: str | Path) -> dict:
+    return _write_residual_artifacts(point_residuals, summary, output_dir, "11_affine")
+
+
+def _write_residual_artifacts(point_residuals, summary: dict, output_dir: str | Path, prefix: str) -> dict:
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    point_path = out_dir / f"{prefix}_point_residuals.csv"
+    point_residuals.to_csv(point_path, index=False)
+    edge_path = out_dir / f"{prefix}_edge_summary.csv"
+    with edge_path.open("w", newline="", encoding="utf-8") as handle:
+        rows = summary["per_edge"]
+        fields = ["edge_i", "edge_j", "is_tree_edge", "n_points", "median_px",
+                  "rmse_px", "p95_px", "max_px", "dx_mean", "dy_mean"]
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    network_path = out_dir / f"{prefix}_network_summary.json"
+    network_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"point_residuals": point_path, "edge_summary": edge_path, "network_summary": network_path}
+
+
+def load_mst_global_transforms(path: str | Path) -> dict[int, np.ndarray]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {int(item["scene"]): np.asarray(item["matrix"], dtype=np.float64)
+            for item in payload["transforms"]}
+
+
+def load_frozen_edge_observations(
+    inliers_csv: str | Path,
+    spanning_tree_json: str | Path,
+    dataset_manifest: str | Path | None = None,
+    registration_band: str = "B14",
+) -> dict:
+    tree_payload = json.loads(Path(spanning_tree_json).read_text(encoding="utf-8"))
+    tree_edges = {tuple(sorted((int(item["parent"]), int(item["child"]))))
+                  for item in tree_payload["edges"]}
+    pair_transforms = {}
+    if dataset_manifest is not None:
+        manifest = json.loads(Path(dataset_manifest).read_text(encoding="utf-8"))
+        bounds = {int(scene["index"]): scene["bands"][registration_band]["bounds"]
+                  for scene in manifest["scenes"]}
+        resolution = float(
+            manifest["scenes"][0]["bands"][registration_band]["resolution"][0]
+        )
+        for i, j in {tuple(sorted((int(row["edge_i"]), int(row["edge_j"]))))
+                     for row in csv.DictReader(Path(inliers_csv).open(encoding="utf-8"))}:
+            left = min(bounds[i][0], bounds[j][0])
+            top = max(bounds[i][3], bounds[j][3])
+            pair_transforms[(i, j)] = np.array([
+                [resolution, 0.0, left], [0.0, -resolution, top], [0.0, 0.0, 1.0]
+            ], dtype=np.float64)
+    grouped: dict[tuple[int, int], dict[str, list]] = {}
+    with Path(inliers_csv).open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            edge = (int(row["edge_i"]), int(row["edge_j"]))
+            observation = grouped.setdefault(edge, {"x_i": [], "x_j": []})
+            observation["x_i"].append([float(row["x_i"]), float(row["y_i"])])
+            observation["x_j"].append([float(row["x_j"]), float(row["y_j"])])
+    for edge, observation in grouped.items():
+        observation["x_i"] = np.asarray(observation["x_i"], dtype=np.float64)
+        observation["x_j"] = np.asarray(observation["x_j"], dtype=np.float64)
+        observation["is_tree_edge"] = tuple(sorted(edge)) in tree_edges
+        if pair_transforms:
+            observation["pair_common_transform"] = pair_transforms[tuple(sorted(edge))]
+            observation["pixel_size"] = resolution
+    return grouped
+
+
+def build_translation_adjustment_system(
+    mst_global_transforms: dict[int, np.ndarray],
+    edge_observations: dict,
+    reference_idx: int,
+    weight_mode: str = "equal_edge",
+) -> dict:
+    """Build the unweighted linear system for global-frame node translations."""
+    if reference_idx not in mst_global_transforms:
+        raise ValueError(f"reference scene {reference_idx} is missing from transforms")
+    if weight_mode != "equal_edge":
+        raise ValueError(f"unsupported translation weight mode: {weight_mode}")
+
+    scenes = sorted(int(scene) for scene in mst_global_transforms)
+    unknown_scene_order = [scene for scene in scenes if scene != reference_idx]
+    scene_set = set(scenes)
+    adjacency = {scene: set() for scene in scenes}
+    rows = []
+    rhs = []
+    point_weights = []
+    edge_weight_definition = "each point in edge e has weight 1 / N_e"
+
+    def add_coefficients(row, scene_i, scene_j, sign):
+        if scene_i != reference_idx:
+            row[2 * unknown_scene_order.index(scene_i) + sign] += 1.0
+        if scene_j != reference_idx:
+            row[2 * unknown_scene_order.index(scene_j) + sign] -= 1.0
+
+    for edge, observation in sorted(edge_observations.items()):
+        i, j = int(edge[0]), int(edge[1])
+        if i not in scene_set or j not in scene_set or i == j:
+            raise ValueError(f"invalid edge {i}-{j} for transform scene set")
+        points_i = np.asarray(observation["x_i"], dtype=np.float64)
+        points_j = np.asarray(observation["x_j"], dtype=np.float64)
+        if points_i.shape != points_j.shape or points_i.ndim != 2 or points_i.shape[1] != 2:
+            raise ValueError(f"invalid point arrays for edge {i}-{j}")
+        adjacency[i].add(j)
+        adjacency[j].add(i)
+        pair_to_world = np.asarray(
+            observation.get("pair_common_transform", np.eye(3)), dtype=np.float64
+        )
+        pixel_size = float(observation.get("pixel_size", 1.0))
+        qi = _transform_points(mst_global_transforms[i] @ pair_to_world, points_i) / pixel_size
+        qj = _transform_points(mst_global_transforms[j] @ pair_to_world, points_j) / pixel_size
+        weight = 1.0 / len(points_i) if len(points_i) else 0.0
+        for point_i, point_j in zip(qi, qj):
+            for axis in (0, 1):
+                row = np.zeros(2 * len(unknown_scene_order), dtype=np.float64)
+                add_coefficients(row, i, j, axis)
+                rows.append(row)
+                rhs.append(float(-(point_i[axis] - point_j[axis])))
+                point_weights.append(weight)
+
+    reachable = {reference_idx}
+    frontier = [reference_idx]
+    while frontier:
+        scene = frontier.pop()
+        for neighbour in adjacency[scene]:
+            if neighbour not in reachable:
+                reachable.add(neighbour)
+                frontier.append(neighbour)
+    if reachable != scene_set:
+        raise ValueError(f"translation graph is disconnected from reference {reference_idx}")
+
+    matrix = np.asarray(rows, dtype=np.float64).reshape((-1, 2 * len(unknown_scene_order)))
+    vector = np.asarray(rhs, dtype=np.float64)
+    return {
+        "A": matrix,
+        "b": vector,
+        "point_weights": np.asarray(point_weights, dtype=np.float64)[::2],
+        "unknown_scene_order": unknown_scene_order,
+        "reference_idx": int(reference_idx),
+        "edge_weight_definition": edge_weight_definition,
+        "rank_expectation": 2 * len(unknown_scene_order),
+        "rank": int(np.linalg.matrix_rank(matrix)),
+        "condition_number": float(np.linalg.cond(matrix)) if matrix.size else None,
+    }
+
+
+def write_translation_system_summary(system: dict, output_path: str | Path) -> Path:
+    """Write matrix metadata without embedding the potentially large matrix."""
+    summary = {
+        "unknown_scene_order": system["unknown_scene_order"],
+        "reference_idx": system["reference_idx"],
+        "n_rows": int(system["A"].shape[0]),
+        "n_columns": int(system["A"].shape[1]),
+        "rank": system["rank"],
+        "rank_expectation": system["rank_expectation"],
+        "condition_number": system["condition_number"],
+        "n_points": int(len(system["point_weights"])),
+        "point_weight_sum": float(np.sum(system["point_weights"])),
+        "edge_weight_definition": system["edge_weight_definition"],
+    }
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def solve_translation_adjustment(system: dict) -> dict:
+    """Solve the equal-edge weighted translation correction with least squares."""
+    matrix = np.asarray(system["A"], dtype=np.float64)
+    vector = np.asarray(system["b"], dtype=np.float64)
+    point_weights = np.asarray(system["point_weights"], dtype=np.float64)
+    expected_rank = int(system.get("rank_expectation", 2 * len(system["unknown_scene_order"])) )
+    weighted_rows = np.repeat(point_weights, 2)
+    if len(weighted_rows) != len(vector):
+        raise ValueError("point_weights must contain one weight per point")
+    sqrt_weights = np.sqrt(weighted_rows)
+    weighted_matrix = matrix * sqrt_weights[:, None]
+    weighted_vector = vector * sqrt_weights
+    rank = int(np.linalg.matrix_rank(weighted_matrix))
+    condition_number = float(np.linalg.cond(weighted_matrix)) if weighted_matrix.size else None
+    corrections = {int(system["reference_idx"]): [0.0, 0.0]}
+    if rank < expected_rank:
+        return {
+            "status": "RANK_DEFICIENT",
+            "rank": rank,
+            "condition_number": condition_number,
+            "objective_before": None,
+            "objective_after": None,
+            "scene_corrections_px": corrections,
+        }
+
+    solution, _, _, _ = np.linalg.lstsq(weighted_matrix, weighted_vector, rcond=None)
+    residual_before = -weighted_vector
+    residual_after = weighted_matrix @ solution - weighted_vector
+    corrections.update({
+        int(scene): [float(solution[2 * idx]), float(solution[2 * idx + 1])]
+        for idx, scene in enumerate(system["unknown_scene_order"])
+    })
+    return {
+        "status": "OK",
+        "rank": rank,
+        "condition_number": condition_number,
+        "objective_before": float(np.sum(residual_before ** 2)),
+        "objective_after": float(np.sum(residual_after ** 2)),
+        "scene_corrections_px": corrections,
+    }
+
+
+def write_translation_solution(solution: dict, output_path: str | Path) -> Path:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(solution)
+    payload["scene_corrections"] = {
+        str(scene): {"dx_px": values[0], "dy_px": values[1],
+                     "magnitude_px": float(np.hypot(values[0], values[1]))}
+        for scene, values in solution["scene_corrections_px"].items()
+    }
+    payload.pop("scene_corrections_px", None)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def build_affine_adjustment_system(
+    mst_global_transforms: dict[int, np.ndarray],
+    edge_observations: dict,
+    reference_idx: int,
+    weight_mode: str = "equal_edge",
+) -> dict:
+    """Build normalized global-frame incremental affine equations."""
+    if reference_idx not in mst_global_transforms:
+        raise ValueError(f"reference scene {reference_idx} is missing from transforms")
+    if weight_mode != "equal_edge":
+        raise ValueError(f"unsupported affine weight mode: {weight_mode}")
+    scenes = sorted(mst_global_transforms)
+    unknown = [scene for scene in scenes if scene != reference_idx]
+    adjacency = {scene: set() for scene in scenes}
+    prepared = []
+    all_points = []
+    for edge, observation in sorted(edge_observations.items()):
+        i, j = int(edge[0]), int(edge[1])
+        if i not in adjacency or j not in adjacency or i == j:
+            raise ValueError(f"invalid edge {i}-{j} for transform scene set")
+        points_i = np.asarray(observation["x_i"], dtype=np.float64)
+        points_j = np.asarray(observation["x_j"], dtype=np.float64)
+        if points_i.shape != points_j.shape or points_i.ndim != 2 or points_i.shape[1] != 2:
+            raise ValueError(f"invalid point arrays for edge {i}-{j}")
+        pair_to_world = np.asarray(observation.get("pair_common_transform", np.eye(3)), dtype=np.float64)
+        pixel_size = float(observation.get("pixel_size", 1.0))
+        qi = _transform_points(mst_global_transforms[i] @ pair_to_world, points_i) / pixel_size
+        qj = _transform_points(mst_global_transforms[j] @ pair_to_world, points_j) / pixel_size
+        prepared.append((i, j, qi, qj))
+        all_points.extend(qi.tolist())
+        all_points.extend(qj.tolist())
+        adjacency[i].add(j)
+        adjacency[j].add(i)
+    reachable = {reference_idx}
+    frontier = [reference_idx]
+    while frontier:
+        scene = frontier.pop()
+        for neighbour in adjacency[scene]:
+            if neighbour not in reachable:
+                reachable.add(neighbour)
+                frontier.append(neighbour)
+    if reachable != set(scenes):
+        raise ValueError(f"affine graph is disconnected from reference {reference_idx}")
+    points = np.asarray(all_points, dtype=np.float64)
+    centroid = np.mean(points, axis=0)
+    scale = float(np.max(np.linalg.norm(points - centroid, axis=1)))
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("affine normalization scale is not positive")
+    rows, rhs, weights = [], [], []
+    for i, j, qi, qj in prepared:
+        weight = 1.0 / len(qi) if len(qi) else 0.0
+        ni = (qi - centroid) / scale
+        nj = (qj - centroid) / scale
+        for pi, pj in zip(ni, nj):
+            for axis in (0, 1):
+                row = np.zeros(6 * len(unknown), dtype=np.float64)
+                for scene, point, sign in ((i, pi, 1.0), (j, pj, -1.0)):
+                    if scene == reference_idx:
+                        continue
+                    offset = 6 * unknown.index(scene) + (0 if axis == 0 else 3)
+                    row[offset:offset + 3] += sign * np.array([point[0], point[1], 1.0])
+                rows.append(row)
+                rhs.append(float(pj[axis] - pi[axis]))
+                weights.append(weight)
+    matrix = np.asarray(rows, dtype=np.float64).reshape((-1, 6 * len(unknown)))
+    vector = np.asarray(rhs, dtype=np.float64)
+    return {
+        "A": matrix, "b": vector, "point_weights": np.asarray(weights)[::2],
+        "unknown_scene_order": unknown, "reference_idx": int(reference_idx),
+        "weight_mode": weight_mode, "rank_expectation": 6 * len(unknown),
+        "rank": int(np.linalg.matrix_rank(matrix)),
+        "condition_number": float(np.linalg.cond(matrix)) if matrix.size else None,
+        "normalization": {"centroid": centroid.tolist(), "scale": scale},
+    }
+
+
+def write_affine_system_summary(system: dict, output_path: str | Path) -> Path:
+    summary = {
+        "unknown_scene_order": system["unknown_scene_order"],
+        "reference_idx": system["reference_idx"],
+        "n_rows": int(system["A"].shape[0]),
+        "n_columns": int(system["A"].shape[1]),
+        "rank": system["rank"],
+        "rank_expectation": system["rank_expectation"],
+        "condition_number": system["condition_number"],
+        "n_points": int(len(system["point_weights"])),
+        "normalization": system["normalization"],
+        "weight_mode": system["weight_mode"],
+    }
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def solve_affine_adjustment(system: dict) -> dict:
+    """Solve normalized affine corrections and denormalize to global pixels."""
+    matrix = np.asarray(system["A"], dtype=np.float64)
+    vector = np.asarray(system["b"], dtype=np.float64)
+    weights = np.repeat(np.asarray(system["point_weights"], dtype=np.float64), 2)
+    if len(weights) != len(vector):
+        raise ValueError("point_weights must contain one weight per point")
+    weighted_matrix = matrix * np.sqrt(weights)[:, None]
+    weighted_vector = vector * np.sqrt(weights)
+    rank = int(np.linalg.matrix_rank(weighted_matrix))
+    expected = int(system["rank_expectation"])
+    centroid = np.asarray(system["normalization"]["centroid"], dtype=np.float64)
+    scale = float(system["normalization"]["scale"])
+    identity = np.eye(3, dtype=np.float64)
+    corrections = {int(system["reference_idx"]): {
+        "matrix": identity.tolist(), "translation": [0.0, 0.0],
+        "rotation_deg": 0.0, "scale_x": 1.0, "scale_y": 1.0,
+        "shear": 0.0, "determinant": 1.0,
+    }}
+    if rank < expected:
+        return {"status": "RANK_DEFICIENT", "rank": rank,
+                "condition_number": float(np.linalg.cond(weighted_matrix)),
+                "scene_corrections": corrections}
+    solution, _, _, _ = np.linalg.lstsq(weighted_matrix, weighted_vector, rcond=None)
+    for index, scene in enumerate(system["unknown_scene_order"]):
+        values = solution[6 * index:6 * index + 6]
+        delta = np.array([[values[0], values[1], values[2]],
+                          [values[3], values[4], values[5]],
+                          [0.0, 0.0, 0.0]])
+        linear = identity[:2, :2] + delta[:2, :2]
+        translation = centroid - linear @ centroid + scale * delta[:2, 2]
+        correction = np.array([[linear[0, 0], linear[0, 1], translation[0]],
+                               [linear[1, 0], linear[1, 1], translation[1]],
+                               [0.0, 0.0, 1.0]])
+        determinant = float(np.linalg.det(linear))
+        if not np.all(np.isfinite(correction)) or determinant <= 0.0:
+            return {"status": "INVALID_CORRECTION", "rank": rank,
+                    "condition_number": float(np.linalg.cond(weighted_matrix)),
+                    "scene_corrections": corrections}
+        rotation = float(np.degrees(np.arctan2(linear[1, 0], linear[0, 0])))
+        corrections[int(scene)] = {
+            "matrix": correction.tolist(),
+            "translation": [float(translation[0]), float(translation[1])],
+            "rotation_deg": rotation,
+            "scale_x": float(np.hypot(linear[0, 0], linear[1, 0])),
+            "scale_y": float(np.hypot(linear[0, 1], linear[1, 1])),
+            "shear": float(linear[0, 0] * linear[0, 1] + linear[1, 0] * linear[1, 1]),
+            "determinant": determinant,
+        }
+    return {"status": "OK", "rank": rank,
+            "condition_number": float(np.linalg.cond(weighted_matrix)),
+            "scene_corrections": corrections}
+
+
+def write_affine_solution(solution: dict, output_path: str | Path) -> Path:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(solution, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def decide_affine_adjustment(translation_summary: dict, affine_summary: dict, solution: dict) -> dict:
+    if solution.get("status") != "OK":
+        return {"decision": "AFFINE_SYSTEM_INVALID", "reason": solution.get("status")}
+    t_mean = translation_summary["edge_balanced"]["mean_edge_rmse_px"]
+    a_mean = affine_summary["edge_balanced"]["mean_edge_rmse_px"]
+    t_max = translation_summary["edge_balanced"]["max_edge_p95_px"]
+    a_max = affine_summary["edge_balanced"]["max_edge_p95_px"]
+    if a_mean < t_mean and a_max < t_max:
+        decision = "AFFINE_ADJUSTMENT_ADDS_VALUE"
+    elif a_mean >= t_mean and a_max >= t_max:
+        decision = "TRANSLATION_ALREADY_SUFFICIENT"
+    else:
+        decision = "AFFINE_OVERFITS_OR_UNSTABLE"
+    return {"decision": decision, "mean_edge_rmse_before_px": t_mean,
+            "mean_edge_rmse_after_px": a_mean, "max_edge_p95_before_px": t_max,
+            "max_edge_p95_after_px": a_max,
+            "mean_rmse_reduction": float(1.0 - a_mean / t_mean),
+            "max_p95_reduction": float(1.0 - a_max / t_max)}
+
+
+def write_affine_decision(decision: dict, output_dir: str | Path) -> dict:
+    out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
+    jp = out / "12_affine_decision.json"; tp = out / "12_affine_decision.txt"
+    jp.write_text(json.dumps(decision, indent=2, ensure_ascii=False), encoding="utf-8")
+    tp.write_text("decision=" + str(decision.get("decision")) + "\n" +
+                  "\n".join(f"{k}={v}" for k, v in decision.items() if k != "decision") + "\n",
+                  encoding="utf-8")
+    return {"json": jp, "txt": tp}
+
+
+def build_method_comparison(mst: dict, translation: dict, affine: dict | None) -> list[dict]:
+    def value(summary, path):
+        current = summary
+        for key in path:
+            if current is None:
+                return "N/A"
+            current = current.get(key)
+        return "N/A" if current is None else current
+    fields = [
+        ("0-1 RMSE", ["zero_one", "rmse_px"]),
+        ("0-1 P95", ["zero_one", "p95_px"]),
+        ("0-1 Max", ["zero_one", "max_px"]),
+        ("Mean edge RMSE", ["edge_balanced", "mean_edge_rmse_px"]),
+        ("Mean edge P95", ["edge_balanced", "mean_edge_p95_px"]),
+        ("Max edge P95", ["edge_balanced", "max_edge_p95_px"]),
+        ("Tree-edge mean P95", ["tree_edges", "mean_edge_p95_px"]),
+        ("Non-tree mean P95", ["non_tree_edges", "mean_edge_p95_px"]),
+    ]
+    return [{"Metric": name, "MST": value(mst, path),
+             "Translation Adj.": value(translation, path),
+             "Affine Adj.": value(affine, path) if affine is not None else "N/A"}
+            for name, path in fields]
+
+
+def write_method_comparison(comparison: list[dict], output_dir: str | Path) -> dict:
+    out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
+    csv_path = out / "13_method_comparison.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Metric", "MST", "Translation Adj.", "Affine Adj."])
+        writer.writeheader(); writer.writerows(comparison)
+    json_path = out / "13_method_comparison.json"
+    json_path.write_text(json.dumps(comparison, indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"csv": csv_path, "json": json_path}
+
+
+def synthetic_accumulation_check(n_nodes: int = 5, bias_px: float = 1.0) -> dict:
+    """Synthetic chain/loop check for path drift versus simultaneous adjustment."""
+    if n_nodes < 3:
+        raise ValueError("synthetic chain needs at least three nodes")
+
+    # The MST transforms carry the accumulated chain drift.  Every scene is
+    # otherwise expected to have the identity global transform, so the
+    # translation in this synthetic frame is the actual node-position error.
+    transforms = {}
+    for scene in range(n_nodes):
+        transform = np.eye(3, dtype=np.float64)
+        transform[0, 2] = float(scene) * float(bias_px)
+        transforms[scene] = transform
+
+    observations = {}
+    for i in range(n_nodes - 1):
+        observations[(i, i + 1)] = {
+            "x_i": np.array([[bias_px, 0.0]], dtype=np.float64),
+            "x_j": np.array([[0.0, 0.0]], dtype=np.float64),
+            "is_tree_edge": True,
+        }
+    for j in range(2, n_nodes):
+        observations[(0, j)] = {
+            "x_i": np.array([[0.0, 0.0]], dtype=np.float64),
+            "x_j": np.array([[0.0, 0.0]], dtype=np.float64),
+            "is_tree_edge": False,
+        }
+
+    initial_residuals = evaluate_edge_point_residuals(transforms, observations)
+    initial_rows = initial_residuals.to_dict(orient="records")
+    tree_errors = [
+        float(row["residual_px"])
+        for row in initial_rows
+        if bool(row["is_tree_edge"])
+    ]
+    loop_errors = [
+        float(row["residual_px"])
+        for row in initial_rows
+        if not bool(row["is_tree_edge"])
+    ]
+
+    system = build_translation_adjustment_system(transforms, observations, reference_idx=0)
+    solution = solve_translation_adjustment(system)
+
+    corrections = {
+        int(scene): (float(values[0]), float(values[1]))
+        for scene, values in solution["scene_corrections_px"].items()
+    }
+    adjusted_transforms = apply_translation_corrections(transforms, corrections)
+
+    def node_translation_error(matrix: np.ndarray) -> float:
+        return float(np.hypot(float(matrix[0, 2]), float(matrix[1, 2])))
+
+    scene_mst_error = [node_translation_error(transforms[scene]) for scene in range(n_nodes)]
+    scene_correction_magnitude = [
+        float(np.hypot(*corrections.get(scene, (0.0, 0.0))))
+        for scene in range(n_nodes)
+    ]
+    scene_adjusted_error = [
+        node_translation_error(adjusted_transforms[scene]) for scene in range(n_nodes)
+    ]
+
+    return {
+        "n_nodes": int(n_nodes),
+        "bias_px": float(bias_px),
+        "ground_truth": "identity global transform for every scene",
+        "mst_endpoint_error_px": float(scene_mst_error[-1]),
+        "endpoint_correction_magnitude_px": float(scene_correction_magnitude[-1]),
+        "adjusted_endpoint_error_px": float(scene_adjusted_error[-1]),
+        "mst_global_rms_px": float(np.sqrt(np.mean(np.square(scene_mst_error)))),
+        "adjusted_global_rms_px": float(np.sqrt(np.mean(np.square(scene_adjusted_error)))),
+        "scene_mst_error_px": scene_mst_error,
+        "scene_correction_magnitude_px": scene_correction_magnitude,
+        "scene_adjusted_error_px": scene_adjusted_error,
+        "initial_tree_edge_max_residual_px": float(max(tree_errors, default=0.0)),
+        "initial_loop_edge_max_residual_px": float(max(loop_errors, default=0.0)),
+        "solver_status": solution["status"],
+    }
+
+
+def write_synthetic_accumulation_check(result: dict, output_dir: str | Path) -> dict:
+    out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
+    jp = out / "14_synthetic_accumulation_check.json"
+    pp = out / "14_synthetic_accumulation_check.png"
+    jp.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    import matplotlib.pyplot as plt
+    plot_result = result
+    if "cases" in result:
+        plot_result = result["cases"].get("5_nodes", result)
+    path_length = np.arange(plot_result["n_nodes"], dtype=int)
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.plot(path_length, plot_result["scene_mst_error_px"], "o-", label="MST path error")
+    ax.plot(path_length, plot_result["scene_adjusted_error_px"], "o-", label="Global adjustment final error")
+    ax.plot(
+        path_length,
+        plot_result["scene_correction_magnitude_px"],
+        "o--",
+        label="Correction magnitude",
+    )
+    ax.set_xlabel("path length from reference (edges)")
+    ax.set_ylabel("node position error (px)")
+    ax.legend(); ax.grid(alpha=0.25)
+    fig.tight_layout(); fig.savefig(pp, dpi=150); plt.close(fig)
+    return {"json": jp, "png": pp}
+
+
+def apply_translation_corrections(
+    mst_global_transforms: dict[int, np.ndarray],
+    corrections: dict[int, tuple[float, float]],
+    pixel_size: float = 1.0,
+) -> dict[int, np.ndarray]:
+    """Compose pixel-unit node corrections on the left in the global frame."""
+    adjusted = {}
+    for scene, matrix in mst_global_transforms.items():
+        dx, dy = corrections.get(int(scene), (0.0, 0.0))
+        translation = np.array([
+            [1.0, 0.0, float(dx) * pixel_size],
+            [0.0, 1.0, float(dy) * pixel_size],
+            [0.0, 0.0, 1.0],
+        ], dtype=np.float64)
+        adjusted[int(scene)] = translation @ np.asarray(matrix, dtype=np.float64)
+    return adjusted
+
+
+def apply_affine_corrections(
+    mst_global_transforms: dict[int, np.ndarray], corrections: dict[int, dict],
+    pixel_size: float = 1.0,
+) -> dict[int, np.ndarray]:
+    """Compose pixel-frame affine corrections on the left of world transforms."""
+    adjusted = {}
+    for scene, matrix in mst_global_transforms.items():
+        correction = np.asarray(corrections.get(int(scene), {"matrix": np.eye(3)})["matrix"], dtype=np.float64)
+        world_correction = correction.copy()
+        world_correction[:2, 2] *= float(pixel_size)
+        adjusted[int(scene)] = world_correction @ np.asarray(matrix, dtype=np.float64)
+    return adjusted
+
+
+def write_global_transforms(transforms: dict[int, np.ndarray], output_path: str | Path) -> Path:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"transforms": [
+        {"scene": int(scene), "matrix": np.asarray(matrix, dtype=float).tolist()}
+        for scene, matrix in sorted(transforms.items())
+    ]}
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def evaluate_cycle_invariance_under_node_translation(
+    edge_relations: dict[tuple[int, int], tuple[float, float] | np.ndarray],
+    corrections: dict[int, tuple[float, float]],
+    cycle: list[int],
+) -> dict:
+    """Show that direct-observation cycle closure is unchanged by node shifts."""
+    if len(cycle) < 3 or cycle[0] == cycle[-1]:
+        raise ValueError("cycle must contain at least three distinct nodes")
+
+    def relation(i, j):
+        if (i, j) in edge_relations:
+            return np.asarray(edge_relations[(i, j)], dtype=np.float64)
+        if (j, i) in edge_relations:
+            return -np.asarray(edge_relations[(j, i)], dtype=np.float64)
+        raise ValueError(f"missing cycle edge {i}-{j}")
+
+    before = np.zeros(2, dtype=np.float64)
+    after = np.zeros(2, dtype=np.float64)
+    for i, j in zip(cycle, cycle[1:] + [cycle[0]]):
+        edge_relation = relation(i, j)
+        before += edge_relation
+        ci = np.asarray(corrections.get(i, (0.0, 0.0)), dtype=np.float64)
+        cj = np.asarray(corrections.get(j, (0.0, 0.0)), dtype=np.float64)
+        after += edge_relation + ci - cj
+    return {
+        "cycle": [int(scene) for scene in cycle],
+        "closure_before_px": before.tolist(),
+        "closure_after_px": after.tolist(),
+        "closure_delta_px": (after - before).tolist(),
+        "invariant": bool(np.allclose(before, after, atol=1e-10, rtol=0.0)),
+    }
+
+
+def write_cycle_invariance(result: dict, output_path: str | Path) -> Path:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def plot_mst_vs_translation_network(
+    mst_global_transforms: dict[int, np.ndarray],
+    tree_edges: list[tuple[int, int]],
+    accepted_edges: list[tuple[int, int]],
+    corrections: dict[int, tuple[float, float]],
+    output_path: str | Path,
+) -> Path:
+    import matplotlib.pyplot as plt
+
+    positions = {scene: np.asarray(matrix, dtype=float)[:2, 2]
+                 for scene, matrix in mst_global_transforms.items()}
+    fig, ax = plt.subplots(figsize=(8, 6))
+    tree_set = {tuple(sorted(edge)) for edge in tree_edges}
+    for edge in accepted_edges:
+        i, j = edge
+        xy_i, xy_j = positions[i], positions[j]
+        is_tree = tuple(sorted(edge)) in tree_set
+        ax.plot([xy_i[0], xy_j[0]], [xy_i[1], xy_j[1]],
+                color="tab:blue" if is_tree else "tab:orange",
+                linestyle="-" if is_tree else "--", linewidth=2,
+                label="MST tree edge" if is_tree and "MST tree edge" not in ax.get_legend_handles_labels()[1]
+                else ("non-tree edge" if not is_tree and "non-tree edge" not in ax.get_legend_handles_labels()[1] else None))
+    for scene, xy in positions.items():
+        ax.scatter(*xy, color="black", zorder=3)
+        ax.annotate(f"scene {scene}", xy, xytext=(5, 5), textcoords="offset points")
+        dx, dy = corrections.get(scene, (0.0, 0.0))
+        ax.arrow(xy[0], xy[1], dx, dy, color="tab:red", width=0.0,
+                 head_width=max(1.0, np.hypot(dx, dy) * 0.08), length_includes_head=True)
+    ax.set_title("MST and accepted edges with translation corrections")
+    ax.set_xlabel("global X")
+    ax.set_ylabel("global Y")
+    ax.legend()
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
+def plot_mst_vs_translation_residuals(
+    mst_summary: dict, translation_summary: dict, output_path: str | Path
+) -> Path:
+    import matplotlib.pyplot as plt
+
+    before = {(int(row["edge_i"]), int(row["edge_j"])): row
+              for row in mst_summary["per_edge"]}
+    after = {(int(row["edge_i"]), int(row["edge_j"])): row
+             for row in translation_summary["per_edge"]}
+    edges = sorted(before)
+    labels = [f"{i}-{j}" for i, j in edges]
+    x = np.arange(len(edges))
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.bar(x - 0.18, [before[e]["p95_px"] for e in edges], width=0.36, label="MST P95")
+    ax.bar(x + 0.18, [after[e]["p95_px"] for e in edges], width=0.36, label="Translation P95")
+    for index, edge in enumerate(edges):
+        if edge == (0, 1):
+            ax.axvspan(index - 0.5, index + 0.5, color="tab:red", alpha=0.08)
+    ax.set_xticks(x, labels)
+    ax.set_ylabel("P95 residual (px)")
+    ax.set_title("MST vs translation residuals by accepted edge")
+    ax.legend()
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
+def decide_translation_adjustment(
+    mst_summary: dict, translation_summary: dict, solution: dict,
+) -> dict:
+    """Apply the plan's diagnostic-only translation decision gate."""
+    if solution.get("status") != "OK":
+        return {"decision": "TRANSLATION_SYSTEM_INVALID", "reason": solution.get("status")}
+    corrections = solution.get("scene_corrections_px", {})
+    finite = all(np.all(np.isfinite(values)) for values in corrections.values())
+    if not finite:
+        return {"decision": "TRANSLATION_SYSTEM_INVALID", "reason": "non-finite correction"}
+    before_mean = mst_summary["edge_balanced"]["mean_edge_rmse_px"]
+    after_mean = translation_summary["edge_balanced"]["mean_edge_rmse_px"]
+    before_max = mst_summary["edge_balanced"]["max_edge_p95_px"]
+    after_max = translation_summary["edge_balanced"]["max_edge_p95_px"]
+    before_zero = mst_summary["zero_one"]["p95_px"]
+    after_zero = translation_summary["zero_one"]["p95_px"]
+    mean_reduction = 1.0 - after_mean / before_mean
+    max_reduction = 1.0 - after_max / before_max
+    no_new_disaster = all(
+        row["p95_px"] <= before_max
+        for row in translation_summary["per_edge"]
+    )
+    effective = (
+        mean_reduction >= 0.20 and max_reduction >= 0.20
+        and after_zero < before_zero and no_new_disaster
+    )
+    partial = (
+        solution.get("objective_after") is not None
+        and solution.get("objective_before") is not None
+        and solution["objective_after"] < solution["objective_before"]
+        and after_zero < before_zero and after_max < before_max
+    )
+    decision = "TRANSLATION_ADJUSTMENT_EFFECTIVE" if effective else (
+        "TRANSLATION_ADJUSTMENT_PARTIAL" if partial else "TRANSLATION_ADJUSTMENT_NOT_USEFUL"
+    )
+    return {
+        "decision": decision,
+        "threshold_edge_balanced_reduction": 0.20,
+        "mean_edge_rmse_reduction": float(mean_reduction),
+        "max_edge_p95_reduction": float(max_reduction),
+        "zero_one_p95_before_px": before_zero,
+        "zero_one_p95_after_px": after_zero,
+        "no_new_edge_p95_disaster": no_new_disaster,
+    }
+
+
+def write_translation_decision(decision: dict, output_dir: str | Path) -> dict:
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    json_path = out_dir / "08_translation_decision.json"
+    txt_path = out_dir / "08_translation_decision.txt"
+    json_path.write_text(json.dumps(decision, indent=2, ensure_ascii=False), encoding="utf-8")
+    txt_path.write_text(
+        f"decision={decision.get('decision')}\n"
+        + "\n".join(f"{key}={value}" for key, value in decision.items() if key != "decision")
+        + "\n", encoding="utf-8"
+    )
+    return {"json": json_path, "txt": txt_path}

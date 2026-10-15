@@ -135,6 +135,10 @@ def create_mosaic(
     mode: str = "weighted",
     feather_width: int = 64,
     return_diagnostics: bool = False,
+    output_transform=None,
+    output_width=None,
+    output_height=None,
+    output_dtype: Optional[str] = None,
 ) -> str:
     """
     创建镶嵌图。
@@ -164,10 +168,15 @@ def create_mosaic(
         "weighted" | "source_selection" | "narrow_feather"
     feather_width : int
         narrow_feather 模式下接缝两侧羽化半宽（像素）。
-
-    返回
-    -------
-    output_path : str
+    output_transform : rasterio.Affine or None
+        如果给定，直接用作输出 transform（跳过自动计算）。
+    output_width : int or None
+        如果给定，直接用作输出宽度。
+    output_height : int or None
+        如果给定，直接用作输出高度。
+    output_dtype : str or None
+        Explicit output dtype for scientific products.  When omitted, retain
+        the historical geometry-mosaic dtype inference.
     """
     n_images = len(arrays)
     if n_images == 0:
@@ -179,24 +188,38 @@ def create_mosaic(
         raise ValueError(f"未知的镶嵌模式: '{mode}'，可选值: {VALID_MOSAIC_MODES}")
 
     # ---- 1. 联合包围盒 ----
-    left, bottom, right, top = _combined_bounds(arrays, transforms)
-    out_width_geo = right - left
-    out_height_geo = top - bottom
+    has_explicit = (output_transform is not None
+                    or output_width is not None
+                    or output_height is not None)
+    if has_explicit:
+        if output_transform is None or output_width is None or output_height is None:
+            raise ValueError(
+                "output_transform/output_width/output_height must all be "
+                "supplied together, or all left as None"
+            )
+        out_transform = output_transform
+        width = output_width
+        height = output_height
+        if resolution is None:
+            resolution = abs(out_transform.a)
+    else:
+        left, bottom, right, top = _combined_bounds(arrays, transforms)
+        out_width_geo = right - left
+        out_height_geo = top - bottom
 
-    if resolution is None:
-        resolution = min(abs(tr.a) for tr in transforms)
+        if resolution is None:
+            resolution = min(abs(tr.a) for tr in transforms)
 
-    if resolution <= 0:
-        raise ValueError(f"无效分辨率: {resolution}")
+        if resolution <= 0:
+            raise ValueError(f"无效分辨率: {resolution}")
 
-    import math
-    width = max(1, int(math.ceil(out_width_geo / resolution)))
-    height = max(1, int(math.ceil(out_height_geo / resolution)))
+        import math
+        width = max(1, int(math.ceil(out_width_geo / resolution)))
+        height = max(1, int(math.ceil(out_height_geo / resolution)))
 
-    out_transform = rasterio.Affine(resolution, 0, left, 0, -resolution, top)
+        out_transform = rasterio.Affine(resolution, 0, left, 0, -resolution, top)
 
-    print(f"  镶嵌画布: {width}×{height}, 分辨率={resolution:.2f}")
-    print(f"  地理范围: ({left:.2f}, {bottom:.2f}, {right:.2f}, {top:.2f})")
+    print(f"  镶嵌画布: {width}×{height}, 分辨率={abs(out_transform.a):.2f}")
 
     # ---- 2. 投影所有影像到输出网格 ----
     projected = []
@@ -519,19 +542,35 @@ def create_mosaic(
 
     # 强制清理：有效区内残留 NaN/Inf → nodata（检查所有波段）
     bad_mask = ~np.all(np.isfinite(result), axis=0)
+    effective_final_mask = final_mask & ~bad_mask
+    coverage_holes = union_mask & ~effective_final_mask
+    union_valid_pixels = int(union_mask.sum())
+    final_valid_pixels = int(effective_final_mask.sum())
+    union_but_final_invalid_pixels = int(coverage_holes.sum())
+    coverage_hole_ratio = (
+        union_but_final_invalid_pixels / union_valid_pixels
+        if union_valid_pixels > 0 else 0.0
+    )
+
     result[:, bad_mask] = nd_val
     result[:, ~final_mask] = nd_val
 
     # 最终断言
-    nan_check = np.isnan(result[:, final_mask & ~bad_mask]).sum()
+    nan_check = np.isnan(result[:, effective_final_mask]).sum()
     assert nan_check == 0, f"Assertion failed: {nan_check} NaN in final valid pixels"
 
     # ---- 4. 写出 ----
     # 如果 nodata 是 None 且结果含 NaN，使用 float32 保留 NaN
-    out_dtype = arrays[0].dtype.name
+    inferred_dtype = arrays[0].dtype.name
     has_nan_nodata = (np.isnan(nd_val) if np.isscalar(nd_val) and isinstance(nd_val, float) else False)
-    if has_nan_nodata:
-        out_dtype = "float32"
+    if output_dtype is not None:
+        out_dtype = np.dtype(output_dtype).name
+        if not np.issubdtype(np.dtype(out_dtype), np.floating):
+            raise ValueError("scientific mosaic output_dtype must be floating point")
+    else:
+        out_dtype = inferred_dtype
+        if has_nan_nodata:
+            out_dtype = "float32"
 
     profile = {
         "driver": "GTiff",
@@ -557,8 +596,12 @@ def create_mosaic(
             'resolution': resolution,
             'n_images': n_images,
             'n_bands': n_bands,
-            'valid_pixels': int(final_mask.sum()),
+            'valid_pixels': final_valid_pixels,
             'total_pixels': width * height,
+            'union_valid_pixels': union_valid_pixels,
+            'final_valid_pixels': final_valid_pixels,
+            'union_but_final_invalid_pixels': union_but_final_invalid_pixels,
+            'coverage_hole_ratio': float(coverage_hole_ratio),
             'nan_in_valid': int(nan_in_valid),
             'inf_in_valid': int(inf_in_valid),
             'source_index_map': best_idx if 'best_idx' in dir() else None,

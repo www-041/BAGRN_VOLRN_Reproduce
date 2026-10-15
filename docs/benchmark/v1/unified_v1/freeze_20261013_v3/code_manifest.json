@@ -1,0 +1,161 @@
+{
+  "protocol_id": "DZ01V_UNIFIED_A_B_V1_20261013",
+  "git_branch": "exp/2026-09-24-b9-five-scene-validation",
+  "git_head": "3c9f4e30888445ce783f56f4f26cb064e1add887",
+  "code_changes_committed": false,
+  "files": [
+    {
+      "path": "docs/benchmark/v1/unified_v1/benchmark_protocol_draft.md",
+      "sha256": "36fb02eee8a35d4dd1f3605aa07b5702fe10b811a2de777ab4f9281957edc836"
+    },
+    {
+      "path": "docs/benchmark/v1/unified_v1/plan.md",
+      "sha256": "54215b6a5f118e03ff702f5ef27843500fbfdc962b775ff560efc7b216e9dc25"
+    },
+    {
+      "path": "docs/benchmark/v1/unified_v1/source_formula_crosswalk.md",
+      "sha256": "6ed86480aa3badb87860bf93f3ac3c5af7abbf08b53d6f550de83bc303c8b69d"
+    },
+    {
+      "path": "scripts/benchmark/annotate_radiometric_rois.py",
+      "sha256": "0f81bf3218a25ae1f4a59cac7c1e0c2ea89b8232bab710113306c872ebf6bcb1"
+    },
+    {
+      "path": "scripts/benchmark/audit_unified_v1.py",
+      "sha256": "556222ccc8bcd60c811b9e50c42786e9f95f54227a3ca1d894797d0081f9eb26"
+    },
+    {
+      "path": "scripts/benchmark/build_radiometric_r1_5_report.py",
+      "sha256": "4e9df93382b18bf28b0cd1ed74d386dbcc1870794a59ff0b082badb85acd0d04"
+    },
+    {
+      "path": "scripts/benchmark/build_radiometric_r1_band_readiness.py",
+      "sha256": "2ff2fa03ed47b3c5ea02cde67753fb05898ca843860870dfcce3fd8003e9df0e"
+    },
+    {
+      "path": "scripts/benchmark/build_radiometric_r1_inventory.py",
+      "sha256": "fd10a044399489f521ae4a0b362595726c5fdcde719ac96f2b586b644588e64e"
+    },
+    {
+      "path": "scripts/benchmark/check_unified_submission.py",
+      "sha256": "f13f1ebcb39b0a4e0449eae1542a96797d8122ece7b4e629540c5428790ad7a4"
+    },
+    {
+      "path": "scripts/benchmark/evaluate_unified_v1.py",
+      "sha256": "64776f5f8773150234761e093dfa767744a7ecc604bbdb7830b47c7f7739ce82"
+    },
+    {
+      "path": "scripts/benchmark/freeze_unified_v1.py",
+      "sha256": "4788cd18937cc7112b3d3dffeaf6bd77f17a753504d9e68ead02543cb24d90a4"
+    },
+    {
+      "path": "scripts/benchmark/generate_radiometric_r1_5_auto_rois.py",
+      "sha256": "8189dfdf0c5ad4f59dc4a539cc5da66eedc7660a690dca3ac95d8e11a2d34e22"
+    },
+    {
+      "path": "scripts/benchmark/generate_radiometric_r1_synthetic.py",
+      "sha256": "4b1a91c0f9d8802e09e30ea11b6ecb6c4b6fa449255075e201873e56d5501a6f"
+    },
+    {
+      "path": "scripts/benchmark/prepare_radiometric_r1_rois.py",
+      "sha256": "ceb4eebda08b05f4f53888e0b2d7e8faaad6d428de5d4f3b6cef0ec21a68ad88"
+    },
+    {
+      "path": "scripts/benchmark/smoke_unified_v1.py",
+      "sha256": "aec18505f2ac5ba5ca96c047da01da2a2a9d6e7ac6010d585ad4935d6390e41f"
+    },
+    {
+      "path": "scripts/benchmark/suggest_radiometric_r1_5_labels.py",
+      "sha256": "264b31f780aa5cc3312d9518da201ae49e96ed57f33f52c8a13e40c8f63c8fce"
+    },
+    {
+      "path": "scripts/benchmark/summarize_radiometric_r1_5_machine_agreement.py",
+      "sha256": "3e8985c52d4ebbb34e8598fe426e98f3459cb55f622a1bb88e7444dec82e15e6"
+    },
+    {
+      "path": "src/benchmark_v1_unified/__init__.py",
+      "sha256": "e10aced210e4132341a1781d627eac04a425167f4c6e39fb53c203124b58bf54"
+    },
+    {
+      "path": "src/benchmark_v1_unified/aggregation.py",
+      "sha256": "5c3e98e5c3780c5911b46522052ade65b6d922cf821df7f5c5afbf13a10188ad"
+    },
+    {
+      "path": "src/benchmark_v1_unified/aligned.py",
+      "sha256": "9edb75dd04a2e3fc32197b737405ee305226f92779f0b17882b6ae2b3ffd3dcd"
+    },
+    {
+      "path": "src/benchmark_v1_unified/audit.py",
+      "sha256": "84159a9032174efe96274b1c1043a36ddf892b4d94c2401f41964bc1649a091d"
+    },
+    {
+      "path": "src/benchmark_v1_unified/config.py",
+      "sha256": "d4b63df877038cd6fd0fa751eb710605cfef01a85bd0bbb68ec5df46ad7e9d3d"
+    },
+    {
+      "path": "src/benchmark_v1_unified/evaluator.py",
+      "sha256": "4596710dccac8c4ed09dd25f85d68aed70e6715bbe0cc9d356e3b93631a7f451"
+    },
+    {
+      "path": "src/benchmark_v1_unified/freeze.py",
+      "sha256": "2722fdd772e3e90ef51df207dff09271d64480bf89798f05e8be391de968c7b0"
+    },
+    {
+      "path": "src/benchmark_v1_unified/geometry.py",
+      "sha256": "3da466535fa27b1447f862c6b447a18ee8b053e27e14254586cdb572ade0fc63"
+    },
+    {
+      "path": "src/benchmark_v1_unified/identity.py",
+      "sha256": "5dcdc517dc3286c0d16acd9600c6d32dd2020d5b4670d25dda75c454803970ba"
+    },
+    {
+      "path": "src/benchmark_v1_unified/models.py",
+      "sha256": "bfa3cedc6b596faaa6759e35f42c9fe4e7204fa8bab51fcda48f1b8748168782"
+    },
+    {
+      "path": "src/benchmark_v1_unified/mosaic.py",
+      "sha256": "c44b8f9e6e34b32d896d600b55edbd88a3c5002901613df4f87005ba630e25cc"
+    },
+    {
+      "path": "src/benchmark_v1_unified/radiometric.py",
+      "sha256": "79bfac5a4bbdbf3860d19e8fa2634bd887fc63d769c036ad8cad93cd68d98c06"
+    },
+    {
+      "path": "src/benchmark_v1_unified/reporting.py",
+      "sha256": "4d4a78d3a020cd194c7352cd4ec6573f46bfa9d19a4c32244f93ff2fe0c89ae5"
+    },
+    {
+      "path": "src/benchmark_v1_unified/resource.py",
+      "sha256": "5969a7742247a676c39dc262187eb92e92e4fe8afeb53c8ade910d8230c3975c"
+    },
+    {
+      "path": "src/benchmark_v1_unified/seams.py",
+      "sha256": "9f7d2909315f10d58740be61f97c09584a7ca855cb8df318ad5e20c5f901344a"
+    },
+    {
+      "path": "src/benchmark_v1_unified/simulation.py",
+      "sha256": "563d7a3f950a74225a147b47ddb488ae2c0f7373b006cb0b37bcab10d5cc9ead"
+    },
+    {
+      "path": "src/benchmark_v1_unified/structure.py",
+      "sha256": "8f39a40e0bd1bdf1e1ee7da9350d14938350295f79333b66baa9b0c048da67b0"
+    },
+    {
+      "path": "src/benchmark_v1_unified/submission.py",
+      "sha256": "01c7180dd03273e0b94bfb29507acb0fb6bdd5987b1b78204b3a57030ef47051"
+    },
+    {
+      "path": "src/benchmark_v1_unified/support.py",
+      "sha256": "109666ac074f8248d2f11dd3f27cc5bdf1cf3dc6387e1960ad8be4181db263e3"
+    },
+    {
+      "path": "src/benchmark_v1_unified/windows.py",
+      "sha256": "da33086de6473d6c72f3cda6b3d6d6b85e1cbe9a0115b1e81d7b73eebee7c0fc"
+    },
+    {
+      "path": "tests/benchmark_v1_unified/test_core.py",
+      "sha256": "c5252aa9e2418df560d125582119fb279b982f721c8647cea63a84425bd17bea"
+    }
+  ],
+  "file_count": 38
+}

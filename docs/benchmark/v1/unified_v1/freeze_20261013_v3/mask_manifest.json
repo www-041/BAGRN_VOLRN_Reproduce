@@ -1,0 +1,83 @@
+{
+  "grid": {
+    "crs": "EPSG:32650",
+    "transform": [
+      14.0,
+      0.0,
+      633346.0,
+      0.0,
+      -14.0,
+      3359874.0
+    ],
+    "width": 7992,
+    "height": 12404
+  },
+  "masks": [
+    {
+      "scene_index": 0,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_000_input_mask.tif",
+      "sha256": "6f6937ed59ff866bf741bbce3a7bb7fb5cc975947e2fb5ba000c29878b0dfb6e"
+    },
+    {
+      "scene_index": 1,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_001_input_mask.tif",
+      "sha256": "73d1719f15e8f598366f05598ef2e32fbf7b90d70e1babc1d3296b4b47f4ee10"
+    },
+    {
+      "scene_index": 2,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_002_input_mask.tif",
+      "sha256": "321b8af39ca06bbbc65931ad2cd6c0df4f87ddf073e59fa8c9e65291b88b892c"
+    },
+    {
+      "scene_index": 3,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_003_input_mask.tif",
+      "sha256": "1fcd5416fd6100e316f575cb32463f58d1ae51437e421d8af1e611da4f67f644"
+    },
+    {
+      "scene_index": 4,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_004_input_mask.tif",
+      "sha256": "7a552e96218255a7f625833f11ecf0a2227622f7b27a058e4d516bfaa760a52e"
+    },
+    {
+      "scene_index": 5,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_005_input_mask.tif",
+      "sha256": "0c8dee0b6103e90d658031454216b52c6712f0ec0fb7e8f15bbb751b40e1b060"
+    },
+    {
+      "scene_index": 6,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_006_input_mask.tif",
+      "sha256": "6c0f3f4ca793924c748bfe019957e8f6c06f203e0d2b0dae69aafb32687e1f0c"
+    },
+    {
+      "scene_index": 7,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_007_input_mask.tif",
+      "sha256": "a45f196f5eae1f9fb487739f46cf0beb86d25745dc3c571cee5bd3695eefe798"
+    },
+    {
+      "scene_index": 8,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_008_input_mask.tif",
+      "sha256": "5efe62975a6ad9be065abce2f489faae23c0ec6c094e4a729d5d8d6cd27739ed"
+    },
+    {
+      "scene_index": 9,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_009_input_mask.tif",
+      "sha256": "9a76916c59e9d94b88d6e1f62805a4a5bdf852b8e5bb7b40fdcef5ccbf58e6d7"
+    },
+    {
+      "scene_index": 10,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_010_input_mask.tif",
+      "sha256": "b9669682c355d2b9b4eef7bbdeebff9143a4afbe66d2a273aa9365f586777c82"
+    },
+    {
+      "scene_index": 11,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_011_input_mask.tif",
+      "sha256": "93fd0d93cd3b4c58ea93305d004b05ddb39bcb4a925158386a13d5c8219e6e2e"
+    },
+    {
+      "scene_index": 12,
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\aligned_inputs\\scene_012_input_mask.tif",
+      "sha256": "eb63418f07f5980b3afab0b1e5624f19e589c3e87714f7b62968653d8e5cdfdf"
+    }
+  ],
+  "definition": "explicit Task15-equivalent source nodata and finite bilinear-reprojection mask"
+}

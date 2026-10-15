@@ -1,0 +1,47 @@
+{
+  "phase": "Spectralmatch Phase 2.2",
+  "status": "BLOCKED_NO_VALID_NEW_ENVIRONMENT",
+  "official_source": "https://github.com/spectralmatch/spectralmatch",
+  "official_version": "1.6.0",
+  "inspected_upstream_commit": "2c35fef0d8c324cd2c06fbc5b1a78e36e2853ff3",
+  "official_requirements": {
+    "python": ">=3.10, <=3.12",
+    "gdal": ">=3.11",
+    "proj": ">=9.3"
+  },
+  "required_components": [
+    "python=3.11",
+    "gdal>=3.11,<3.12",
+    "proj>=9.3",
+    "rasterio built against the same GDAL",
+    "psutil",
+    "scikit-image",
+    "spectralmatch==1.6.0"
+  ],
+  "new_environment_created": false,
+  "attempted_prefix": "C:/Users/wang/AppData/Local/Temp/spectralmatch_phase2_2_clean_20261014",
+  "attempted_prefix_created": false,
+  "blockers": [
+    "micromamba 2.9.0 --version exits with Windows status 0xC0000409 (-1073740791)",
+    "direct GitHub release download is unreachable from this machine",
+    "PyPI has no binary Windows wheel for GDAL==3.11.5"
+  ],
+  "rejected_existing_environment": {
+    "python": "3.11.17",
+    "osgeo_gdal": "3.11.5",
+    "rasterio": "1.4.4",
+    "rasterio_linked_gdal": "3.10.3",
+    "pyproj_proj": "9.5.1",
+    "numpy": "2.4.6",
+    "spectralmatch": "1.6.0",
+    "psutil": null,
+    "scikit_image": null,
+    "accepted": false
+  },
+  "repeated_import_smoke": {
+    "fresh_processes": 5,
+    "successes": 5,
+    "version_consistency": false
+  },
+  "official_example": "NOT_RUN_PREREQUISITES_INCOMPATIBLE"
+}

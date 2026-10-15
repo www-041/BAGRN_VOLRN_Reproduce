@@ -1,0 +1,22 @@
+{
+  "status": "FROZEN",
+  "reasons": [],
+  "pair_counts": {
+    "total_pairs": 78,
+    "positive_overlap_pairs": 48,
+    "no_valid_overlap_pairs": 30,
+    "native_inventory_positive_expected": 48,
+    "native_inventory_zero_expected": 30,
+    "aligned_00_01": 1295654,
+    "native_00_01": "1291672",
+    "aligned_00_10": 1374076,
+    "native_00_10": "1374076"
+  },
+  "window_count": 1533,
+  "lock_path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\freeze_20261013_v3\\freeze_lock.json",
+  "lock_verification": {
+    "valid": true,
+    "errors": []
+  },
+  "locked_file_count": 54
+}

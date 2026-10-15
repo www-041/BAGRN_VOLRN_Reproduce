@@ -1,0 +1,738 @@
+{
+  "type": "FeatureCollection",
+  "name": "radiometric_roi_candidates_unverified",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "EPSG:4326"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              119.11175159997254,
+              29.69411725055161
+            ],
+            [
+              119.31217273003699,
+              29.69076917113842
+            ],
+            [
+              119.31334018951183,
+              29.741671829672942
+            ],
+            [
+              119.11281805527706,
+              29.74502679118883
+            ],
+            [
+              119.11175159997254,
+              29.69411725055161
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_00_01",
+        "pair_id": "00_01",
+        "scene_i": "DZ01V_L2_E119.3_N29.9_20251114023847_01_T1",
+        "scene_j": "DZ01V_L2_E119.2_N29.5_20251114023853_01_T1",
+        "bbox_intersecting_scene_indices": [
+          0,
+          1,
+          2,
+          5,
+          8,
+          10
+        ],
+        "bbox_coverage_scene_count": 6,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 6.6e-05,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified",
+        "days_apart": "6.6e-05",
+        "temporal_bin": "T0",
+        "source_sha256_i": "5b2cfa54261e9e34687624fa11ce044fdaf83ea058bc0ceae48876060d7d3923",
+        "source_sha256_j": "31497939fd11b7116b36a20341679b71463c6ed799ed85f888b50b7e5a1d3f89",
+        "geometry_crs": "EPSG:4326",
+        "source_crs_resolution": "EPSG:4326_CONFIRMED_BY_SCENE_EXTENTS",
+        "roi_id": "R1_REGION_00_01",
+        "source_region_id": "REGION_00_01",
+        "label": "UNKNOWN",
+        "reviewer": "",
+        "review_time_utc": "",
+        "second_reviewer": "",
+        "second_review_status": "UNVERIFIED",
+        "second_review_time_utc": "",
+        "spatial_role": "UNASSIGNED",
+        "grid_cell_id": "g70_328",
+        "spatial_status": "CROSSES_CELL_OR_500M_BUFFER",
+        "purpose": "UNASSIGNED",
+        "calibration_or_evaluation": "UNASSIGNED",
+        "spatial_overlap_audit": "PENDING_PAIRWISE_AUDIT",
+        "candidate_geometry_source": "EXISTING_UNVERIFIED_REGION"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.70910246901829,
+              29.59515469191851
+            ],
+            [
+              118.89885908681802,
+              29.592575125476472
+            ],
+            [
+              118.89991090911927,
+              29.648644388324048
+            ],
+            [
+              118.71004931248302,
+              29.651229807616392
+            ],
+            [
+              118.70910246901829,
+              29.59515469191851
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_10_11",
+        "pair_id": "10_11",
+        "scene_i": "DZ01V_L2_E118.8_N29.8_20260114024138_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.4_20260114024144_01_T1",
+        "bbox_intersecting_scene_indices": [
+          1,
+          2,
+          4,
+          5,
+          6,
+          8,
+          10,
+          11
+        ],
+        "bbox_coverage_scene_count": 8,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 7.1e-05,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified",
+        "days_apart": "7.1e-05",
+        "temporal_bin": "T0",
+        "source_sha256_i": "fe08c54c3392ee7d5a379649f5f3968b79c1498f959486a50454c6d3e6ca4eca",
+        "source_sha256_j": "6f2a85362c5af07a9f135ec36d0c2d6924a19afecc0fe8cfa641fdd831e1c391",
+        "geometry_crs": "EPSG:4326",
+        "source_crs_resolution": "EPSG:4326_CONFIRMED_BY_SCENE_EXTENTS",
+        "roi_id": "R1_REGION_10_11",
+        "source_region_id": "REGION_10_11",
+        "label": "UNKNOWN",
+        "reviewer": "",
+        "review_time_utc": "",
+        "second_reviewer": "",
+        "second_review_status": "UNVERIFIED",
+        "second_review_time_utc": "",
+        "spatial_role": "UNASSIGNED",
+        "grid_cell_id": "g66_327",
+        "spatial_status": "CROSSES_CELL_OR_500M_BUFFER",
+        "purpose": "UNASSIGNED",
+        "calibration_or_evaluation": "UNASSIGNED",
+        "spatial_overlap_audit": "PENDING_PAIRWISE_AUDIT",
+        "candidate_geometry_source": "EXISTING_UNVERIFIED_REGION"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.6190642548298,
+              29.47073962458184
+            ],
+            [
+              118.81183087299603,
+              29.468254268192847
+            ],
+            [
+              118.81494745772152,
+              29.642735881769703
+            ],
+            [
+              118.62184963102524,
+              29.645238852724777
+            ],
+            [
+              118.6190642548298,
+              29.47073962458184
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_04_06",
+        "pair_id": "04_06",
+        "scene_i": "DZ01V_L2_E118.7_N29.6_20251208025102_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.5_20251214025259_01_T1",
+        "bbox_intersecting_scene_indices": [
+          2,
+          4,
+          5,
+          6,
+          8,
+          9,
+          10,
+          11
+        ],
+        "bbox_coverage_scene_count": 8,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 6.001356,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified",
+        "days_apart": "6.001356",
+        "temporal_bin": "T1",
+        "source_sha256_i": "3785b1bd5732e5f7f5472e5acc265cf9fa525a19575dff604caf25051c04f3a1",
+        "source_sha256_j": "16253f1f198a25acf1d9d018e9a55eb172e0ee4826409ccfcd69375810d4161d",
+        "geometry_crs": "EPSG:4326",
+        "source_crs_resolution": "EPSG:4326_CONFIRMED_BY_SCENE_EXTENTS",
+        "roi_id": "R1_REGION_04_06",
+        "source_region_id": "REGION_04_06",
+        "label": "UNKNOWN",
+        "reviewer": "",
+        "review_time_utc": "",
+        "second_reviewer": "",
+        "second_review_status": "UNVERIFIED",
+        "second_review_time_utc": "",
+        "spatial_role": "UNASSIGNED",
+        "grid_cell_id": "g65_326",
+        "spatial_status": "CROSSES_CELL_OR_500M_BUFFER",
+        "purpose": "UNASSIGNED",
+        "calibration_or_evaluation": "UNASSIGNED",
+        "spatial_overlap_audit": "PENDING_PAIRWISE_AUDIT",
+        "candidate_geometry_source": "EXISTING_UNVERIFIED_REGION"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.88783251684569,
+              29.56778480735657
+            ],
+            [
+              118.8890374365297,
+              29.632441864534133
+            ],
+            [
+              118.81502716253163,
+              29.6334756184229
+            ],
+            [
+              118.81386938578085,
+              29.568815861955574
+            ],
+            [
+              118.88783251684569,
+              29.56778480735657
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "pair_id": "06_08",
+        "region_id": "R1_BBOX_06_08",
+        "source_crs": "EPSG:32650",
+        "candidate_geometry_source": "BBOX_INTERSECTION_UNVERIFIED",
+        "selection_note": "Bounding-box-only proposal; raster valid masks and human suitability are not established.",
+        "scene_i": "DZ01V_L2_E118.8_N29.5_20251214025259_01_T1",
+        "scene_j": "DZ01V_L2_E118.9_N29.7_20251215023731_01_T1",
+        "days_apart": "0.989259",
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "temporal_bin": "T1",
+        "source_sha256_i": "16253f1f198a25acf1d9d018e9a55eb172e0ee4826409ccfcd69375810d4161d",
+        "source_sha256_j": "cec1b3b73496aa721ae999e37c56337e0bdd1fe0806dcb91e845b7a08b177b4a",
+        "geometry_crs": "EPSG:4326",
+        "source_crs_resolution": "BBOX_FROM_SCENE_METRICS",
+        "roi_id": "R1_R1_BBOX_06_08",
+        "source_region_id": "R1_BBOX_06_08",
+        "label": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "reviewer": "",
+        "review_time_utc": "",
+        "second_reviewer": "",
+        "second_review_status": "UNVERIFIED",
+        "second_review_time_utc": "",
+        "spatial_role": "UNASSIGNED",
+        "grid_cell_id": "g67_327",
+        "spatial_status": "CROSSES_CELL_OR_500M_BUFFER",
+        "purpose": "UNASSIGNED",
+        "calibration_or_evaluation": "UNASSIGNED",
+        "spatial_overlap_audit": "PENDING_PAIRWISE_AUDIT"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.71931758247439,
+              29.81996254141546
+            ],
+            [
+              118.90683165644771,
+              29.817388748670943
+            ],
+            [
+              118.90996972939672,
+              29.982002313539514
+            ],
+            [
+              118.72214745529784,
+              29.98459318935613
+            ],
+            [
+              118.71931758247439,
+              29.81996254141546
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "REGION_02_03",
+        "pair_id": "02_03",
+        "scene_i": "DZ01V_L2_E118.9_N29.9_20251120024226_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.9_20251208025056_01_T1",
+        "bbox_intersecting_scene_indices": [
+          2,
+          3,
+          4,
+          5,
+          7,
+          8,
+          10
+        ],
+        "bbox_coverage_scene_count": 7,
+        "valid_coverage_scene_count": "UNKNOWN",
+        "time_gap_days": 18.005909,
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "terrain": "TERRAIN_UNKNOWN",
+        "stable_landcover_truth": "UNKNOWN",
+        "change_truth": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "source_crs": "EPSG:32650",
+        "selection_note": "center of native B9 bbox intersection; valid-pixel support within region unverified",
+        "days_apart": "18.005909",
+        "temporal_bin": "T2",
+        "source_sha256_i": "cfa4a610e0df80ca3ec53f0d74cdbd8c99289fe2788452e0d70a45838457d465",
+        "source_sha256_j": "3659acd79285d9042d4fb9772dfb1ebf384837c0e953f937fef6cbc0f4421cb9",
+        "geometry_crs": "EPSG:4326",
+        "source_crs_resolution": "EPSG:4326_CONFIRMED_BY_SCENE_EXTENTS",
+        "roi_id": "R1_REGION_02_03",
+        "source_region_id": "REGION_02_03",
+        "label": "UNKNOWN",
+        "reviewer": "",
+        "review_time_utc": "",
+        "second_reviewer": "",
+        "second_review_status": "UNVERIFIED",
+        "second_review_time_utc": "",
+        "spatial_role": "UNASSIGNED",
+        "grid_cell_id": "g66_330",
+        "spatial_status": "CROSSES_CELL_OR_500M_BUFFER",
+        "purpose": "UNASSIGNED",
+        "calibration_or_evaluation": "UNASSIGNED",
+        "spatial_overlap_audit": "PENDING_PAIRWISE_AUDIT",
+        "candidate_geometry_source": "EXISTING_UNVERIFIED_REGION"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.90186390204106,
+              29.756931117841024
+            ],
+            [
+              118.90308711341449,
+              29.821585802028533
+            ],
+            [
+              118.82893848351966,
+              29.82263336581125
+            ],
+            [
+              118.82776286524333,
+              29.757975957130345
+            ],
+            [
+              118.90186390204106,
+              29.756931117841024
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "pair_id": "02_08",
+        "region_id": "R1_BBOX_02_08",
+        "source_crs": "EPSG:32650",
+        "candidate_geometry_source": "BBOX_INTERSECTION_UNVERIFIED",
+        "selection_note": "Bounding-box-only proposal; raster valid masks and human suitability are not established.",
+        "scene_i": "DZ01V_L2_E118.9_N29.9_20251120024226_01_T1",
+        "scene_j": "DZ01V_L2_E118.9_N29.7_20251215023731_01_T1",
+        "days_apart": "24.996589",
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "temporal_bin": "T2",
+        "source_sha256_i": "cfa4a610e0df80ca3ec53f0d74cdbd8c99289fe2788452e0d70a45838457d465",
+        "source_sha256_j": "cec1b3b73496aa721ae999e37c56337e0bdd1fe0806dcb91e845b7a08b177b4a",
+        "geometry_crs": "EPSG:4326",
+        "source_crs_resolution": "BBOX_FROM_SCENE_METRICS",
+        "roi_id": "R1_R1_BBOX_02_08",
+        "source_region_id": "R1_BBOX_02_08",
+        "label": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "reviewer": "",
+        "review_time_utc": "",
+        "second_reviewer": "",
+        "second_review_status": "UNVERIFIED",
+        "second_review_time_utc": "",
+        "spatial_role": "UNASSIGNED",
+        "grid_cell_id": "g67_329",
+        "spatial_status": "CROSSES_CELL_OR_500M_BUFFER",
+        "purpose": "UNASSIGNED",
+        "calibration_or_evaluation": "UNASSIGNED",
+        "spatial_overlap_audit": "PENDING_PAIRWISE_AUDIT"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              119.04052144153121,
+              29.944514007721082
+            ],
+            [
+              119.11475078570369,
+              29.943343387499702
+            ],
+            [
+              119.11612113222317,
+              30.00798778407112
+            ],
+            [
+              119.04184377079011,
+              30.009161444602423
+            ],
+            [
+              119.04052144153121,
+              29.944514007721082
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "LONG_00_10",
+        "pair_id": "00_10",
+        "scene_i": "DZ01V_L2_E119.3_N29.9_20251114023847_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.8_20260114024138_01_T1",
+        "scene_index_i": 0,
+        "scene_index_j": 10,
+        "acquisition_i": "2025-11-14T02:38:47.610573",
+        "acquisition_j": "2026-01-14T02:41:38.157591",
+        "days_apart": "61.001974",
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "pair_total_valid_overlap_pixels": "1374076",
+        "candidate_window_valid_pixels": 236974,
+        "candidate_window_total_pixels": 262144,
+        "candidate_window_valid_fraction": 0.90398407,
+        "candidate_crs": "EPSG:32650",
+        "candidate_left_m": 696934.0,
+        "candidate_bottom_m": 3314388.0,
+        "candidate_right_m": 704102.0,
+        "candidate_top_m": 3321556.0,
+        "source_sha256_i": "5b2cfa54261e9e34687624fa11ce044fdaf83ea058bc0ceae48876060d7d3923",
+        "source_sha256_j": "fe08c54c3392ee7d5a379649f5f3968b79c1498f959486a50454c6d3e6ca4eca",
+        "candidate_label": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "role": "UNASSIGNED",
+        "terrain": "TERRAIN_UNKNOWN",
+        "mask_verification": "native_B9_both_masks_nonzero_in_exact_window",
+        "temporal_bin": "T3",
+        "geometry_crs": "EPSG:4326",
+        "source_crs_resolution": "DECLARED_SOURCE_CRS",
+        "roi_id": "R1_LONG_00_10",
+        "source_region_id": "LONG_00_10",
+        "label": "UNKNOWN",
+        "reviewer": "",
+        "review_time_utc": "",
+        "second_reviewer": "",
+        "second_review_status": "UNVERIFIED",
+        "second_review_time_utc": "",
+        "spatial_role": "UNASSIGNED",
+        "grid_cell_id": "g69_331",
+        "spatial_status": "CROSSES_CELL_OR_500M_BUFFER",
+        "purpose": "UNASSIGNED",
+        "calibration_or_evaluation": "UNASSIGNED",
+        "spatial_overlap_audit": "PENDING_PAIRWISE_AUDIT",
+        "candidate_geometry_source": "EXISTING_UNVERIFIED_REGION"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.72920618190949,
+              29.948967931981812
+            ],
+            [
+              118.80345248625724,
+              29.94797251795591
+            ],
+            [
+              118.80462140311599,
+              30.012628937617635
+            ],
+            [
+              118.73032703542265,
+              30.013626937143908
+            ],
+            [
+              118.72920618190949,
+              29.948967931981812
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "LONG_02_10",
+        "pair_id": "02_10",
+        "scene_i": "DZ01V_L2_E118.9_N29.9_20251120024226_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.8_20260114024138_01_T1",
+        "scene_index_i": 2,
+        "scene_index_j": 10,
+        "acquisition_i": "2025-11-20T02:42:26.312840",
+        "acquisition_j": "2026-01-14T02:41:38.157591",
+        "days_apart": "54.999443",
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "pair_total_valid_overlap_pixels": "9173415",
+        "candidate_window_valid_pixels": 262144,
+        "candidate_window_total_pixels": 262144,
+        "candidate_window_valid_fraction": 1.0,
+        "candidate_crs": "EPSG:32650",
+        "candidate_left_m": 666876.0,
+        "candidate_bottom_m": 3314388.0,
+        "candidate_right_m": 674044.0,
+        "candidate_top_m": 3321556.0,
+        "source_sha256_i": "cfa4a610e0df80ca3ec53f0d74cdbd8c99289fe2788452e0d70a45838457d465",
+        "source_sha256_j": "fe08c54c3392ee7d5a379649f5f3968b79c1498f959486a50454c6d3e6ca4eca",
+        "candidate_label": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "role": "UNASSIGNED",
+        "terrain": "TERRAIN_UNKNOWN",
+        "mask_verification": "native_B9_both_masks_nonzero_in_exact_window",
+        "temporal_bin": "T3",
+        "geometry_crs": "EPSG:4326",
+        "source_crs_resolution": "DECLARED_SOURCE_CRS",
+        "roi_id": "R1_LONG_02_10",
+        "source_region_id": "LONG_02_10",
+        "label": "UNKNOWN",
+        "reviewer": "",
+        "review_time_utc": "",
+        "second_reviewer": "",
+        "second_review_status": "UNVERIFIED",
+        "second_review_time_utc": "",
+        "spatial_role": "UNASSIGNED",
+        "grid_cell_id": "g66_331",
+        "spatial_status": "CROSSES_CELL_OR_500M_BUFFER",
+        "purpose": "UNASSIGNED",
+        "calibration_or_evaluation": "UNASSIGNED",
+        "spatial_overlap_audit": "PENDING_PAIRWISE_AUDIT",
+        "candidate_geometry_source": "EXISTING_UNVERIFIED_REGION"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.63072316615478,
+              29.564938430332663
+            ],
+            [
+              118.70469079902685,
+              29.5640094786336
+            ],
+            [
+              118.70577869681222,
+              29.628673083455556
+            ],
+            [
+              118.63176391155662,
+              29.62960446757737
+            ],
+            [
+              118.63072316615478,
+              29.564938430332663
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "LONG_04_11",
+        "pair_id": "04_11",
+        "scene_i": "DZ01V_L2_E118.7_N29.6_20251208025102_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.4_20260114024144_01_T1",
+        "scene_index_i": 4,
+        "scene_index_j": 11,
+        "acquisition_i": "2025-12-08T02:51:02.513324",
+        "acquisition_j": "2026-01-14T02:41:44.275462",
+        "days_apart": "36.993539",
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "pair_total_valid_overlap_pixels": "5088227",
+        "candidate_window_valid_pixels": 262144,
+        "candidate_window_total_pixels": 262144,
+        "candidate_window_valid_fraction": 1.0,
+        "candidate_crs": "EPSG:32650",
+        "candidate_left_m": 657972.0,
+        "candidate_bottom_m": 3271688.0,
+        "candidate_right_m": 665140.0,
+        "candidate_top_m": 3278856.0,
+        "source_sha256_i": "3785b1bd5732e5f7f5472e5acc265cf9fa525a19575dff604caf25051c04f3a1",
+        "source_sha256_j": "6f2a85362c5af07a9f135ec36d0c2d6924a19afecc0fe8cfa641fdd831e1c391",
+        "candidate_label": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "role": "UNASSIGNED",
+        "terrain": "TERRAIN_UNKNOWN",
+        "mask_verification": "native_B9_both_masks_nonzero_in_exact_window",
+        "temporal_bin": "T3",
+        "geometry_crs": "EPSG:4326",
+        "source_crs_resolution": "DECLARED_SOURCE_CRS",
+        "roi_id": "R1_LONG_04_11",
+        "source_region_id": "LONG_04_11",
+        "label": "UNKNOWN",
+        "reviewer": "",
+        "review_time_utc": "",
+        "second_reviewer": "",
+        "second_review_status": "UNVERIFIED",
+        "second_review_time_utc": "",
+        "spatial_role": "UNASSIGNED",
+        "grid_cell_id": "g65_327",
+        "spatial_status": "CROSSES_CELL_OR_500M_BUFFER",
+        "purpose": "UNASSIGNED",
+        "calibration_or_evaluation": "UNASSIGNED",
+        "spatial_overlap_audit": "PENDING_PAIRWISE_AUDIT",
+        "candidate_geometry_source": "EXISTING_UNVERIFIED_REGION"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.79616990725143,
+              29.4216387337276
+            ],
+            [
+              118.79730954958067,
+              29.486300554691045
+            ],
+            [
+              118.72340199726878,
+              29.487278765178484
+            ],
+            [
+              118.72230916071162,
+              29.42261438187847
+            ],
+            [
+              118.79616990725143,
+              29.4216387337276
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "pair_id": "06_11",
+        "region_id": "R1_BBOX_06_11",
+        "source_crs": "EPSG:32650",
+        "candidate_geometry_source": "BBOX_INTERSECTION_UNVERIFIED",
+        "selection_note": "Bounding-box-only proposal; raster valid masks and human suitability are not established.",
+        "scene_i": "DZ01V_L2_E118.8_N29.5_20251214025259_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.4_20260114024144_01_T1",
+        "days_apart": "30.992183",
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "temporal_bin": "T3",
+        "source_sha256_i": "16253f1f198a25acf1d9d018e9a55eb172e0ee4826409ccfcd69375810d4161d",
+        "source_sha256_j": "6f2a85362c5af07a9f135ec36d0c2d6924a19afecc0fe8cfa641fdd831e1c391",
+        "geometry_crs": "EPSG:4326",
+        "source_crs_resolution": "BBOX_FROM_SCENE_METRICS",
+        "roi_id": "R1_R1_BBOX_06_11",
+        "source_region_id": "R1_BBOX_06_11",
+        "label": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "reviewer": "",
+        "review_time_utc": "",
+        "second_reviewer": "",
+        "second_review_status": "UNVERIFIED",
+        "second_review_time_utc": "",
+        "spatial_role": "UNASSIGNED",
+        "grid_cell_id": "g66_325",
+        "spatial_status": "CROSSES_CELL_OR_500M_BUFFER",
+        "purpose": "UNASSIGNED",
+        "calibration_or_evaluation": "UNASSIGNED",
+        "spatial_overlap_audit": "PENDING_PAIRWISE_AUDIT"
+      }
+    }
+  ]
+}

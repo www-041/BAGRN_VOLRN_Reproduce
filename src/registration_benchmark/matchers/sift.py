@@ -1,0 +1,213 @@
+"""SIFT tie-point matcher.
+
+Uses OpenCV SIFT with Lowe ratio test and mutual-consistency check.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+
+import cv2
+import numpy as np
+
+from src.registration_benchmark.models import (
+    MatchView,
+    filter_matches_by_valid_mask,
+    make_matchset_from_view,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def match_sift(
+    view: MatchView,
+    nfeatures: int = 8000,
+    ratio_threshold: float = 0.75,
+) -> MatchSet:
+    """Extract SIFT keypoints and match them with mutual-consistency check.
+
+    Pipeline::
+
+        float32 [0,1] → uint8 → SIFT → BF+KNN → Lowe ratio →
+        symmetric check → valid-mask filter → :meth:`MatchView.to_canvas`
+
+    Args:
+        view: Preprocessed overlap view.
+        nfeatures: Maximum number of SIFT keypoints to retain.
+        ratio_threshold: Lowe's ratio threshold for KNN filtering.
+
+    Returns:
+        A :class:`MatchSet` with coordinates in common-grid space.
+    """
+    t0 = time.perf_counter()
+
+    # --- Convert [0, 1] float32 → uint8 ---------------------------------------
+    feature_t0 = time.perf_counter()
+    ref_u8 = _to_uint8(view.ref)
+    tgt_u8 = _to_uint8(view.tgt)
+
+    # --- SIFT detect & compute -------------------------------------------------
+    sift = cv2.SIFT_create(nfeatures=nfeatures)
+
+    kp_ref, des_ref = sift.detectAndCompute(ref_u8, None)
+    kp_tgt, des_tgt = sift.detectAndCompute(tgt_u8, None)
+    feature_runtime = time.perf_counter() - feature_t0
+
+    if des_ref is None or des_tgt is None or len(kp_ref) < 2 or len(kp_tgt) < 2:
+        elapsed = time.perf_counter() - t0
+        logger.warning("SIFT: insufficient keypoints (ref=%d, tgt=%d)",
+                       len(kp_ref) if kp_ref is not None else 0,
+                       len(kp_tgt) if kp_tgt is not None else 0)
+        return make_matchset_from_view(
+            method="sift",
+            view=view,
+            ref_xy_view=np.empty((0, 2)),
+            tgt_xy_view=np.empty((0, 2)),
+            confidence=np.empty(0),
+            runtime_sec=elapsed,
+            metadata={"nfeatures": nfeatures, "ratio_threshold": ratio_threshold},
+            runtime_breakdown={
+                "feature_runtime_sec": feature_runtime,
+                "matcher_runtime_sec": 0.0,
+            },
+        )
+
+    # --- BFMatcher + KNN k=2 ---------------------------------------------------
+    matcher_t0 = time.perf_counter()
+    matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
+    raw_matches = matcher.knnMatch(des_ref, des_tgt, k=2)
+
+    # Lowe ratio
+    good_fwd = []
+    for m, n in raw_matches:
+        if m.distance < ratio_threshold * n.distance:
+            good_fwd.append(m)
+
+    # --- Symmetric mutual-consistency check ------------------------------------
+    raw_matches_rev = matcher.knnMatch(des_tgt, des_ref, k=2)
+    good_rev = []
+    for m, n in raw_matches_rev:
+        if m.distance < ratio_threshold * n.distance:
+            good_rev.append(m)
+    matcher_runtime = time.perf_counter() - matcher_t0
+
+    # Build reverse index: tgt_idx → ref_idx
+    rev_map = {m.queryIdx: m.trainIdx for m in good_rev}
+
+    # Keep only mutually consistent matches
+    mutual = []
+    for m in good_fwd:
+        if m.trainIdx in rev_map and rev_map[m.trainIdx] == m.queryIdx:
+            mutual.append(m)
+
+    if not mutual:
+        elapsed = time.perf_counter() - t0
+        logger.warning("SIFT: zero mutual matches after symmetric check")
+        return make_matchset_from_view(
+            method="sift",
+            view=view,
+            ref_xy_view=np.empty((0, 2)),
+            tgt_xy_view=np.empty((0, 2)),
+            confidence=np.empty(0),
+            runtime_sec=elapsed,
+            metadata={
+                "nfeatures": nfeatures,
+                "ratio_threshold": ratio_threshold,
+                "raw_fwd": len(good_fwd),
+                "raw_rev": len(good_rev),
+                "mutual": 0,
+            },
+            runtime_breakdown={
+                "feature_runtime_sec": feature_runtime,
+                "matcher_runtime_sec": matcher_runtime,
+            },
+        )
+
+    # --- Extract coordinates in view pixel space -------------------------------
+    n = len(mutual)
+    ref_xy_view = np.empty((n, 2), dtype=np.float64)
+    tgt_xy_view = np.empty((n, 2), dtype=np.float64)
+    distances = np.empty(n, dtype=np.float64)
+
+    for i, m in enumerate(mutual):
+        ref_xy_view[i, 0] = kp_ref[m.queryIdx].pt[0]  # x = column
+        ref_xy_view[i, 1] = kp_ref[m.queryIdx].pt[1]  # y = row
+        tgt_xy_view[i, 0] = kp_tgt[m.trainIdx].pt[0]
+        tgt_xy_view[i, 1] = kp_tgt[m.trainIdx].pt[1]
+        distances[i] = m.distance
+
+    # --- Confidence (method-internal, NOT cross-method comparable) -------------
+    max_dist = distances.max() if len(distances) > 0 else 1.0
+    if max_dist > 0:
+        confidence = 1.0 - distances / max_dist
+    else:
+        confidence = np.ones_like(distances)
+    confidence = np.clip(confidence, 0.0, 1.0)
+
+    # --- Shared valid-mask filter (discard invalid/out-of-bounds pixels) ------
+    ref_xy_view, tgt_xy_view, confidence, keep = filter_matches_by_valid_mask(
+        ref_xy_view, tgt_xy_view, confidence, view
+    )
+
+    # --- Map to common-grid coordinates ----------------------------------------
+    if len(ref_xy_view) == 0:
+        elapsed = time.perf_counter() - t0
+        return make_matchset_from_view(
+            method="sift",
+            view=view,
+            ref_xy_view=np.empty((0, 2)),
+            tgt_xy_view=np.empty((0, 2)),
+            confidence=np.empty(0),
+            runtime_sec=elapsed,
+            metadata={
+                "nfeatures": nfeatures,
+                "ratio_threshold": ratio_threshold,
+                "raw_fwd": len(good_fwd),
+                "raw_rev": len(good_rev),
+                "mutual": n,
+                "valid_mask_filtered": True,
+            },
+            runtime_breakdown={
+                "feature_runtime_sec": feature_runtime,
+                "matcher_runtime_sec": matcher_runtime,
+            },
+        )
+
+    elapsed = time.perf_counter() - t0
+
+    return make_matchset_from_view(
+        method="sift",
+        view=view,
+        ref_xy_view=ref_xy_view,
+        tgt_xy_view=tgt_xy_view,
+        confidence=confidence,
+        runtime_sec=elapsed,
+        metadata={
+            "nfeatures": nfeatures,
+            "ratio_threshold": ratio_threshold,
+            "raw_fwd": len(good_fwd),
+            "raw_rev": len(good_rev),
+            "mutual": n,
+            "valid_mask_filtered": int((~keep).sum()) if hasattr(keep, '__len__') else 0,
+        },
+        runtime_breakdown={
+            "feature_runtime_sec": feature_runtime,
+            "matcher_runtime_sec": matcher_runtime,
+        },
+    )
+
+
+def _to_uint8(img: np.ndarray) -> np.ndarray:
+    """Convert float32 [0, 1] image to uint8 [0, 255]."""
+    return (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
+
+
+class SIFTMatcherSession:
+    """Stateless session interface for the shared pairwise runner."""
+
+    def match(self, view: MatchView, **kwargs):
+        return match_sift(view, **kwargs)
+
+    def close(self) -> None:
+        return None

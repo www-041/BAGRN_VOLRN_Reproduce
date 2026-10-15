@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "task": "Task10D",
+  "paper_metrics": {"cd_status": "UNVERIFIED", "gl_status": "UNVERIFIED"},
+  "global_metrics": {
+    "mamd": {"definition": "weighted_shared_valid_abs_mean_difference", "direction": "lower"},
+    "msdd": {"definition": "weighted_shared_valid_abs_std_difference", "direction": "lower"}
+  },
+  "rdd": {
+    "definition": "weighted_shared_valid_one_dimensional_wasserstein_1",
+    "implementation": "scipy.stats.wasserstein_distance",
+    "histogram_official": false,
+    "direction": "lower"
+  },
+  "local_grid": {
+    "tile_size_pixels": 256,
+    "anchor": "canonical_mosaic_grid_origin",
+    "min_shared_valid_pixels": 4096,
+    "support_shared_across_methods": true,
+    "direction": "lower"
+  },
+  "seam_zone": {
+    "definition_source": "Task9 build_seam_zone_mask",
+    "min_normalized_weight": 0.25,
+    "weight_rule": "pairwise normalized feather weights",
+    "direction": "lower"
+  },
+  "cgl": {
+    "name": "Circular Gradient Orientation Loss",
+    "gradient_operator": "scipy.ndimage.sobel",
+    "angle_definition": "theta=atan2(Gy,Gx)",
+    "angle_difference": "abs(atan2(sin(delta), cos(delta)))",
+    "stencil": "fully_valid_3x3",
+    "gradient_threshold": 1e-12,
+    "unit": "radians",
+    "report_degrees": true,
+    "direction": "lower"
+  },
+  "shared_valid_fairness": true,
+  "no_composite_score": true
+}

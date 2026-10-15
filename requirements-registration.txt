@@ -1,0 +1,10 @@
+-r requirements.txt
+
+opencv-python>=4.8
+
+torch>=2.1
+torchvision>=0.16
+
+kornia>=0.8
+
+git+https://github.com/cvg/LightGlue.git

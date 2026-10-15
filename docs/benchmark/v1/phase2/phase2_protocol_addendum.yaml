@@ -1,0 +1,37 @@
+schema_version: 1
+parent_protocol: ../benchmark_protocol_draft.yaml
+status: DRAFT_REQUIRES_HUMAN_REVIEW
+source_identity:
+  scene_inventory: ../scene_inventory.csv
+  band_inventory: ../v_band_inventory.csv
+  task15_scene_manifest: ../../../../data/output/final_pipeline/b9_13scene_formal_v2/scene_manifest.csv
+  b9_recorded_hashes: input_identity_manifest.csv
+  b9_current_hash_check: NOT_RECHECKED_PHASE2
+  other_band_hashes: NOT_FROZEN
+pair_policy:
+  complete_combinations: 78
+  actual_b9_valid_overlap: 48
+  no_valid_overlap: 30
+  no_valid_overlap_is_matcher_fail: false
+  matcher_fail_denominator: attempted_pairs_with_actual_b9_valid_overlap
+  registration_round1_pairs_unchanged: ['00_01', '00_05', '01_06', '02_03', '02_04', '02_07', '03_08', '04_06', '04_09', '05_06', '05_07', '08_10', '09_12', '10_11', '11_12']
+  longest_round1_gap_days_approx: 30
+  extended_radiometric_only_pairs: ['00_10', '02_10', '04_11']
+annotation:
+  trial_pairs: ['00_01', '02_03', '05_07', '08_10']
+  independent_truth_source: human_review_only
+  approved_truth_count: 0
+  final_metric_filter: APPROVED_AND_TEST
+regions:
+  phase1_candidates: ../evaluation_region_candidates.geojson
+  phase2_long_gap_candidates: extended_temporal_regions.geojson
+  review_template: radiometric_region_review_template.csv
+  all_auto_candidates_unverified: true
+  allowed_human_labels: [STABLE, REAL_CHANGE, CLOUD, SHADOW, UNKNOWN]
+  roles: [DEVELOPMENT, TEST, UNASSIGNED]
+  spatial_separation_buffer_m: 140
+multiband:
+  raw_mae_across_bands_direct_mean_allowed: false
+  per_band_values_required: true
+  cross_band_scale_rule: PRE_REGISTER_USING_DEVELOPMENT_ONLY
+  physical_pixel_unit: UNKNOWN

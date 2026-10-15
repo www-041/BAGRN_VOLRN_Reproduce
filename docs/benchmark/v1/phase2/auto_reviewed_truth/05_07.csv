@@ -1,0 +1,1 @@
+point_id,pair_id,scene_i,scene_j,band,row_i,col_i,x_i,y_i,row_j,col_j,x_j,y_j,coordinate_precision_note,landcover_type,terrain_class,confidence,review_status,reviewer,review_time_utc,split,notes,point_source,origin_candidate_id,primary_reviewer,second_reviewer

@@ -1,0 +1,183 @@
+{
+  "type": "FeatureCollection",
+  "name": "unverified_long_gap_candidates",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              119.04052144153121,
+              29.944514007721082
+            ],
+            [
+              119.11475078570369,
+              29.943343387499702
+            ],
+            [
+              119.11612113222317,
+              30.00798778407112
+            ],
+            [
+              119.04184377079011,
+              30.009161444602423
+            ],
+            [
+              119.04052144153121,
+              29.944514007721082
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "LONG_00_10",
+        "pair_id": "00_10",
+        "scene_i": "DZ01V_L2_E119.3_N29.9_20251114023847_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.8_20260114024138_01_T1",
+        "scene_index_i": 0,
+        "scene_index_j": 10,
+        "acquisition_i": "2025-11-14T02:38:47.610573",
+        "acquisition_j": "2026-01-14T02:41:38.157591",
+        "days_apart": "61.001974",
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "pair_total_valid_overlap_pixels": "1374076",
+        "candidate_window_valid_pixels": 236974,
+        "candidate_window_total_pixels": 262144,
+        "candidate_window_valid_fraction": 0.90398407,
+        "candidate_crs": "EPSG:32650",
+        "candidate_left_m": 696934.0,
+        "candidate_bottom_m": 3314388.0,
+        "candidate_right_m": 704102.0,
+        "candidate_top_m": 3321556.0,
+        "source_sha256_i": "5b2cfa54261e9e34687624fa11ce044fdaf83ea058bc0ceae48876060d7d3923",
+        "source_sha256_j": "fe08c54c3392ee7d5a379649f5f3968b79c1498f959486a50454c6d3e6ca4eca",
+        "candidate_label": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "role": "UNASSIGNED",
+        "terrain": "TERRAIN_UNKNOWN",
+        "mask_verification": "native_B9_both_masks_nonzero_in_exact_window"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.72920618190949,
+              29.948967931981812
+            ],
+            [
+              118.80345248625724,
+              29.94797251795591
+            ],
+            [
+              118.80462140311599,
+              30.012628937617635
+            ],
+            [
+              118.73032703542265,
+              30.013626937143908
+            ],
+            [
+              118.72920618190949,
+              29.948967931981812
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "LONG_02_10",
+        "pair_id": "02_10",
+        "scene_i": "DZ01V_L2_E118.9_N29.9_20251120024226_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.8_20260114024138_01_T1",
+        "scene_index_i": 2,
+        "scene_index_j": 10,
+        "acquisition_i": "2025-11-20T02:42:26.312840",
+        "acquisition_j": "2026-01-14T02:41:38.157591",
+        "days_apart": "54.999443",
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "pair_total_valid_overlap_pixels": "9173415",
+        "candidate_window_valid_pixels": 262144,
+        "candidate_window_total_pixels": 262144,
+        "candidate_window_valid_fraction": 1.0,
+        "candidate_crs": "EPSG:32650",
+        "candidate_left_m": 666876.0,
+        "candidate_bottom_m": 3314388.0,
+        "candidate_right_m": 674044.0,
+        "candidate_top_m": 3321556.0,
+        "source_sha256_i": "cfa4a610e0df80ca3ec53f0d74cdbd8c99289fe2788452e0d70a45838457d465",
+        "source_sha256_j": "fe08c54c3392ee7d5a379649f5f3968b79c1498f959486a50454c6d3e6ca4eca",
+        "candidate_label": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "role": "UNASSIGNED",
+        "terrain": "TERRAIN_UNKNOWN",
+        "mask_verification": "native_B9_both_masks_nonzero_in_exact_window"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              118.63072316615478,
+              29.564938430332663
+            ],
+            [
+              118.70469079902685,
+              29.5640094786336
+            ],
+            [
+              118.70577869681222,
+              29.628673083455556
+            ],
+            [
+              118.63176391155662,
+              29.62960446757737
+            ],
+            [
+              118.63072316615478,
+              29.564938430332663
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "region_id": "LONG_04_11",
+        "pair_id": "04_11",
+        "scene_i": "DZ01V_L2_E118.7_N29.6_20251208025102_01_T1",
+        "scene_j": "DZ01V_L2_E118.8_N29.4_20260114024144_01_T1",
+        "scene_index_i": 4,
+        "scene_index_j": 11,
+        "acquisition_i": "2025-12-08T02:51:02.513324",
+        "acquisition_j": "2026-01-14T02:41:44.275462",
+        "days_apart": "36.993539",
+        "quality_i": "PASS",
+        "quality_j": "PASS",
+        "pair_total_valid_overlap_pixels": "5088227",
+        "candidate_window_valid_pixels": 262144,
+        "candidate_window_total_pixels": 262144,
+        "candidate_window_valid_fraction": 1.0,
+        "candidate_crs": "EPSG:32650",
+        "candidate_left_m": 657972.0,
+        "candidate_bottom_m": 3271688.0,
+        "candidate_right_m": 665140.0,
+        "candidate_top_m": 3278856.0,
+        "source_sha256_i": "3785b1bd5732e5f7f5472e5acc265cf9fa525a19575dff604caf25051c04f3a1",
+        "source_sha256_j": "6f2a85362c5af07a9f135ec36d0c2d6924a19afecc0fe8cfa641fdd831e1c391",
+        "candidate_label": "UNKNOWN",
+        "review_status": "UNVERIFIED",
+        "role": "UNASSIGNED",
+        "terrain": "TERRAIN_UNKNOWN",
+        "mask_verification": "native_B9_both_masks_nonzero_in_exact_window"
+      }
+    }
+  ]
+}

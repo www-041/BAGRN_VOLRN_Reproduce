@@ -1,0 +1,63 @@
+protocol_id: DZ01V_BENCHMARK_V1_DRAFT
+status: DRAFT_REQUIRES_MANUAL_TRUTH
+date: '2026-10-09'
+population:
+  sensor: DZ01 VNIR V
+  source: processed_13_scene_inventory
+  scenes: 13
+  bands: [B1, B2, B3, B4, B5, B6, B7, B8, B9, B10, B11, B12, B13, B14, B15, B16]
+  include_all_scenes: true
+  quality_strata: [PASS, RISK]
+  risk_scenes: ['20251214025253', '20251215023725', '20251215023737']
+  pixel_unit: UNKNOWN
+  native_crs: EPSG:32650
+  native_resolution_m: 14
+inputs:
+  scene_inventory: scene_inventory.csv
+  band_inventory: v_band_inventory.csv
+  task15_overlap_edges: ../../../data/output/final_pipeline/b9_13scene_formal_v2/overlap_edges.csv
+  task15_registration_metrics: ../../../data/output/final_pipeline/b9_13scene_formal_v2/registration_pair_metrics.csv
+  pair_candidates: pair_candidates.csv
+  temporal_pairs: temporal_pair_inventory.csv
+  checkpoints: registration_checkpoints_template.csv
+  regions: evaluation_region_candidates.geojson
+pair_policy:
+  retain_all_78_pairs: true
+  bbox_overlap_is_not_valid_overlap: true
+  valid_overlap_rule: native_B9_both_rasterio_masks_nonzero_EPSG32650_14m
+  selected_round1_pairs: ['00_01', '00_05', '01_06', '02_03', '02_04', '02_07', '03_08', '04_06', '04_09', '05_06', '05_07', '08_10', '09_12', '10_11', '11_12']
+  selection_does_not_use_matcher_scores: true
+registration:
+  benchmark_band: B9
+  input_grid: EPSG32650_14m_common_overlap_with_explicit_valid_mask
+  input_scale: native_14m_for_all_methods; any_downscale_report_separately
+  methods: [SIFT, KARIOS_KLT, AROSICS_GLOBAL, AROSICS_LOCAL, LoFTR, EfficientLoFTR, LightGlue_DISK]
+  main_shared_model: translation_2d
+  local_model_stratum: AROSICS_LOCAL_SEPARATE
+  tie_point_provenance: algorithm_output_only_not_ground_truth
+  truth: manually_reviewed_independent_subpixel_checkpoints
+  verified_status_required: APPROVED
+  splits: spatially_disjoint_DEVELOPMENT_TEST
+  point_metrics: [RMSE_px, P95_px, MAX_px, PCK_1px, PCK_2px, PCK_3px]
+  pair_metrics: [success, spatial_coverage, runtime_s, peak_ram_mb, peak_vram_mb]
+  aggregation: pair_macro_mean_plus_full_distribution_and_failure_count
+  failed_pairs_retained: true
+radiometric:
+  protocol: multitemporal_radiometric_protocol.md
+  fixed_regions: independent_reviewed_regions_not_method_seams
+  method_seams: additional_method_specific_analysis
+  arms: [common_BAGRN_input_local_ablation, independent_raw_aligned_end_to_end]
+  correction_reference_and_test_regions_disjoint: true
+  stable_metrics: [MAE, RMSE, MAMD, MSDD, RDD]
+  change_metrics_conditional: [overcorrection, F1, IoU]
+  structure_metrics: [gradient_NCC, SSIM]
+  spectral_metrics_conditional: [SAM, SAC]
+  simulation_metrics: [known_gain_offset_spatial_recovery_error]
+  runtime_metrics: [wall_time_s, peak_ram_mb, peak_vram_mb, status]
+  no_absolute_surface_reflectance_error: true
+  no_four_season_generalization_claim: true
+reproducibility:
+  record: [scene_ids, band, file_paths, file_sha256, input_version, method_version, params, seed, region_ids, masks, metric_definitions]
+  use_same_pair_and_region_ids_across_methods: true
+  no_test_point_for_fitting_or_threshold_tuning: true
+  no_claim_of_independent_geographic_generalization: true

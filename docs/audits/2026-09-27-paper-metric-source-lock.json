@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "verification_status": "AMBIGUOUS",
+  "paper_title": "Joint block adjustment and variational optimization for global and local radiometric normalization toward multiple remote sensing image mosaicking",
+  "paper_doi": "10.1016/j.isprsjprs.2024.08.016",
+  "paper_source": "Public author-uploaded full text on ResearchGate; equation text inspected in Section 3.1, Eq. (38)--(41).",
+  "paper_local_path": null,
+  "paper_sha256": null,
+  "eq38_expression": "CD = sum over overlapping image pairs of w_ij * DeltaH(Ihat_ij, Ihat_ji) / N_b.",
+  "eq38_overlap_weight_definition": "w_ij is proportional to the area of the overlap and normalized so that the weights sum to one.",
+  "eq38_histogram_definition": null,
+  "eq38_histogram_bin_count": "N_b is the histogram bin count, but no numeric value or complete binning/range specification is stated in the inspected sources.",
+  "eq38_delta_h_definition": "The sources call DeltaH a bin-to-bin histogram difference, but do not uniquely specify the norm or aggregation (for example L1, total variation, or another bin-to-bin distance).",
+  "eq38_output_scale": "Division by N_b is explicit; no additional 1/2 factor is source-verified.",
+  "eq39_expression": "GL = (1/N) * sum over images of DeltaG(I_i, Ihat_i) / N_p.",
+  "eq39_gradient_operator": "The cited public implementation uses one-pixel forward differences from the current pixel to the right and down neighbors, skips the last row/column and zero right/down neighbors, then applies atan2l(gy, gx).",
+  "eq39_orientation_definition": "atan2l(gy, gx), with angles in the implementation's signed atan2 range.",
+  "eq39_delta_g_definition": "The cited implementation computes the mean absolute raw difference of the paired orientation values after the stencil filter.",
+  "eq39_angle_wrap_rule": "No wrap correction is implemented in the cited code; the 2024/2017 paper text does not state whether shortest-arc angular distance should replace raw absolute subtraction.",
+  "eq39_denominator": "The paper explicitly uses 1/N and N_p, where N is image count and N_p is the pixel count of image i.",
+  "reference_repository": "https://github.com/MenghanXia/ColorConsistency",
+  "reference_commit_sha": "05d03d87ea67dd92de7ccea09dd450579f6d991e",
+  "reference_files": [
+    "README.md",
+    "Source/Utils/util.cpp::Utils::calStructuralDiffs",
+    "Source/Utils/util.cpp::Utils::getGradientOrientationMaps",
+    "Source/Unification/correspondence.cpp::EntryMatch::analyzeCDFQuatileValues",
+    "Source/Unification/correspondence.cpp::EntryMatch::grabHistkeyPtPairsbyProbi"
+  ],
+  "notes": [
+    "The 2024 paper's Eq. (38)--(39) text and definitions were inspected through the public full-text page.",
+    "The openly accessible ICCV 2017 paper repeats the same metric equations and definitions, but also leaves DeltaH as a bin-wise histogram difference without specifying the distance norm.",
+    "The cited repository contains a gradient-orientation diagnostic implementation, but it does not provide a verified implementation of the Eq. (38) evaluation metric.",
+    "verification_status cannot be VERIFIED because the implementation-relevant CD histogram semantics and the GL angular wrap rule are not uniquely frozen by the sources."
+  ]
+}

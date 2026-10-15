@@ -1,0 +1,343 @@
+{
+  "leakage_pass": true,
+  "per_pair": {
+    "00_01": {
+      "counts": {
+        "DEVELOPMENT": 11,
+        "TEST": 19,
+        "UNASSIGNED": 10
+      },
+      "unique_assigned_cells": 7,
+      "role_cells": {
+        "DEVELOPMENT": {
+          "unique_cells": 3,
+          "counts_by_cell": {
+            "g70_328": 4,
+            "g71_329": 1,
+            "g73_328": 6
+          },
+          "max_cell_share": 0.5454545454545454,
+          "hhi": 0.4380165289256198,
+          "concentration_flag": true
+        },
+        "TEST": {
+          "unique_cells": 4,
+          "counts_by_cell": {
+            "g69_329": 8,
+            "g70_329": 3,
+            "g71_328": 3,
+            "g72_328": 5
+          },
+          "max_cell_share": 0.42105263157894735,
+          "hhi": 0.29639889196675895,
+          "concentration_flag": false
+        }
+      }
+    },
+    "02_03": {
+      "counts": {
+        "DEVELOPMENT": 9,
+        "TEST": 22,
+        "UNASSIGNED": 9
+      },
+      "unique_assigned_cells": 17,
+      "role_cells": {
+        "DEVELOPMENT": {
+          "unique_cells": 6,
+          "counts_by_cell": {
+            "g65_329": 1,
+            "g66_330": 2,
+            "g67_331": 1,
+            "g68_329": 2,
+            "g68_332": 2,
+            "g69_330": 1
+          },
+          "max_cell_share": 0.2222222222222222,
+          "hhi": 0.18518518518518517,
+          "concentration_flag": false
+        },
+        "TEST": {
+          "unique_cells": 11,
+          "counts_by_cell": {
+            "g65_330": 1,
+            "g66_329": 3,
+            "g66_331": 2,
+            "g66_332": 3,
+            "g67_329": 2,
+            "g67_330": 1,
+            "g67_332": 3,
+            "g68_330": 3,
+            "g68_331": 2,
+            "g69_331": 1,
+            "g69_332": 1
+          },
+          "max_cell_share": 0.13636363636363635,
+          "hhi": 0.1074380165289256,
+          "concentration_flag": false
+        }
+      }
+    },
+    "05_07": {
+      "counts": {
+        "DEVELOPMENT": 9,
+        "TEST": 26,
+        "UNASSIGNED": 5
+      },
+      "unique_assigned_cells": 18,
+      "role_cells": {
+        "DEVELOPMENT": {
+          "unique_cells": 6,
+          "counts_by_cell": {
+            "g66_330": 1,
+            "g66_333": 2,
+            "g67_331": 3,
+            "g68_332": 1,
+            "g69_330": 1,
+            "g70_331": 1
+          },
+          "max_cell_share": 0.3333333333333333,
+          "hhi": 0.20987654320987653,
+          "concentration_flag": false
+        },
+        "TEST": {
+          "unique_cells": 12,
+          "counts_by_cell": {
+            "g66_331": 2,
+            "g66_332": 2,
+            "g67_330": 2,
+            "g67_332": 2,
+            "g67_333": 2,
+            "g68_330": 1,
+            "g68_331": 2,
+            "g68_333": 1,
+            "g69_331": 2,
+            "g69_332": 3,
+            "g70_330": 4,
+            "g70_332": 3
+          },
+          "max_cell_share": 0.15384615384615385,
+          "hhi": 0.09467455621301776,
+          "concentration_flag": false
+        }
+      }
+    },
+    "08_10": {
+      "counts": {
+        "DEVELOPMENT": 14,
+        "TEST": 17,
+        "UNASSIGNED": 9
+      },
+      "unique_assigned_cells": 18,
+      "role_cells": {
+        "DEVELOPMENT": {
+          "unique_cells": 7,
+          "counts_by_cell": {
+            "g66_327": 1,
+            "g66_330": 1,
+            "g67_328": 4,
+            "g67_331": 1,
+            "g68_329": 2,
+            "g69_327": 2,
+            "g69_330": 3
+          },
+          "max_cell_share": 0.2857142857142857,
+          "hhi": 0.18367346938775508,
+          "concentration_flag": false
+        },
+        "TEST": {
+          "unique_cells": 11,
+          "counts_by_cell": {
+            "g66_328": 2,
+            "g66_329": 2,
+            "g66_331": 1,
+            "g67_327": 2,
+            "g67_329": 2,
+            "g68_327": 2,
+            "g68_328": 2,
+            "g69_328": 1,
+            "g69_329": 1,
+            "g70_329": 1,
+            "g70_330": 1
+          },
+          "max_cell_share": 0.11764705882352941,
+          "hhi": 0.10034602076124569,
+          "concentration_flag": false
+        }
+      }
+    }
+  },
+  "overall": {
+    "counts": {
+      "DEVELOPMENT": 43,
+      "TEST": 84,
+      "UNASSIGNED": 33
+    },
+    "unique_assigned_cells": 38,
+    "role_cells": {
+      "DEVELOPMENT": {
+        "unique_cells": 14,
+        "counts_by_cell": {
+          "g65_329": 1,
+          "g66_327": 1,
+          "g66_330": 4,
+          "g66_333": 2,
+          "g67_328": 4,
+          "g67_331": 5,
+          "g68_329": 4,
+          "g68_332": 3,
+          "g69_327": 2,
+          "g69_330": 5,
+          "g70_328": 4,
+          "g70_331": 1,
+          "g71_329": 1,
+          "g73_328": 6
+        },
+        "max_cell_share": 0.13953488372093023,
+        "hhi": 0.09248242293131421,
+        "concentration_flag": false
+      },
+      "TEST": {
+        "unique_cells": 24,
+        "counts_by_cell": {
+          "g65_330": 1,
+          "g66_328": 2,
+          "g66_329": 5,
+          "g66_331": 5,
+          "g66_332": 5,
+          "g67_327": 2,
+          "g67_329": 4,
+          "g67_330": 3,
+          "g67_332": 5,
+          "g67_333": 2,
+          "g68_327": 2,
+          "g68_328": 2,
+          "g68_330": 4,
+          "g68_331": 4,
+          "g68_333": 1,
+          "g69_328": 1,
+          "g69_329": 9,
+          "g69_331": 3,
+          "g69_332": 4,
+          "g70_329": 4,
+          "g70_330": 5,
+          "g70_332": 3,
+          "g71_328": 3,
+          "g72_328": 5
+        },
+        "max_cell_share": 0.10714285714285714,
+        "hhi": 0.05243764172335602,
+        "concentration_flag": false
+      }
+    }
+  },
+  "unassigned_reason_counts": {
+    "BUFFER_ZONE": 33
+  },
+  "assigned_point_safe_core_violations": [],
+  "same_cell_opposite_role_conflicts": [],
+  "opposite_role_point_conflicts": [],
+  "minimum_opposite_role_point_distance_m": 1425.6647572273084,
+  "duplicate_candidate_ids": [],
+  "test_eligibility_violations": [],
+  "test_pending_second_review": 84,
+  "formal_test_eligible_count": 0,
+  "version": "benchmark_v1_trial4_grid10km_margin500m_v1",
+  "freeze_scope": "TRIAL4_ONLY",
+  "crs": "EPSG:32650",
+  "origin_m": [
+    0,
+    0
+  ],
+  "cell_size_m": 10000,
+  "edge_margin_m": 500,
+  "role_formula": "DEVELOPMENT if (ix + 2*iy) % 3 == 0 else TEST",
+  "random_seed": null,
+  "git_head": "3c9f4e30888445ce783f56f4f26cb064e1add887",
+  "builder_sha256": "e13a72edf27b7165d40fe6ff32d0e0f8862a97202b1a188d4297980d0beee3ab",
+  "source_candidate_sha256": {
+    "00_01": "697da93541d8a0159f72004d16de2db6f830a48f3bf0d8fc8de02fe14a89f77c",
+    "02_03": "bba32bcb6e1ebdbc87bb43183d9fa4725c26fb5e8dadac88477fd5648298978d",
+    "05_07": "6b028eadcefd3d6723a5c973cd2f5973d3473f26745d826686787796db672c7d",
+    "08_10": "dbfc22228820a2a84575786581fbecc05ea1a3528b0cca5157e7d93850dac8c5"
+  },
+  "input_identity_manifest_sha256": "df35ee36de6d4913a6e1d89b98de9a2fd4e3cb280453ea4357018ffbc9c280b0",
+  "b9_verified_inputs": [
+    {
+      "scene_index": 0,
+      "scene_id": "DZ01V_L2_E119.3_N29.9_20251114023847_01_T1",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B9.TIF",
+      "size_bytes": 30578245,
+      "sha256": "5b2cfa54261e9e34687624fa11ce044fdaf83ea058bc0ceae48876060d7d3923",
+      "matches_task15_recorded_sha256": true
+    },
+    {
+      "scene_index": 1,
+      "scene_id": "DZ01V_L2_E119.2_N29.5_20251114023853_01_T1",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B9.TIF",
+      "size_bytes": 30584649,
+      "sha256": "31497939fd11b7116b36a20341679b71463c6ed799ed85f888b50b7e5a1d3f89",
+      "matches_task15_recorded_sha256": true
+    },
+    {
+      "scene_index": 2,
+      "scene_id": "DZ01V_L2_E118.9_N29.9_20251120024226_01_T1",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B9.TIF",
+      "size_bytes": 29776962,
+      "sha256": "cfa4a610e0df80ca3ec53f0d74cdbd8c99289fe2788452e0d70a45838457d465",
+      "matches_task15_recorded_sha256": true
+    },
+    {
+      "scene_index": 3,
+      "scene_id": "DZ01V_L2_E118.8_N29.9_20251208025056_01_T1",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B9.TIF",
+      "size_bytes": 32337578,
+      "sha256": "3659acd79285d9042d4fb9772dfb1ebf384837c0e953f937fef6cbc0f4421cb9",
+      "matches_task15_recorded_sha256": true
+    },
+    {
+      "scene_index": 5,
+      "scene_id": "DZ01V_L2_E118.9_N29.9_20251214025253_01_T1",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B9.TIF",
+      "size_bytes": 38464077,
+      "sha256": "8ba6eeb51b79ce0af6052d48257cf9bd68b6284794df31da8f61d834aea1700b",
+      "matches_task15_recorded_sha256": true
+    },
+    {
+      "scene_index": 7,
+      "scene_id": "DZ01V_L2_E119.0_N30.1_20251215023725_01_T1",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B9.TIF",
+      "size_bytes": 35329606,
+      "sha256": "cf144e0d7a9766fe413a8e385b88acd807714ea10ff0b838876420e7ffd6f829",
+      "matches_task15_recorded_sha256": true
+    },
+    {
+      "scene_index": 8,
+      "scene_id": "DZ01V_L2_E118.9_N29.7_20251215023731_01_T1",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B9.TIF",
+      "size_bytes": 35497878,
+      "sha256": "cec1b3b73496aa721ae999e37c56337e0bdd1fe0806dcb91e845b7a08b177b4a",
+      "matches_task15_recorded_sha256": true
+    },
+    {
+      "scene_index": 10,
+      "scene_id": "DZ01V_L2_E118.8_N29.8_20260114024138_01_T1",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B9.TIF",
+      "size_bytes": 32115248,
+      "sha256": "fe08c54c3392ee7d5a379649f5f3968b79c1498f959486a50454c6d3e6ca4eca",
+      "matches_task15_recorded_sha256": true
+    }
+  ],
+  "remaining_scene_indices_not_verified": [
+    4,
+    6,
+    9,
+    11,
+    12
+  ],
+  "output_sha256": {
+    "checkpoint_split_assignments.csv": "b4d11d86a0700dca5925d2294f3a426ed145b2f907e125fa0becc39ce9966e60",
+    "spatial_split_regions.geojson": "9ac7e344ca42ece728558cb24bb6191d8d0dca425668d6444f1576459097084d",
+    "spatial_split_map.png": "35bff82d5bbbe0583b5145ecf082861ca7f761027f440bafe7a314d3bbc5360d",
+    "spatial_split_protocol.md": "04de02cc9fd6512ed0912cdde8f751ce0844ed59c03c41ffb4f5c4347b73185e"
+  }
+}

@@ -1,0 +1,371 @@
+{
+  "status": "PASS",
+  "scene_count": 13,
+  "verified_count": 13,
+  "scenes": [
+    {
+      "scene_index": 0,
+      "scene_id": "DZ01V_L2_E119.3_N29.9_20251114023847_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023847\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1\\DZ01V_L2_E119.3_N29.9_20251114023847_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "5b2cfa54261e9e34687624fa11ce044fdaf83ea058bc0ceae48876060d7d3923",
+      "current_sha256": "5b2cfa54261e9e34687624fa11ce044fdaf83ea058bc0ceae48876060d7d3923",
+      "hash_match": true,
+      "file_size_bytes": 30578245,
+      "width": 3961,
+      "height": 3847,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        689766.0,
+        0.0,
+        -14.0,
+        3336382.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 1,
+      "scene_id": "DZ01V_L2_E119.2_N29.5_20251114023853_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251114023853\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1\\DZ01V_L2_E119.2_N29.5_20251114023853_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "31497939fd11b7116b36a20341679b71463c6ed799ed85f888b50b7e5a1d3f89",
+      "current_sha256": "31497939fd11b7116b36a20341679b71463c6ed799ed85f888b50b7e5a1d3f89",
+      "hash_match": true,
+      "file_size_bytes": 30584649,
+      "width": 3967,
+      "height": 3842,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        682738.0,
+        0.0,
+        -14.0,
+        3296636.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 2,
+      "scene_id": "DZ01V_L2_E118.9_N29.9_20251120024226_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251120024226\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1\\DZ01V_L2_E118.9_N29.9_20251120024226_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "cfa4a610e0df80ca3ec53f0d74cdbd8c99289fe2788452e0d70a45838457d465",
+      "current_sha256": "cfa4a610e0df80ca3ec53f0d74cdbd8c99289fe2788452e0d70a45838457d465",
+      "hash_match": true,
+      "file_size_bytes": 29776962,
+      "width": 3837,
+      "height": 3872,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        652540.0,
+        0.0,
+        -14.0,
+        3332014.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 3,
+      "scene_id": "DZ01V_L2_E118.8_N29.9_20251208025056_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025056\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1\\DZ01V_L2_E118.8_N29.9_20251208025056_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "3659acd79285d9042d4fb9772dfb1ebf384837c0e953f937fef6cbc0f4421cb9",
+      "current_sha256": "3659acd79285d9042d4fb9772dfb1ebf384837c0e953f937fef6cbc0f4421cb9",
+      "hash_match": true,
+      "file_size_bytes": 32337578,
+      "width": 4012,
+      "height": 4022,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        641690.0,
+        0.0,
+        -14.0,
+        3342696.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 4,
+      "scene_id": "DZ01V_L2_E118.7_N29.6_20251208025102_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251208025102\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1\\DZ01V_L2_E118.7_N29.6_20251208025102_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "3785b1bd5732e5f7f5472e5acc265cf9fa525a19575dff604caf25051c04f3a1",
+      "current_sha256": "3785b1bd5732e5f7f5472e5acc265cf9fa525a19575dff604caf25051c04f3a1",
+      "hash_match": true,
+      "file_size_bytes": 32506634,
+      "width": 4022,
+      "height": 4033,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        633402.0,
+        0.0,
+        -14.0,
+        3303188.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 5,
+      "scene_id": "DZ01V_L2_E118.9_N29.9_20251214025253_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "8ba6eeb51b79ce0af6052d48257cf9bd68b6284794df31da8f61d834aea1700b",
+      "current_sha256": "8ba6eeb51b79ce0af6052d48257cf9bd68b6284794df31da8f61d834aea1700b",
+      "hash_match": true,
+      "file_size_bytes": 38464077,
+      "width": 4372,
+      "height": 4386,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        652092.0,
+        0.0,
+        -14.0,
+        3338482.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 6,
+      "scene_id": "DZ01V_L2_E118.8_N29.5_20251214025259_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025259\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1\\DZ01V_L2_E118.8_N29.5_20251214025259_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "16253f1f198a25acf1d9d018e9a55eb172e0ee4826409ccfcd69375810d4161d",
+      "current_sha256": "16253f1f198a25acf1d9d018e9a55eb172e0ee4826409ccfcd69375810d4161d",
+      "hash_match": true,
+      "file_size_bytes": 38779134,
+      "width": 4376,
+      "height": 4418,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        642964.0,
+        0.0,
+        -14.0,
+        3295082.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 7,
+      "scene_id": "DZ01V_L2_E119.0_N30.1_20251215023725_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "cf144e0d7a9766fe413a8e385b88acd807714ea10ff0b838876420e7ffd6f829",
+      "current_sha256": "cf144e0d7a9766fe413a8e385b88acd807714ea10ff0b838876420e7ffd6f829",
+      "hash_match": true,
+      "file_size_bytes": 35329606,
+      "width": 4173,
+      "height": 4220,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        662200.0,
+        0.0,
+        -14.0,
+        3359860.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 8,
+      "scene_id": "DZ01V_L2_E118.9_N29.7_20251215023731_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023731\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1\\DZ01V_L2_E118.9_N29.7_20251215023731_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "cec1b3b73496aa721ae999e37c56337e0bdd1fe0806dcb91e845b7a08b177b4a",
+      "current_sha256": "cec1b3b73496aa721ae999e37c56337e0bdd1fe0806dcb91e845b7a08b177b4a",
+      "hash_match": true,
+      "file_size_bytes": 35497878,
+      "width": 4186,
+      "height": 4232,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        654360.0,
+        0.0,
+        -14.0,
+        3316096.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 9,
+      "scene_id": "DZ01V_L2_E118.8_N29.3_20251215023737_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023737\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1\\DZ01V_L2_E118.8_N29.3_20251215023737_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "ba3004832a671eca602d75757395e7ed5fee6c5bda1a33eff4172962dfd75560",
+      "current_sha256": "ba3004832a671eca602d75757395e7ed5fee6c5bda1a33eff4172962dfd75560",
+      "hash_match": true,
+      "file_size_bytes": 35421794,
+      "width": 4176,
+      "height": 4233,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        646688.0,
+        0.0,
+        -14.0,
+        3272150.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 10,
+      "scene_id": "DZ01V_L2_E118.8_N29.8_20260114024138_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024138\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1\\DZ01V_L2_E118.8_N29.8_20260114024138_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "fe08c54c3392ee7d5a379649f5f3968b79c1498f959486a50454c6d3e6ca4eca",
+      "current_sha256": "fe08c54c3392ee7d5a379649f5f3968b79c1498f959486a50454c6d3e6ca4eca",
+      "hash_match": true,
+      "file_size_bytes": 32115248,
+      "width": 3852,
+      "height": 4160,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        651728.0,
+        0.0,
+        -14.0,
+        3328724.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 11,
+      "scene_id": "DZ01V_L2_E118.8_N29.4_20260114024144_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024144\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1\\DZ01V_L2_E118.8_N29.4_20260114024144_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "6f2a85362c5af07a9f135ec36d0c2d6924a19afecc0fe8cfa641fdd831e1c391",
+      "current_sha256": "6f2a85362c5af07a9f135ec36d0c2d6924a19afecc0fe8cfa641fdd831e1c391",
+      "hash_match": true,
+      "file_size_bytes": 32197862,
+      "width": 3861,
+      "height": 4161,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        643636.0,
+        0.0,
+        -14.0,
+        3286024.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    },
+    {
+      "scene_index": 12,
+      "scene_id": "DZ01V_L2_E118.7_N29.1_20260114024150_01_T1",
+      "band": "B9",
+      "path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20260114024150\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1\\DZ01V_L2_E118.7_N29.1_20260114024150_01_T1_B9.TIF",
+      "exists": true,
+      "expected_sha256": "95c54df3101f100175cfac39414f91def0c105dd823cd024c1b996cb1cb6628a",
+      "current_sha256": "95c54df3101f100175cfac39414f91def0c105dd823cd024c1b996cb1cb6628a",
+      "hash_match": true,
+      "file_size_bytes": 31373258,
+      "width": 3849,
+      "height": 4067,
+      "dtype": "uint16",
+      "nodata": 0.0,
+      "crs": "EPSG:32650",
+      "transform": [
+        14.0,
+        0.0,
+        635852.0,
+        0.0,
+        -14.0,
+        3243338.0
+      ],
+      "resolution": [
+        14.0,
+        14.0
+      ]
+    }
+  ]
+}

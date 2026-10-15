@@ -1,0 +1,48 @@
+schema_version: 1
+protocol_id: DZ01V_UNIFIED_A_B_V1_20261013
+status: FROZEN_INPUT_PROTOCOL
+scope:
+  scenes: 13
+  band: B9
+  unit: UNKNOWN
+  expected_pairs: 78
+  aligned_positive_pairs: 48
+  aligned_zero_support_pairs: 30
+  freeze_directory: data/output/benchmark_v1_unified/freeze_20261013_v3
+regimes:
+  A: [mosaic_union_coverage, holes_extras, unique_source_structure, provenance_gated_seams]
+  B1: [full_pair_support_metrics, pair_macro_primary, all_78_pair_statuses]
+  B2: [128x128, stride_128, anchor_0_0, support_fraction_0.95, cap_32, seed_20261013]
+  B3: [S1, S2, S3, S4, existing_R1_generator, arbitrary_units]
+geometry:
+  crs: EPSG:32650
+  resolution_m: 14
+  affine: [14, 0, 633346, 0, -14, 3359874]
+  width: 7992
+  height: 12404
+resampling:
+  intensity: bilinear
+  mask: nearest
+support:
+  primary: frozen_input_mask_intersection
+  require_full_method_output_support: true
+metrics:
+  pair: [MAE_V1, RMSE_V1, BIAS_V1, P95AE_V1, MAMD_V1, MSDD_V1, RDD_W1_EXACT_V1]
+  std_ddof: 0
+  quantile_method: linear
+  aggregation_primary: pair_macro
+  paper_CD: FORMULA_UNVERIFIED
+  paper_GL: FORMULA_UNVERIFIED
+  paper_RDOA_Ave: NOT_COMPUTED
+structure:
+  sobel_divisor: 8
+  valid_stencil: 3x3
+  edge_threshold: max(1e-12, input_gradient_P50)
+  ssim: DISABLED_UNVERIFIED_RANGE
+  gradient_ncc: SEPARATE_OPTIONAL_METRIC
+status_policy:
+  partial_output_primary_score: null
+  no_overlap: NO_VALID_OVERLAP
+  missing_runtime: NOT_MEASURED
+  missing_metrics: null_with_status
+  no_paper_proxy_relabeling: true

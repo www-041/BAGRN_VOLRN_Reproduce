@@ -1,0 +1,15 @@
+{
+  "pair_id": "05_07",
+  "source_path_i": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251214025253\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1\\DZ01V_L2_E118.9_N29.9_20251214025253_01_T1_B9.TIF",
+  "source_path_j": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce\\data\\input\\B9_reference_13scenes_full\\20251215023725\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1\\DZ01V_L2_E119.0_N30.1_20251215023725_01_T1_B9.TIF",
+  "verified_sha256_i": "8ba6eeb51b79ce0af6052d48257cf9bd68b6284794df31da8f61d834aea1700b",
+  "verified_sha256_j": "cf144e0d7a9766fe413a8e385b88acd807714ea10ff0b838876420e7ffd6f829",
+  "recommendation_method": "ShiTomasi_gradientNCC_bidirectional",
+  "max_requested": 40,
+  "generated": 40,
+  "grid_side": 8,
+  "occupied_grid_cells": 36,
+  "shared_valid_overlap_pixels": 6176593,
+  "automatic_approved": 0,
+  "note": "suggestions only; matcher score is not geometric truth or human precision"
+}

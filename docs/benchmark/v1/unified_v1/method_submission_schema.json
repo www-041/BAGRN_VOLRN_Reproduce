@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DZ01V Unified Benchmark V1 method submission",
+  "type": "object",
+  "required": ["schema_version", "method_id", "run_id", "method_kind", "input_freeze_sha256", "geometry_freeze_sha256", "band", "pixel_value_unit", "status"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "method_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "method_kind": {"enum": ["FULL_MOSAIC", "SCENE_OUTPUTS", "PAIR_ONLY", "SYNTHETIC_FIXTURE"]},
+    "input_freeze_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "geometry_freeze_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "band": {"const": "B9"},
+    "pixel_value_unit": {"const": "UNKNOWN"},
+    "output_mosaic_path": {"type": ["string", "null"]},
+    "output_mosaic_mask_path": {"type": ["string", "null"]},
+    "corrected_scene_paths": {"type": "object", "additionalProperties": {"type": "string"}},
+    "pair_specific_outputs": {"type": "object"},
+    "source_label_path": {"type": ["string", "null"]},
+    "seam_type": {"enum": ["HARD", "SOFT", "NONE"]},
+    "status": {"type": "string"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,16 @@
+{
+  "status": "SYNTHETIC_FIXTURE_ONLY",
+  "generator_path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\src\\benchmark_v1_radiometric_r1\\synthetic.py",
+  "generator_sha256": "305fb967c69943a3cc15e838952518dd901075bd8568455ab32cb53179daad7a",
+  "npz_path": "D:\\科研\\地质一号\\文献\\BAGRN_VOLRN_Reproduce_two_image_flat\\data\\output\\benchmark_v1_unified\\synthetic_smoke\\s1_s4_fixture.npz",
+  "npz_sha256": "7098f1e95eff8a18c5e5e86004a14c402f3c61c461aa39bf218bd7acc86e1521",
+  "seed": 20261013,
+  "cases": [
+    "S1",
+    "S2",
+    "S3",
+    "S4"
+  ],
+  "unit": "ARBITRARY_SYNTHETIC_UNIT",
+  "no_method_runs": true
+}
