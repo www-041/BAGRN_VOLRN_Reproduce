@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.task16_volrn_comparison import run_task16
+from src.benchmark_v1_unified.volrn_status import standardize_task16_status, task16_exit_code
 
 
 def main() -> int:
@@ -31,9 +32,9 @@ def main() -> int:
     output_root = args.output_root or (ROOT / output if not Path(output).is_absolute() else Path(output))
     protocol = args.protocol or (ROOT / config["metrics"]["protocol"] if not Path(config["metrics"]["protocol"]).is_absolute() else Path(config["metrics"]["protocol"]))
     summary = run_task16(task15_root, output_root, protocol_path=protocol, resume=args.resume, task16_config=config)
-    print(f"Task16 status: {summary['status']}")
+    print(f"Task16 status: {standardize_task16_status(summary.get('status'))} (source={summary.get('status')})")
     print(f"Output: {output_root}")
-    return 0
+    return task16_exit_code(summary.get("status"))
 
 
 if __name__ == "__main__":

@@ -196,13 +196,17 @@ def _distribution_summary(rows, dotted_key):
 def _resource_preflight(submission, shape, pair_rows, scratch_dir, ram_budget_bytes, ram_reserve_bytes,
                         disk_reserve_bytes):
     reasons = []
+    scratch_path = Path(scratch_dir).resolve()
+    volume_probe = scratch_path
+    while not volume_probe.exists() and volume_probe != volume_probe.parent:
+        volume_probe = volume_probe.parent
     try:
         import psutil
         available_ram = int(psutil.virtual_memory().available)
         ram_source = "psutil.virtual_memory().available"
-        disk = shutil.disk_usage(Path(scratch_dir).resolve().anchor or Path.cwd())
+        disk = shutil.disk_usage(volume_probe)
         available_disk = int(disk.free)
-        disk_source = "shutil.disk_usage(scratch_volume).free"
+        disk_source = "shutil.disk_usage(scratch_path_or_nearest_existing_parent).free"
     except Exception as exc:
         return {"status": "RESOURCE_MONITOR_UNAVAILABLE", "reasons": [f"RESOURCE_MONITOR_UNAVAILABLE:{exc}"]}
     n_pixels = int(shape[0] * shape[1])
@@ -229,6 +233,8 @@ def _resource_preflight(submission, shape, pair_rows, scratch_dir, ram_budget_by
         "hard_os_memory_limit": False,
         "available_scratch_disk_bytes": available_disk,
         "scratch_measurement_source": disk_source,
+        "scratch_path": str(scratch_path),
+        "scratch_volume_probe_path": str(volume_probe),
         "estimated_pair_sample_scratch_bytes": pair_spool_bytes,
         "estimated_exact_order_scratch_bytes": exact_order_scratch,
         "estimated_peak_scratch_bytes": scratch_estimate,
@@ -266,7 +272,8 @@ def evaluate_submission_streaming(freeze_root, submission, *, submission_dir=Non
                                   regimes=("A", "B1", "B2"), scratch_dir,
                                   block_shape=(512, 512), ram_budget_bytes=RAM_BUDGET_BYTES,
                                   ram_reserve_bytes=RAM_RESERVE_BYTES,
-                                  disk_reserve_bytes=DISK_RESERVE_BYTES, check=None):
+                                  disk_reserve_bytes=DISK_RESERVE_BYTES, check=None,
+                                  freeze_verifier=None):
     """Score a submission without materializing the full canonical raster grid."""
     freeze_root = Path(freeze_root).resolve()
     base = Path(submission_dir or ".").resolve()
@@ -274,7 +281,7 @@ def evaluate_submission_streaming(freeze_root, submission, *, submission_dir=Non
     regimes = tuple(dict.fromkeys(str(r).upper() for r in regimes))
     if set(regimes) - {"A", "B1", "B2", "B3"}:
         raise ValueError(f"INVALID_REGIME:{sorted(set(regimes) - {'A', 'B1', 'B2', 'B3'})}")
-    locked = verify_lock(freeze_root)
+    locked = (freeze_verifier or verify_lock)(freeze_root)
     if not locked.valid:
         return {"status": "FREEZE_INVALID", "errors": list(locked.errors)}
     frozen = json.loads((freeze_root / "frozen_manifest.json").read_text(encoding="utf-8"))
@@ -569,7 +576,7 @@ def evaluate_submission_streaming(freeze_root, submission, *, submission_dir=Non
                 for key, section in (("mae", "direct"), ("rmse", "direct"), ("bias", "direct"), ("p95ae", "direct"),
                                      ("mamd", "distribution"), ("msdd", "distribution"), ("rdd", "distribution")):
                     rows = [{"pair_id": w["pair_id"], "status": w["status"], "n": w["n"],
-                             "value": w.get("metrics", {}).get(section, {}).get(key)} for w in b2_rows]
+                             "value": (w.get("metrics") or {}).get(section, {}).get(key)} for w in b2_rows]
                     window_summaries[key] = _window_summary(rows, [r["pair_id"] for r in pair_rows])
                 b2_result = {"status": "EVALUABLE" if len(b2_rows) == len(windows) and all(w["status"] == "EVALUABLE" for w in b2_rows) else "PARTIAL_OUTPUT",
                              "expected_window_rows": len(windows), "window_count": len(b2_rows),

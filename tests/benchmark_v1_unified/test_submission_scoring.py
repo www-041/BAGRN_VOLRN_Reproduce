@@ -212,13 +212,40 @@ def test_scoring_cli_writes_a_machine_readable_report(tmp_path):
     script = Path(__file__).resolve().parents[2] / "scripts" / "benchmark" / "score_unified_v1_submission.py"
     completed = subprocess.run(
         [sys.executable, str(script), "--freeze", str(freeze), "--method-submission", str(submission_path),
-         "--regimes", "A", "B1", "B2", "--output", str(report_path)],
+         "--regimes", "A", "B1", "B2", "--output", str(report_path),
+         "--ram-budget-mib", "128", "--ram-reserve-mib", "0", "--disk-reserve-gib", "0"],
         capture_output=True, text=True, check=False,
     )
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode == 0, f"stdout={completed.stdout}\nstderr={completed.stderr}"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["status"] == "EVALUATED"
     assert report["B1"]["expected_pair_rows"] == 78
+
+
+def test_scoring_cli_defaults_to_streaming_and_accepts_array_reference():
+    from scripts.benchmark.score_unified_v1_submission import _build_parser
+
+    parser = _build_parser()
+    required = ["--freeze", "freeze", "--method-submission", "submission.json", "--output", "out.json"]
+    assert parser.parse_args(required).engine == "streaming"
+    assert parser.parse_args([*required, "--engine", "array"]).engine == "array"
+
+
+def test_scoring_cli_resource_preflight_failure_writes_no_score(tmp_path, monkeypatch, capsys):
+    import scripts.benchmark.score_unified_v1_submission as cli
+
+    submission_path = tmp_path / "submission.json"
+    submission_path.write_text(json.dumps({"method_id": "raw"}), encoding="utf-8")
+    output_path = tmp_path / "evaluation.json"
+    monkeypatch.setattr(sys, "argv", ["score", "--freeze", str(tmp_path), "--method-submission",
+                                       str(submission_path), "--output", str(output_path)])
+    monkeypatch.setattr(cli, "evaluate_submission_streaming", lambda *args, **kwargs: {
+        "status": "RESOURCE_PREFLIGHT_FAILED", "resource_preflight": {"status": "RESOURCE_PREFLIGHT_FAILED"},
+    })
+
+    assert cli.main() == 2
+    assert not output_path.exists()
+    assert json.loads(capsys.readouterr().out)["report_written"] is False
 
 
 def test_submission_enum_and_nonfinite_budget_are_rejected(tmp_path):

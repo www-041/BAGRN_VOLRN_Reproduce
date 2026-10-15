@@ -34,6 +34,7 @@ from src.volrn import volrn_normalize
 from src.overlap import detect_multi_overlap
 from src.benchmark_v1_lsstaa.scoring import score_pair
 from src.benchmark_v1_unified.structure import compute_range_retention, compute_sobel_structure
+from src.benchmark_v1_unified.volrn_status import classify_volrn_execution
 
 FREEZE = ROOT.parent / "data/output/benchmark_v1_unified/freeze_20261013_v3"
 OUTPUT_BASE = ROOT / "data/output/benchmark_v1_lsstaa/three_scene_method_comparison_20261015"
@@ -200,6 +201,7 @@ def run_global(method: str, out: Path, scenes: list[dict], overlaps: list[dict])
                             "block_coefficients_shape": list(coefficients.shape),
                             "settings": {"block_size_pixels": 400, "lambda": .5, "rho": 1.0,
                                          "max_iter": 200, "tol": 1e-4}}
+        detail["volrn"]["status"] = classify_volrn_execution(diagnostics)
     else:
         final = bagrn_result
     del arrays, bagrn_result
@@ -353,6 +355,8 @@ def main() -> int:
         else:
             status["algorithm_elapsed_seconds"] = method_result["algorithm_elapsed_seconds"]
             status["algorithm_write_seconds"] = method_result["stage_times"]["write_seconds"]
+            if args.method == "bagrn_volrn":
+                status["volrn_science_status"] = method_result["parameters"]["volrn"]["status"]
         status["algorithm_peak_rss_bytes"] = max(sampler.values, default=None)
         status["status"] = "ALGORITHM_COMPLETE"
         score_start = time.perf_counter()
@@ -392,9 +396,9 @@ def main() -> int:
             status["algorithm"]["outputs_sha256"] = [
                 {"data": file_sha256(Path(data)), "mask": file_sha256(Path(mask))}
                 for data, mask in status["algorithm"]["outputs"]]
-        status["status"] = "SUCCESS_DIAGNOSTIC"
+        status["status"] = status.get("volrn_science_status") or "SUCCESS_DIAGNOSTIC"
     except Exception as exc:
-        status["status"] = "FAILED_" + type(exc).__name__.upper()
+        status["status"] = classify_volrn_execution({}, exception=exc)
         status["error"] = f"{type(exc).__name__}: {exc}"
         status["traceback"] = traceback.format_exc()
         print(status["error"], file=sys.stderr, flush=True)
@@ -406,7 +410,7 @@ def main() -> int:
         status["rss_status"] = "SAMPLED" if sampler.values else "NOT_MEASURED"
         status["os_hard_memory_limit"] = False
         (out/"method_status.json").write_text(json.dumps(status, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-    return 0 if status["status"] == "SUCCESS_DIAGNOSTIC" else 2
+    return 0 if status["status"] in {"SUCCESS_DIAGNOSTIC", "STRICT_ADMM_CONVERGED"} else 2
 
 
 if __name__ == "__main__":

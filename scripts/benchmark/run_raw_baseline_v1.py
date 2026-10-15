@@ -158,6 +158,37 @@ def _json_log(path, record):
         stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def build_runtime_report(*, stage_reports, active_stage, active_monitor, scratch_dir, failure=None):
+    measurements = dict(stage_reports or {})
+    if active_monitor is not None and active_stage:
+        try:
+            measurements[active_stage] = active_monitor.report()
+        except Exception as exc:
+            measurements[active_stage] = {"status": "MONITOR_ERROR",
+                                          "error": f"{type(exc).__name__}:{exc}"}
+    scratch = Path(scratch_dir)
+    files = []
+    if scratch.is_dir():
+        for path in scratch.rglob("*"):
+            if path.is_file():
+                try:
+                    files.append({"path": str(path), "bytes": path.stat().st_size})
+                except OSError:
+                    continue
+    total_bytes = sum(item["bytes"] for item in files)
+    return {
+        "stage_measurements": measurements,
+        "method_mosaic_runtime": measurements.get("mosaic"),
+        "evaluator_runtime": measurements.get("evaluator"),
+        "hard_os_memory_limit": False,
+        "scratch": {"path": str(scratch.resolve()), "file_count": len(files),
+                    "bytes": total_bytes, "files": files,
+                    "cleanup_status": "RETAINED_ON_FAILURE" if files and failure else
+                                     "REMAINS" if files else "PASS_EMPTY"},
+        "failure": failure,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run read-only Unified V1 RAW baseline A/B1/B2 with bounded memory.")
     parser.add_argument("--freeze", default=DEFAULT_FREEZE)
@@ -199,8 +230,15 @@ def main() -> int:
     labels_path = output_root / "source_labels.tif"
     status_path = output_root / "solver_status.json"
     runtime_path = output_root / "runtime.json"
+    stage_reports = {}
+    active_stage = None
+    active_monitor = None
+    failure_record = None
+    evaluation = None
+    mosaic_record = None
     try:
         with ProcessResourceMonitor(ram_budget, [scratch_dir], sample_interval=0.2) as monitor:
+            active_stage, active_monitor = "mosaic", monitor
             mosaic_record = build_fixed_source_mosaic(
                 input_paths, mask_paths, mosaic_path, mosaic_mask_path, labels_path,
                 scene_ids=scenes, expected_shape=tuple(preflight["grid"]["shape"]),
@@ -208,6 +246,8 @@ def main() -> int:
                 priority=preflight["fixed_priority"], block_shape=block_shape, check=monitor.check,
             )
         mosaic_runtime = monitor.report()
+        stage_reports["mosaic"] = mosaic_runtime
+        active_stage = active_monitor = None
         if mosaic_runtime["status"] != "MEASURED":
             raise RuntimeError(f"MOSAIC_RESOURCE_GUARD:{mosaic_runtime['status']}")
         write_json_atomic(output_root / "mosaic_backend.json", {
@@ -256,12 +296,15 @@ def main() -> int:
         write_json_atomic(output_root / "method_submission.json", method_submission)
 
         with ProcessResourceMonitor(ram_budget, [scratch_dir], sample_interval=0.2) as monitor:
+            active_stage, active_monitor = "evaluator", monitor
             evaluation = evaluate_submission_streaming(
                 freeze_root, method_submission, submission_dir=output_root, regimes=("A", "B1", "B2", "B3"),
                 scratch_dir=scratch_dir, block_shape=block_shape, ram_budget_bytes=ram_budget,
                 ram_reserve_bytes=ram_reserve, disk_reserve_bytes=disk_reserve, check=monitor.check,
             )
         evaluator_runtime = monitor.report()
+        stage_reports["evaluator"] = evaluator_runtime
+        active_stage = active_monitor = None
         evaluation["evaluator_runtime"] = evaluator_runtime
         evaluation["runtime_separation"] = {
             "method_stage": "RAW mosaic backend only; no radiometric algorithm executed",
@@ -282,15 +325,6 @@ def main() -> int:
              "status": row["status"], "sobel": json.dumps(row["sobel"], ensure_ascii=False),
              "range_retention": json.dumps(row["range_retention"], ensure_ascii=False)}
             for row in evaluation["B2"]["structure_by_scene_window"]])
-        write_json_atomic(runtime_path, {
-            "method_mosaic_runtime": mosaic_runtime, "mosaic_backend_elapsed_seconds": mosaic_record["elapsed_seconds"],
-            "mosaic_output_write_seconds": mosaic_record["output_write_seconds"],
-            "evaluator_runtime": evaluator_runtime,
-            "evaluator_scratch": evaluation.get("scratch"),
-            "hard_os_memory_limit": False,
-            "rss_threshold_mib": args.ram_budget_mib,
-            "gpu_status": "NOT_MEASURED",
-        })
         status = {
             "status": "COMPLETED" if evaluation["ranking_eligible"] else "COMPLETED_DIAGNOSTIC_NOT_RANKING_ELIGIBLE",
             "ranking_eligible": evaluation["ranking_eligible"],
@@ -315,11 +349,25 @@ def main() -> int:
                    "freeze_root": str(freeze_root), "output_root": str(output_root),
                    "time_utc": datetime.now(timezone.utc).isoformat(),
                    "no_bagrn_volrn_or_external_methods_run": True}
+        failure_record = failure
         if output_root.exists():
             write_json_atomic(status_path, failure)
             _json_log(log_dir / "events.jsonl", {"event": "STOPPED", **failure})
         print(json.dumps(failure, ensure_ascii=False), file=sys.stderr)
         return 2
+    finally:
+        runtime = build_runtime_report(stage_reports=stage_reports, active_stage=active_stage,
+                                       active_monitor=active_monitor, scratch_dir=scratch_dir,
+                                       failure=failure_record)
+        runtime.update({
+            "mosaic_backend_elapsed_seconds": (mosaic_record or {}).get("elapsed_seconds"),
+            "mosaic_output_write_seconds": (mosaic_record or {}).get("output_write_seconds"),
+            "evaluator_scratch": evaluation.get("scratch") if isinstance(evaluation, dict) else None,
+            "rss_threshold_mib": args.ram_budget_mib,
+            "gpu_status": "NOT_MEASURED",
+        })
+        if output_root.exists():
+            write_json_atomic(runtime_path, runtime)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+{
+  "mappings": [
+    {
+      "source_root": "D:\\original\\project-root",
+      "target_root": "/workspace/project-root"
+    },
+    {
+      "source_root": "D:\\original\\benchmark-data-root",
+      "target_root": "/mnt/benchmark-data"
+    }
+  ]
+}

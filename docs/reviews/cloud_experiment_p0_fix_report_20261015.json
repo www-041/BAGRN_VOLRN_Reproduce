@@ -1,0 +1,47 @@
+{
+  "report_id": "DZ01V_CLOUD_EXPERIMENT_P0_20261015",
+  "status": "P0_PARTIAL",
+  "branch": "fix/cloud-experiment-p0-20261015",
+  "baseline_commit": "fcfc223059b166f0eca0622cba850e0e7023f4be",
+  "date": "2026-10-15",
+  "experiments_run": {
+    "full_resolution": false,
+    "thirteen_scene": false,
+    "task15": false,
+    "task16": false,
+    "radiometric_algorithm": false
+  },
+  "freeze_integrity": {
+    "code_manifest_expected": 38,
+    "code_manifest_matched": 38,
+    "freeze_lock_expected": 54,
+    "freeze_lock_matched": 54,
+    "locked_code_files_modified": false,
+    "freeze_lock_modified": false
+  },
+  "tests": {
+    "benchmark_v1_unified": {"passed": 83, "failed": 0},
+    "lirrn_lsstaa": {"passed": 38, "failed": 0},
+    "task16_volrn_patch_contract": {"passed": 22, "failed": 0, "warnings": 20},
+    "full_pytest": {"passed": 1377, "skipped": 7, "failed": 39, "duration_seconds": 342.05},
+    "compileall": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "failure_classification": {
+    "p0_regressions": 0,
+    "historical_local_artifact_dependencies": 39,
+    "details": [
+      "1 test requires omitted Spectralmatch retry5 seamline_debug.gpkg",
+      "Remaining failures require prior five-scene/13-scene outputs, Phase3 split map or Phase4 review assets, Task13A selection manifest, or Task14 Stage06 manifest absent from this clean clone"
+    ]
+  },
+  "readiness": {
+    "local_synthetic_engineering_smoke": "GO",
+    "full_suite_acceptance": "NO_GO",
+    "cloud_full_13_scene_experiment": "NO_GO",
+    "reason": "39 full-suite failures depend on local historical artifacts; target cloud OS, dependencies, frozen path mapping, resources and end-to-end runtime have not yet been validated"
+  },
+  "modified_scientific_formulas": false,
+  "modified_frozen_masks_windows_or_inputs": false,
+  "modified_task15_task16_historical_outputs": false
+}

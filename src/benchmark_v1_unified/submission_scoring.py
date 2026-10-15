@@ -124,7 +124,8 @@ def _available_ram_bytes():
         return None, "NOT_MEASURED"
 
 
-def _evaluate_submission(freeze_root, submission: dict, *, submission_dir=None, regimes=("A", "B1", "B2")) -> dict:
+def _evaluate_submission(freeze_root, submission: dict, *, submission_dir=None, regimes=("A", "B1", "B2"),
+                         freeze_verifier=None) -> dict:
     """Score a method's canonical-grid GeoTIFF artifacts against frozen inputs.
 
     For the official freeze, input masks, all 78 pairs and all 1,533 windows are
@@ -136,7 +137,7 @@ def _evaluate_submission(freeze_root, submission: dict, *, submission_dir=None, 
     invalid = sorted(set(regimes) - {"A", "B1", "B2", "B3"})
     if invalid:
         raise ValueError(f"INVALID_REGIME:{invalid}")
-    lock_result = verify_lock(freeze_root)
+    lock_result = (freeze_verifier or verify_lock)(freeze_root)
     frozen_path = freeze_root / "frozen_manifest.json"
     if not lock_result.valid:
         return {"status": "FREEZE_INVALID", "errors": list(lock_result.errors)}
@@ -279,7 +280,9 @@ def _evaluate_submission(freeze_root, submission: dict, *, submission_dir=None, 
             unique_source_support = np.sum(np.stack(input_masks), axis=0) == 1
             scene_outputs_complete = all(np.all(output_masks[k][unique_source_support & input_masks[k]]) for k in range(len(scenes)))
             if scene_outputs_complete:
-                structure = compute_single_source_structure(output_values, input_masks, mosaic, mosaic_valid)
+                # Protocol A defines U_single against its unique frozen RAW source,
+                # not against that scene's radiometrically corrected output.
+                structure = compute_single_source_structure(input_values, input_masks, mosaic, mosaic_valid)
             else:
                 structure = {"status": "PARTIAL_OUTPUT", "unique_source_pixels": int(unique_source_support.sum()),
                              "valid_pixels": 0, "structure": None}
@@ -488,10 +491,12 @@ def _window_distribution_summary(rows, pair_ids):
     return {**aggregated, "pair_macro": macro}
 
 
-def evaluate_submission(freeze_root, submission: dict, *, submission_dir=None, regimes=("A", "B1", "B2")) -> dict:
+def evaluate_submission(freeze_root, submission: dict, *, submission_dir=None, regimes=("A", "B1", "B2"),
+                        freeze_verifier=None) -> dict:
     """Fail-closed public wrapper returning machine-readable artifact errors."""
     try:
-        return _evaluate_submission(freeze_root, submission, submission_dir=submission_dir, regimes=regimes)
+        return _evaluate_submission(freeze_root, submission, submission_dir=submission_dir, regimes=regimes,
+                                    freeze_verifier=freeze_verifier)
     except FileNotFoundError as exc:
         return {"status": "MISSING_ARTIFACT", "error": str(exc)}
     except (OSError, ValueError, KeyError) as exc:
